@@ -9,6 +9,11 @@ protocol BackstopScheduling: Sendable {
     func clear() async throws
 }
 
+struct BackstopError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 struct LaunchdBackstop: BackstopScheduling {
     static let launchctl = "/bin/launchctl"
 
@@ -26,12 +31,12 @@ struct LaunchdBackstop: BackstopScheduling {
 
     func schedule(endsAt: Date) async throws {
         try writePlist(endsAt: endsAt)
-        await reload()
+        try await reload()
     }
 
     func clear() async throws {
         try writePlist(endsAt: nil)
-        await reload()
+        try await reload()
     }
 
     // MARK: Plist
@@ -70,20 +75,18 @@ struct LaunchdBackstop: BackstopScheduling {
     /// bootout (ignored if not loaded) then bootstrap. RunAtLoad means the
     /// script runs immediately on every reload; it is a no-op while the
     /// session on disk is valid.
-    private func reload() async {
+    ///
+    /// Throws when the agent cannot be loaded: a session must never start
+    /// without a backstop, so callers treat this as a hard failure.
+    private func reload() async throws {
         guard FileManager.default.fileExists(atPath: scriptPath) else {
-            Log.error("backstop.sh not installed at \(scriptPath); run scripts/install.sh (launchd agent not loaded)")
-            return
+            throw BackstopError(message: "backstop.sh not installed at \(scriptPath); run scripts/install.sh")
         }
         let domain = "gui/\(uid)"
-        do {
-            _ = try await Shell.run(Self.launchctl, ["bootout", domain, plistURL.path])
-            let r = try await Shell.run(Self.launchctl, ["bootstrap", domain, plistURL.path])
-            if !r.succeeded {
-                Log.error("launchctl bootstrap failed (\(r.status)): \(r.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
-            }
-        } catch {
-            Log.error("launchctl failed: \(error.localizedDescription)")
+        _ = try await Shell.run(Self.launchctl, ["bootout", domain, plistURL.path])
+        let r = try await Shell.run(Self.launchctl, ["bootstrap", domain, plistURL.path])
+        if !r.succeeded {
+            throw BackstopError(message: "launchctl bootstrap failed (\(r.status)): \(r.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
         }
     }
 }

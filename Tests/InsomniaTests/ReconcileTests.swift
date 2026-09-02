@@ -126,10 +126,38 @@ final class ReconcileTests: XCTestCase {
         XCTAssertNil(try h.store.loadSession())
         XCTAssertEqual(try h.store.loadState(), RuntimeState.clean)
         XCTAssertEqual(m.state, RuntimeState.clean)
-        XCTAssertEqual(h.backstop.scheduled, [])
+        // Backstop was armed before pmset and is cleared again on failure.
+        XCTAssertEqual(h.backstop.scheduled.count, 1)
+        XCTAssertEqual(h.backstop.clears, 1)
         let err = try XCTUnwrap(m.lastError)
         XCTAssertTrue(err.contains("password is required"), err)
         XCTAssertEqual(h.guardFake.calls, ["disablesleep 1"])
+    }
+
+    func testStartFailsBeforeDisablingSleepWhenBackstopCannotBeArmed() async throws {
+        h.backstop.failSchedule = true
+        let m = h.makeManager()
+        await m.start(duration: 3600)
+
+        XCTAssertNil(m.session)
+        XCTAssertNil(try h.store.loadSession())
+        XCTAssertEqual(try h.store.loadState(), RuntimeState.clean)
+        XCTAssertEqual(h.guardFake.calls, [], "sleep must never be disabled without a backstop")
+        let err = try XCTUnwrap(m.lastError)
+        XCTAssertTrue(err.contains("backstop"), err)
+    }
+
+    func testExtendKeepsOldDeadlineWhenBackstopCannotBeMoved() async throws {
+        let m = h.makeManager()
+        await m.start(duration: 3600)
+        let original = try XCTUnwrap(m.session)
+        h.backstop.failSchedule = true
+        await m.extend(by: 3600)
+
+        XCTAssertEqual(m.session, original)
+        XCTAssertEqual(try h.store.loadSession(), original)
+        XCTAssertEqual(m.scheduledDeadline, original.endsAt)
+        XCTAssertNotNil(m.lastError)
     }
 
     func testStartWritesJournalThenDisablesSleep() async throws {

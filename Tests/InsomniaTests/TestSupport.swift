@@ -67,9 +67,17 @@ final class FakeBackstop: BackstopScheduling, @unchecked Sendable {
     private let lock = NSLock()
     private var _scheduled: [Date] = []
     private var _clears = 0
+    private var _failSchedule = false
     var scheduled: [Date] { lock.withLock { _scheduled } }
     var clears: Int { lock.withLock { _clears } }
-    func schedule(endsAt: Date) async throws { lock.withLock { _scheduled.append(endsAt) } }
+    var failSchedule: Bool {
+        get { lock.withLock { _failSchedule } }
+        set { lock.withLock { _failSchedule = newValue } }
+    }
+    func schedule(endsAt: Date) async throws {
+        if failSchedule { throw BackstopError(message: "fake launchd refused") }
+        lock.withLock { _scheduled.append(endsAt) }
+    }
     func clear() async throws { lock.withLock { _clears += 1 } }
 }
 

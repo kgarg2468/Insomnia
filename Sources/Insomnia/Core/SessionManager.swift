@@ -102,14 +102,24 @@ final class SessionManager {
             return
         }
 
+        // The backstop is armed before sleep is disabled, so a crash at any
+        // later point already has a launchd job waiting at the deadline.
+        // RunAtLoad fires backstop.sh immediately; the session on disk is
+        // valid, so that run is a no-op.
+        do {
+            try await backstop.schedule(endsAt: new.endsAt)
+        } catch {
+            rollBackStart()
+            fail("could not arm backstop: \(error.localizedDescription)")
+            return
+        }
+
         do {
             try await sleepGuard.setSleepDisabled(true)
         } catch {
             // Roll back the journal: no session may exist if sleep is not disabled.
-            var s = state
-            s.sleepDisabledByUs = false
-            try? persistState(s)
-            try? store.deleteSession()
+            rollBackStart()
+            try? await backstop.clear()
             fail("could not disable sleep: \(error.localizedDescription)")
             return
         }
@@ -125,6 +135,13 @@ final class SessionManager {
     func extend(by extra: TimeInterval) async {
         guard let current = session else { return }
         let updated = SessionMath.extended(current, by: extra, now: clock(), maxDuration: config.maxDuration)
+        // Move the backstop first; if launchd rejects it the old deadline stays.
+        do {
+            try await backstop.schedule(endsAt: updated.endsAt)
+        } catch {
+            fail("could not move backstop: \(error.localizedDescription)")
+            return
+        }
         do {
             try store.saveSession(updated)
         } catch {
@@ -245,6 +262,11 @@ final class SessionManager {
                 fail("could not re-apply sleep guard: \(error.localizedDescription)")
             }
             Log.info("reconcile: session valid until \(iso(s.endsAt))")
+            do {
+                try await backstop.schedule(endsAt: s.endsAt)
+            } catch {
+                fail("could not re-arm backstop: \(error.localizedDescription)")
+            }
             // PR2: gate on lid state; only undo lid-close actions when the lid is open.
             // Here we assume open (the app only launches at login) and resume any
             // pids a crashed run left stopped.
@@ -309,13 +331,17 @@ final class SessionManager {
 
     // MARK: Private
 
-    private func armDeadline(_ endsAt: Date) async {
-        do {
-            try await backstop.schedule(endsAt: endsAt)
-        } catch {
-            Log.error("backstop schedule failed: \(error.localizedDescription)")
-        }
+    /// Undo the journal written at the top of `start`.
+    private func rollBackStart() {
+        var s = state
+        s.sleepDisabledByUs = false
+        try? persistState(s)
+        try? store.deleteSession()
+    }
 
+    /// In-process timers only; the launchd backstop is scheduled by callers
+    /// before this runs.
+    private func armDeadline(_ endsAt: Date) async {
         deadlineTimer?.invalidate()
         scheduledDeadline = endsAt
         // One timer at the deadline. Fire dates in the past fire immediately.

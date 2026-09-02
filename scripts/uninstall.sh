@@ -32,9 +32,9 @@ fi
 step "Restoring sleep via backstop"
 rm -f "$APP_SUPPORT/session.json"
 if [[ -x "$APP_SUPPORT/backstop.sh" ]]; then
-  bash "$APP_SUPPORT/backstop.sh" || true
+  bash "$APP_SUPPORT/backstop.sh" --force || true
 else
-  bash "$ROOT/scripts/backstop.sh" || true
+  bash "$ROOT/scripts/backstop.sh" --force || true
 fi
 
 step "Removing LaunchAgent"

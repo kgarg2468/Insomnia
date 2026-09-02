@@ -68,7 +68,14 @@ else
   echo "warning: 'sudo -n pmset' still fails; check $SUDOERS" >&2
 fi
 
-# 5. LaunchAgent (RunAtLoad only; the app adds the calendar trigger) ---------
+# 5. End any stale session before the agent (and its calendar trigger) is
+#    replaced. sudoers is in place now, so pmset works without a prompt.
+if [[ -f "$APP_SUPPORT/session.json" ]]; then
+  step "A previous session is on disk; ending it"
+  /bin/bash "$APP_SUPPORT/backstop.sh" --force
+fi
+
+# 6. LaunchAgent (RunAtLoad only; the app adds the calendar trigger) ---------
 step "Installing LaunchAgent $LABEL"
 launchctl bootout "gui/$UID_NUM" "$PLIST" >/dev/null 2>&1 || true
 cat > "$PLIST" <<PLIST
@@ -91,7 +98,7 @@ PLIST
 plutil -lint "$PLIST" >/dev/null
 launchctl bootstrap "gui/$UID_NUM" "$PLIST"
 
-# 6. Done --------------------------------------------------------------------
+# 7. Done --------------------------------------------------------------------
 step "Installed"
 cat <<NEXT
 Next steps:
