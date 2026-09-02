@@ -7,8 +7,12 @@ import SwiftUI
 /// every movement collapses into a short crossfade with no scale.
 @MainActor
 enum Motion {
+    static let baseResponse: TimeInterval = 0.35
+    static let baseDampingFraction = 0.72
+    /// Long enough for the width spring to become visually stationary.
+    static let widthSettleDuration: TimeInterval = baseResponse * 2
     /// Baseline for layout, width changes, pill morphs and the focus glow.
-    static let base: Animation = .spring(response: 0.35, dampingFraction: 0.72)
+    static let base: Animation = .spring(response: baseResponse, dampingFraction: baseDampingFraction)
     /// Focus bounce and chip taps: snappier, with a slight overshoot.
     static let snappy: Animation = .spring(response: 0.25, dampingFraction: 0.6)
     /// Delay between consecutive pills appearing (reversed on collapse).
@@ -43,6 +47,23 @@ enum Motion {
     /// Overshoot scale for a bounce, 1.0 under Reduce Motion.
     static func bounceScale(reduceMotion: Bool = Motion.reduceMotion) -> CGFloat {
         reduceMotion ? 1 : overshoot
+    }
+
+    /// Unit progress for the same under-damped spring used by SwiftUI. AppKit
+    /// has no spring animator for `NSStatusItem.length`, so the controller
+    /// samples this curve at display cadence to move neighbouring items
+    /// continuously instead of jumping between intrinsic widths.
+    static func springProgress(elapsed: TimeInterval) -> CGFloat {
+        guard elapsed > 0 else { return 0 }
+        guard elapsed < widthSettleDuration else { return 1 }
+        let damping = baseDampingFraction
+        let undampedFrequency = 2 * Double.pi / baseResponse
+        let dampedRoot = sqrt(1 - damping * damping)
+        let dampedFrequency = undampedFrequency * dampedRoot
+        let envelope = exp(-damping * undampedFrequency * elapsed)
+        let wave = cos(dampedFrequency * elapsed)
+            + damping / dampedRoot * sin(dampedFrequency * elapsed)
+        return CGFloat(1 - envelope * wave)
     }
 
     /// Insert/remove transition for a pill: scale-and-fade, or a plain fade

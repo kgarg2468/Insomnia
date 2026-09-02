@@ -3,6 +3,33 @@ import XCTest
 
 final class UIStatusTests: XCTestCase {
     @MainActor
+    func testWidthSpringStartsAtRestOvershootsAndSettles() {
+        XCTAssertEqual(Motion.springProgress(elapsed: 0), 0, accuracy: 0.0001)
+        XCTAssertGreaterThan(Motion.springProgress(elapsed: Motion.baseResponse * 0.72), 1)
+        XCTAssertEqual(Motion.springProgress(elapsed: Motion.widthSettleDuration), 1, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testStatusHostUsesIntrinsicSizingAndHasAnIdleFittingSize() {
+        let harness = Harness()
+        defer { harness.home.destroy() }
+        let root = StatusRootView(
+            model: MenuBarModel(),
+            manager: harness.makeManager(),
+            onTapIcon: {},
+            onTapPill: { _ in },
+            onTapCountdown: {},
+            onWidthChange: { _ in }
+        )
+
+        let host = StatusItemController.makeHostingView(root)
+
+        XCTAssertTrue(host.sizingOptions.contains(.intrinsicContentSize))
+        XCTAssertGreaterThan(host.fittingSize.width, 0)
+        XCTAssertGreaterThan(host.fittingSize.height, 0)
+    }
+
+    @MainActor
     func testPlaceholderReportsNothing() {
         let s = PlaceholderStatus()
         XCTAssertFalse(s.lidClosed)
