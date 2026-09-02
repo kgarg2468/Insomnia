@@ -95,8 +95,9 @@ final class ReconcileTests: XCTestCase {
         XCTAssertEqual(h.procs.resumed, [])
     }
 
-    // (d) savedOutputVolume is preserved for PR2 to restore
-    func testSavedVolumeIsPreservedNotDropped() async throws {
+    // (d) savedOutputVolume / savedMuted are restored through AudioControlling
+    // and cleared; if the restore fails they stay on disk for the next run.
+    func testSavedVolumeIsRestoredAndCleared() async throws {
         let now = h.clock.now
         try h.store.saveSession(Session(startedAt: now.addingTimeInterval(-7200), endsAt: now.addingTimeInterval(-1)))
         var st = RuntimeState()
@@ -110,8 +111,29 @@ final class ReconcileTests: XCTestCase {
 
         let after = try XCTUnwrap(try h.store.loadState())
         XCTAssertFalse(after.sleepDisabledByUs)
+        XCTAssertNil(after.savedOutputVolume)
+        XCTAssertNil(after.savedMuted)
+        XCTAssertEqual(h.audio.applied.count, 1)
+        XCTAssertEqual(h.audio.applied.first?.volume, 0.6)
+        XCTAssertEqual(h.audio.applied.first?.muted, false)
+        XCTAssertEqual(m.state, after)
+    }
+
+    func testSavedVolumeIsPreservedWhenRestoreFails() async throws {
+        let now = h.clock.now
+        try h.store.saveSession(Session(startedAt: now.addingTimeInterval(-7200), endsAt: now.addingTimeInterval(-1)))
+        var st = RuntimeState()
+        st.savedOutputVolume = 0.6
+        st.savedMuted = true
+        try h.store.saveState(st)
+        h.audio.throwOnApply = true
+
+        let m = h.makeManager()
+        await m.reconcile()
+
+        let after = try XCTUnwrap(try h.store.loadState())
         XCTAssertEqual(after.savedOutputVolume, 0.6)
-        XCTAssertEqual(after.savedMuted, false)
+        XCTAssertEqual(after.savedMuted, true)
         XCTAssertEqual(m.state, after)
     }
 

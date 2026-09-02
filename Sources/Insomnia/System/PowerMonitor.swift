@@ -23,17 +23,17 @@ final class PowerMonitor {
     init() {}
 
     func start() {
-        guard source == nil else { return }
+        guard source == nil, thermalObserver == nil else { return }
         refreshBattery()
         thermalState = ProcessInfo.processInfo.thermalState
 
         let refcon = Unmanaged.passUnretained(self).toOpaque()
-        guard let s = IOPSNotificationCreateRunLoopSource(Self.callback, refcon)?.takeRetainedValue() else {
+        if let s = IOPSNotificationCreateRunLoopSource(Self.callback, refcon)?.takeRetainedValue() {
+            source = s
+            CFRunLoopAddSource(CFRunLoopGetMain(), s, .commonModes)
+        } else {
             Log.error("power monitor: IOPSNotificationCreateRunLoopSource failed")
-            return
         }
-        source = s
-        CFRunLoopAddSource(CFRunLoopGetMain(), s, .commonModes)
 
         thermalObserver = NotificationCenter.default.addObserver(
             forName: ProcessInfo.thermalStateDidChangeNotification,

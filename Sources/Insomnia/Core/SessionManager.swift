@@ -35,7 +35,14 @@ final class SessionManager {
     private let sleepGuard: any SleepGuarding
     private let processControl: any ProcessSignaling
     private let backstop: any BackstopScheduling
+    private let audio: any AudioControlling
+    private let notifier: any Notifying
+    private let clamshell: @Sendable () -> Bool?
     private let clock: @Sendable () -> Date
+
+    /// System integrations (lid, battery, network, ...). Set by `live()`;
+    /// nil in tests. Started after a session starts, stopped when it ends.
+    @ObservationIgnored var services: AppServices?
 
     @ObservationIgnored private var deadlineTimer: Timer?
     @ObservationIgnored private var countdownTimer: Timer?
@@ -46,6 +53,9 @@ final class SessionManager {
         sleepGuard: any SleepGuarding,
         processControl: any ProcessSignaling,
         backstop: any BackstopScheduling,
+        audio: any AudioControlling = NoopAudioControl(),
+        notifier: any Notifying = RecordingNotifier(),
+        clamshell: @escaping @Sendable () -> Bool? = { LidObserver.readClamshellState() },
         clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.paths = paths
@@ -53,6 +63,9 @@ final class SessionManager {
         self.sleepGuard = sleepGuard
         self.processControl = processControl
         self.backstop = backstop
+        self.audio = audio
+        self.notifier = notifier
+        self.clamshell = clamshell
         self.clock = clock
 
         try? paths.createDirectories()
@@ -68,12 +81,21 @@ final class SessionManager {
 
     /// Production wiring.
     static func live(paths: Paths = .fromEnvironment()) -> SessionManager {
-        SessionManager(
+        let notifier = Notifier()
+        let audio = CoreAudioControl()
+        let processControl = SignalProcessControl()
+        let m = SessionManager(
             paths: paths,
             sleepGuard: PmsetSleepGuard(),
-            processControl: SignalProcessControl(),
-            backstop: LaunchdBackstop(paths: paths)
+            processControl: processControl,
+            backstop: LaunchdBackstop(paths: paths),
+            audio: audio,
+            notifier: notifier
         )
+        let services = AppServices(paths: paths, notifier: notifier, audio: audio, processControl: processControl)
+        m.services = services
+        services.logStartupSnapshot()
+        return m
     }
 
     // MARK: Start / extend / end
@@ -128,7 +150,8 @@ final class SessionManager {
         lastError = nil
         Log.info("session started until \(iso(new.endsAt)) (\(Int(duration))s requested)")
         await armDeadline(new.endsAt)
-        // PR2: set NSAppSleepDisabled for config.agentList; start lid/battery/thermal/network observers.
+        // App Nap defaults and every observer live in AppServices.
+        services?.start(for: self)
         // PR3: schedule "5 minutes left" notification.
     }
 
@@ -175,9 +198,71 @@ final class SessionManager {
         } catch {
             Log.error("backstop clear failed: \(error.localizedDescription)")
         }
-        // PR2: stop observers; restore App Nap is intentionally left set (spec: open decisions).
-        // PR3: post "session ended (reason)" notification.
-        _ = had
+        // App Nap defaults are intentionally left set (spec: open decisions).
+        services?.stop()
+        notifier.post(title: Self.endTitle(reason, had: had), body: endBody(reason))
+    }
+
+    // MARK: Journal hooks for LidActions / FloorRules
+
+    /// Persist a state mutation (journal first) and keep the in-memory copy
+    /// in sync. Throws if state.json cannot be written; callers must then
+    /// skip the side effect.
+    func journal(_ mutate: (inout RuntimeState) -> Void) throws {
+        var s = state
+        mutate(&s)
+        try persistState(s)
+    }
+
+    /// Low Power Mode with journaling: the flag is written before `pmset -b
+    /// lowpowermode 1` and cleared only after `... 0` succeeds. Returns true
+    /// when the mode was actually changed.
+    @discardableResult
+    func setLowPower(_ on: Bool) async -> Bool {
+        if on {
+            guard !state.lowPowerSetByUs else { return false }
+            do {
+                try journal { $0.lowPowerSetByUs = true }
+            } catch {
+                Log.error("could not journal low power mode: \(error.localizedDescription)")
+                return false
+            }
+            do {
+                try await sleepGuard.setLowPowerMode(true)
+                Log.info("low power mode on")
+                return true
+            } catch {
+                Log.error("could not enable low power mode: \(error.localizedDescription)")
+                try? journal { $0.lowPowerSetByUs = false }
+                return false
+            }
+        } else {
+            guard state.lowPowerSetByUs else { return false }
+            do {
+                try await sleepGuard.setLowPowerMode(false)
+                try? journal { $0.lowPowerSetByUs = false }
+                Log.info("low power mode off")
+                return true
+            } catch {
+                Log.error("could not disable low power mode: \(error.localizedDescription)")
+                return false
+            }
+        }
+    }
+
+    /// Undo every lid-close action recorded on disk: resume frozen pids,
+    /// clear the Docker marker, restore volume and mute. Used by lid open,
+    /// reconcile (lid open) and the full restore.
+    func undoLidActions() async {
+        var s: RuntimeState
+        do {
+            s = try store.loadState() ?? .clean
+        } catch {
+            Log.error("state.json unreadable (\(error.localizedDescription)); assuming in-memory state")
+            s = state
+        }
+        undoLidActions(in: &s)
+        state = s
     }
 
     // MARK: Restore
@@ -218,11 +303,18 @@ final class SessionManager {
             }
         }
 
+        undoLidActions(in: &s)
+        state = s
+    }
+
+    /// Shared body of `undoLidActions()` and `restoreAll()`; each entry is
+    /// persisted as soon as it is undone.
+    private func undoLidActions(in s: inout RuntimeState) {
         if !s.frozenPids.isEmpty {
             processControl.resume(pids: s.frozenPids)
             Log.info("resumed \(s.frozenPids.count) frozen pid(s)")
             s.frozenPids = []
-            // PR2: Docker Desktop is frozen via its pids too; the flag is only a marker.
+            // Docker Desktop is frozen via its pids too; the flag is only a marker.
             s.dockerFrozen = false
             try? persistState(s)
         } else if s.dockerFrozen {
@@ -230,9 +322,18 @@ final class SessionManager {
             try? persistState(s)
         }
 
-        // PR2: AudioControl restores savedOutputVolume / savedMuted and clears them.
-        // Until then they are preserved on disk, never dropped.
-        state = s
+        if s.savedOutputVolume != nil || s.savedMuted != nil {
+            do {
+                let current = try audio.read()
+                try audio.apply(volume: s.savedOutputVolume ?? current.volume, muted: s.savedMuted ?? current.muted)
+                Log.info("audio restored (volume \(s.savedOutputVolume ?? current.volume), muted \(s.savedMuted ?? current.muted))")
+                s.savedOutputVolume = nil
+                s.savedMuted = nil
+                try? persistState(s)
+            } catch {
+                Log.error("could not restore audio: \(error.localizedDescription)")
+            }
+        }
     }
 
     // MARK: Reconcile (spec section 8)
@@ -267,18 +368,18 @@ final class SessionManager {
             } catch {
                 fail("could not re-arm backstop: \(error.localizedDescription)")
             }
-            // PR2: gate on lid state; only undo lid-close actions when the lid is open.
-            // Here we assume open (the app only launches at login) and resume any
-            // pids a crashed run left stopped.
-            if !st.frozenPids.isEmpty {
-                processControl.resume(pids: st.frozenPids)
-                st.frozenPids = []
-                st.dockerFrozen = false
-                try? persistState(st)
-                Log.info("reconcile: resumed frozen pids")
+            // Lid-close actions still on disk are undone only if the lid is
+            // open now. Closed (or unknown): they are already journaled and
+            // will be undone on the next lid open or at session end.
+            let lidClosed = clamshell()
+            if lidClosed == false {
+                undoLidActions(in: &st)
+                state = st
+            } else if st.frozenPids.isEmpty == false || st.savedOutputVolume != nil {
+                Log.info("reconcile: lid \(lidClosed == nil ? "unknown" : "closed"), keeping lid-close actions")
             }
             await armDeadline(s.endsAt)
-            // PR2: resume observers.
+            services?.start(for: self)
             return
         }
 
@@ -389,5 +490,23 @@ final class SessionManager {
 
     private func iso(_ d: Date) -> String {
         ISO8601DateFormatter().string(from: d)
+    }
+
+    private static func endTitle(_ reason: EndReason, had: Bool) -> String {
+        switch reason {
+        case .backstop: "Sleep restored"
+        default: had ? "Session ended" : "Session restored"
+        }
+    }
+
+    private func endBody(_ reason: EndReason) -> String {
+        switch reason {
+        case .timer: "Time is up. Sleep is back to normal."
+        case .user: "Ended by you. Sleep is back to normal."
+        case .quit: "Insomnia quit. Sleep is back to normal."
+        case .batteryFloor: "Battery fell below \(config.endFloor)%. Sleep is back to normal."
+        case .thermalCritical: "Thermal state is critical. Sleep is back to normal."
+        case .backstop: "A previous session left changes behind; everything has been undone."
+        }
     }
 }

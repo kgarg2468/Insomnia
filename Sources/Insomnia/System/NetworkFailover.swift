@@ -20,6 +20,7 @@ struct FailoverMachine: Sendable, Equatable {
 
     private(set) var outageStart: Date?
     private(set) var joins: Int = 0
+    private(set) var nextAttemptAt: Date?
 
     var inOutage: Bool { outageStart != nil }
 
@@ -31,6 +32,7 @@ struct FailoverMachine: Sendable, Equatable {
         guard outageStart == nil else { return [] }
         outageStart = now
         joins = 0
+        nextAttemptAt = now.addingTimeInterval(Self.initialDelay)
         return [.scheduleRetry(after: Self.initialDelay)]
     }
 
@@ -38,13 +40,16 @@ struct FailoverMachine: Sendable, Equatable {
         guard let start = outageStart else { return [] }
         outageStart = nil
         joins = 0
+        nextAttemptAt = nil
         return [.recovered(start: start, gap: max(0, now.timeIntervalSince(start)))]
     }
 
     mutating func timerFired(at now: Date) -> [Output] {
-        guard outageStart != nil else { return [] }
+        guard outageStart != nil, let due = nextAttemptAt, now >= due else { return [] }
         joins += 1
-        return [.joinHotspot, .scheduleRetry(after: Self.delay(afterJoin: joins))]
+        let delay = Self.delay(afterJoin: joins)
+        nextAttemptAt = now.addingTimeInterval(delay)
+        return [.joinHotspot, .scheduleRetry(after: delay)]
     }
 
     /// One handoffs.log line per outage.
@@ -201,6 +206,7 @@ final class NetworkFailover {
     func start() async {
         guard monitor == nil else { return }
         await resolveInterface()
+        guard !Task.isCancelled else { return }
         let m = NWPathMonitor(requiredInterfaceType: .wifi)
         m.pathUpdateHandler = { [weak self] path in
             let satisfied = path.status == .satisfied
@@ -249,11 +255,21 @@ final class NetworkFailover {
     }
 
     private func handlePath(satisfied: Bool) {
+        Task { await process(satisfied: satisfied) }
+    }
+
+    /// Feed one path update through the machine and apply its outputs.
+    /// Public so tests can drive the driver without an NWPathMonitor.
+    func simulate(satisfied: Bool) async {
+        await process(satisfied: satisfied)
+    }
+
+    private func process(satisfied: Bool) async {
         let now = clock()
         let outputs = satisfied ? machine.pathSatisfied(at: now) : machine.pathUnsatisfied(at: now)
-        if !satisfied, machine.inOutage, outputs.isEmpty { return }
-        if !satisfied, !outputs.isEmpty { Log.info("wifi path unsatisfied") }
-        Task { await apply(outputs) }
+        if outputs.isEmpty { return }
+        if !satisfied { Log.info("wifi path unsatisfied") }
+        await apply(outputs)
     }
 
     private func fireTimer() {
@@ -337,7 +353,7 @@ final class NetworkFailover {
         appendHandoff(line)
         Log.info("wifi path satisfied after \(FailoverMachine.humanGap(gap))")
         let config = configProvider()
-        if gap > config.nudgeThreshold {
+        if gap >= config.nudgeThreshold {
             let count = await nudge.nudge(targets: config.tmuxTargets)
             let panes = count == 1 ? "1 tmux pane" : "\(count) tmux panes"
             notifier.post(

@@ -87,6 +87,67 @@ struct BrowserStatus: Sendable, Equatable {
     let unthrottled: Bool
 }
 
+/// Waits for AppKit termination notifications with one timeout event. This
+/// keeps relaunch event-driven instead of waking every few hundred ms.
+@MainActor
+private final class ApplicationTerminationWaiter {
+    private let applications: [NSRunningApplication]
+    private var pending: Set<Int32> = []
+    private var observer: NSObjectProtocol?
+    private var timer: Timer?
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(applications: [NSRunningApplication]) {
+        self.applications = applications
+    }
+
+    func terminateAndWait(timeout: TimeInterval) async -> Bool {
+        pending = Set(applications.lazy.filter { !$0.isTerminated }.map(\.processIdentifier))
+        guard !pending.isEmpty else { return true }
+
+        return await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            let center = NSWorkspace.shared.notificationCenter
+            observer = center.addObserver(
+                forName: NSWorkspace.didTerminateApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+                let pid = app.processIdentifier
+                Task { @MainActor [weak self] in self?.applicationTerminated(pid) }
+            }
+
+            let timeoutTimer = Timer(timeInterval: timeout, repeats: false) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.finish(allTerminated: false) }
+            }
+            RunLoop.main.add(timeoutTimer, forMode: .common)
+            timer = timeoutTimer
+
+            for application in applications where !application.isTerminated {
+                application.terminate()
+            }
+        }
+    }
+
+    private func applicationTerminated(_ pid: Int32) {
+        pending.remove(pid)
+        if pending.isEmpty { finish(allTerminated: true) }
+    }
+
+    private func finish(allTerminated: Bool) {
+        guard let continuation else { return }
+        self.continuation = nil
+        timer?.invalidate()
+        timer = nil
+        if let observer {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            self.observer = nil
+        }
+        continuation.resume(returning: allTerminated)
+    }
+}
+
 @MainActor
 final class BrowserThrottle {
     typealias ArgsReader = @Sendable (_ pid: Int32) async throws -> String
@@ -134,13 +195,8 @@ final class BrowserThrottle {
                 extra = ChromiumFlags.preservedArgs(args: args)
             }
         }
-        for app in running { app.terminate() }
-        // Bounded wait for termination; not a polling loop, it ends within 10 s.
-        let deadline = Date().addingTimeInterval(10)
-        while running.contains(where: { !$0.isTerminated }), Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(250))
-        }
-        if running.contains(where: { !$0.isTerminated }) {
+        let terminated = await ApplicationTerminationWaiter(applications: running).terminateAndWait(timeout: 10)
+        if !terminated {
             Log.error("relaunch: \(bundleId) did not quit within 10 s; launching anyway")
         }
         do {

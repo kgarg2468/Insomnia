@@ -46,6 +46,14 @@ shut, relaunch Chrome with
 `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding`.
 Insomnia will offer a one-click "Relaunch unthrottled" in a later release.
 
+## What happens when the lid closes
+
+During an active timed session, Insomnia optionally saves and mutes audio,
+freezes only the configured non-agent apps and an idle Docker Desktop, and
+pauses the countdown redraw. Opening the lid, ending the session, or quitting
+restores the recorded processes and audio exactly from the on-disk journal.
+Without an active session, lid changes do nothing.
+
 ## Files
 
 ```
