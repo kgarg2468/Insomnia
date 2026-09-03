@@ -49,6 +49,9 @@ final class SessionManager {
 
     @ObservationIgnored private var deadlineTimer: Timer?
     @ObservationIgnored private var countdownTimer: Timer?
+    /// Whether the 1 Hz redraw is currently on the run loop. Tests assert on
+    /// this to prove an idle session leaves no repeating wakeup behind.
+    var countdownTimerArmed: Bool { countdownTimer != nil }
     @ObservationIgnored private var countdownPaused = false
 
     init(
@@ -477,6 +480,12 @@ final class SessionManager {
     /// while the lid is closed.
     private func armCountdownTimer() {
         countdownTimer?.invalidate()
+        countdownTimer = nil
+        // Nothing to redraw without a session. Guarding here rather than in
+        // `resumeCountdown` covers every caller: a session that ends while the
+        // lid is shut would otherwise leave lid-open arming a 1 Hz timer that
+        // wakes the run loop forever to format an empty string.
+        guard session != nil else { return }
         let first = SessionMath.nextSecondBoundary(after: clock())
         let timer = Timer(fire: first, interval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshCountdown() }

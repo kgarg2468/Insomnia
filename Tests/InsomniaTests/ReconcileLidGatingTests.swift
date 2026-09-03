@@ -92,4 +92,30 @@ final class ReconcileLidGatingTests: XCTestCase {
         XCTAssertEqual(h.notifier.posts[0].title, "Session ended")
         XCTAssertTrue(h.notifier.posts[0].body.contains("Ended by you"))
     }
+
+    /// A session that ends while the lid is shut must not leave the 1 Hz
+    /// redraw running when the lid reopens; there is nothing to draw and the
+    /// timer would wake the run loop every second indefinitely.
+    func testLidOpenAfterSessionEndedLeavesNoCountdownTimer() async throws {
+        let m = h.makeManager()
+        await m.start(duration: 3600)
+        XCTAssertTrue(m.countdownTimerArmed)
+
+        m.pauseCountdown()
+        XCTAssertFalse(m.countdownTimerArmed)
+
+        await m.end(reason: .timer)
+        m.resumeCountdown()
+
+        XCTAssertFalse(m.countdownTimerArmed)
+        XCTAssertEqual(m.countdownText, "")
+    }
+
+    func testLidOpenDuringAnActiveSessionRearmsTheCountdown() async throws {
+        let m = h.makeManager()
+        await m.start(duration: 3600)
+        m.pauseCountdown()
+        m.resumeCountdown()
+        XCTAssertTrue(m.countdownTimerArmed)
+    }
 }
