@@ -7,6 +7,7 @@ import SwiftUI
 struct SettingsView: View {
     let manager: SessionManager
     let secrets: any HotspotSecretStore
+    let locationPermission: LocationPermission
 
     @State private var newPreset = ""
     @State private var presetError: String?
@@ -173,6 +174,16 @@ struct SettingsView: View {
                 Button(hotspotSaved ? "Saved" : "Save", action: savePassword)
                     .disabled(hotspotPassword.isEmpty)
             }
+            HStack {
+                Text("Location: \(locationPermission.statusDescription)")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if locationPermission.isDenied {
+                    Button("Open Location Services") {
+                        locationPermission.openLocationServicesSettings()
+                    }
+                }
+            }
             Stepper(value: nudgeSeconds, in: 10...900, step: 10) {
                 LabeledContent("Nudge tmux after", value: "\(Int(manager.config.nudgeThreshold)) s offline")
             }
@@ -195,7 +206,7 @@ struct SettingsView: View {
         } header: {
             Text("Network failover")
         } footer: {
-            Text("The password is kept in the login keychain once the network layer lands; until then it lives in memory for this run.")
+            Text("The password is kept in the login keychain. Location permission lets macOS reveal Wi-Fi network names and find the configured hotspot.")
         }
     }
 
@@ -207,6 +218,9 @@ struct SettingsView: View {
     }
 
     private func savePassword() {
+        if !manager.config.hotspotSSID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            locationPermission.requestWhenInUse()
+        }
         do {
             if hotspotPassword.isEmpty {
                 try secrets.delete()

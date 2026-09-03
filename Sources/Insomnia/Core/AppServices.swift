@@ -39,6 +39,7 @@ final class SystemStatus {
 final class AppServices {
     let status = SystemStatus()
     let notifier: any Notifying
+    let locationPermission: LocationPermission
 
     private let paths: Paths
     private let audio: any AudioControlling
@@ -64,7 +65,8 @@ final class AppServices {
         notifier: any Notifying,
         audio: any AudioControlling,
         processControl: any ProcessSignaling,
-        keychain: any KeychainStoring = KeychainStore()
+        keychain: any KeychainStoring = KeychainStore(),
+        locationPermission: LocationPermission = LocationPermission()
     ) {
         self.paths = paths
         self.notifier = notifier
@@ -72,6 +74,7 @@ final class AppServices {
         self.freezer = Freezer(control: processControl)
         self.docker = DockerRule(freezer: freezer)
         self.keychain = keychain
+        self.locationPermission = locationPermission
         self.browser = BrowserThrottle()
         status.refresher = { [weak self] in await self?.refreshOnDemand() }
     }
@@ -83,6 +86,10 @@ final class AppServices {
         self.manager = manager
         let config = manager.config
         status.lastGap = nil
+
+        if !config.hotspotSSID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            locationPermission.requestWhenInUse()
+        }
 
         (notifier as? Notifier)?.requestAuthorizationIfNeeded()
         AppNap.disable(for: config.agentList)

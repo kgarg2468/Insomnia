@@ -1,5 +1,12 @@
 import SwiftUI
 
+enum WiFiStatusName {
+    static func display(ssid: String?, locationAuthorized: Bool) -> String? {
+        if let ssid, !ssid.isEmpty { return ssid }
+        return locationAuthorized ? nil : "on (name hidden until Location is allowed)"
+    }
+}
+
 /// Popover shown when the countdown is clicked.
 struct SessionPopoverView: View {
     let manager: SessionManager
@@ -88,7 +95,10 @@ struct SessionPopoverView: View {
             Text(StatusLines.machine(
                 lidClosed: status.lidClosed,
                 watts: watts,
-                wifiSSID: status.wifiSSID,
+                wifiSSID: WiFiStatusName.display(
+                    ssid: status.wifiSSID,
+                    locationAuthorized: (status as? LiveStatusSource)?.locationPermission.isAuthorized ?? true
+                ),
                 batteryPercent: status.batteryPercent,
                 isCharging: status.isCharging
             ))

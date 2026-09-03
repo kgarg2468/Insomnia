@@ -105,6 +105,7 @@ enum HardwarePortsParser {
 protocol KeychainStoring: Sendable {
     func get(service: String, account: String) throws -> String?
     func set(service: String, account: String, value: String) throws
+    func delete(service: String, account: String) throws
 }
 
 struct KeychainError: Error, LocalizedError, Sendable {
@@ -151,6 +152,18 @@ struct KeychainStore: KeychainStoring {
         }
         guard status == errSecSuccess else { throw KeychainError(status: status) }
     }
+
+    func delete(service: String, account: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainError(status: status)
+        }
+    }
 }
 
 final class FakeKeychainStore: KeychainStoring, @unchecked Sendable {
@@ -158,6 +171,7 @@ final class FakeKeychainStore: KeychainStoring, @unchecked Sendable {
     private var items: [String: String] = [:]
     func get(service: String, account: String) throws -> String? { lock.withLock { items["\(service)/\(account)"] } }
     func set(service: String, account: String, value: String) throws { lock.withLock { items["\(service)/\(account)"] = value } }
+    func delete(service: String, account: String) throws { lock.withLock { _ = items.removeValue(forKey: "\(service)/\(account)") } }
 }
 
 // MARK: - Driver

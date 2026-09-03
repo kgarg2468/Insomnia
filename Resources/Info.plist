@@ -26,6 +26,10 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSLocationUsageDescription</key>
+	<string>Insomnia needs your location permission so macOS lets it see Wi-Fi network names and rejoin your hotspot.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Insomnia needs your location permission so macOS lets it see Wi-Fi network names and rejoin your hotspot.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSHumanReadableCopyright</key>
