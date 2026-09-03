@@ -34,16 +34,31 @@ final class StatusItemController {
     private var widthStartedAt: TimeInterval = 0
     private var widthTimer: Timer?
 
+    /// Autosave name so macOS remembers where the user drags the item.
+    static let autosaveName = "insomnia.status"
+
     init(manager: SessionManager, status: any StatusSource) {
         self.manager = manager
         self.status = status
+        Self.seedPreferredPositionIfNeeded()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.autosaveName = Self.autosaveName
         statusItem.behavior = [.terminationOnRemoval]
         installHostingView()
         observeManager()
     }
 
     // MARK: Status item
+
+    /// New status items are appended at the left of the existing group. On a
+    /// crowded menu bar (notch Macs) that lands in the hidden overflow, so the
+    /// item exists but is never seen. Seed a position near the right end the
+    /// first time only; after that macOS keeps whatever the user drags to.
+    static func seedPreferredPositionIfNeeded(defaults: UserDefaults = .standard) {
+        let key = "NSStatusItem Preferred Position \(autosaveName)"
+        guard defaults.object(forKey: key) == nil else { return }
+        defaults.set(40, forKey: key)
+    }
 
     private func installHostingView() {
         guard let button = statusItem.button else { return }
