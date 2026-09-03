@@ -31,6 +31,9 @@ final class LocationPermission: NSObject, @preconcurrency CLLocationManagerDeleg
         super.init()
     }
 
+    /// `.authorizedWhenInUse` is unavailable on macOS: a granted
+    /// `requestWhenInUseAuthorization` settles on `.authorizedAlways` here, so
+    /// that is the only authorized case to check.
     var isAuthorized: Bool {
         authorizationStatus == .authorizedAlways
     }

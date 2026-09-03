@@ -82,4 +82,26 @@ final class IntegrationWiringTests: XCTestCase {
         XCTAssertEqual(WiFiStatusName.display(ssid: "Office", locationAuthorized: false), "Office")
         XCTAssertNil(WiFiStatusName.display(ssid: nil, locationAuthorized: true))
     }
+
+    /// macOS has no `.authorizedWhenInUse`; a granted when-in-use request
+    /// reports `.authorizedAlways`, which is the only grant we can observe.
+    @MainActor
+    func testGrantedLocationCountsAsAuthorized() {
+        let permission = LocationPermission(authorizationStatus: .authorizedAlways)
+        XCTAssertTrue(permission.isAuthorized)
+        XCTAssertFalse(permission.isDenied)
+        XCTAssertEqual(permission.statusDescription, "Allowed")
+    }
+
+    @MainActor
+    func testUngrantedLocationStatusesAreNotAuthorized() {
+        let denied = LocationPermission(authorizationStatus: .denied)
+        XCTAssertFalse(denied.isAuthorized)
+        XCTAssertTrue(denied.isDenied)
+        XCTAssertEqual(denied.statusDescription, "Denied")
+
+        let undetermined = LocationPermission(authorizationStatus: .notDetermined)
+        XCTAssertFalse(undetermined.isAuthorized)
+        XCTAssertEqual(undetermined.statusDescription, "Not requested")
+    }
 }
