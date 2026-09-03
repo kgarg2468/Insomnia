@@ -170,7 +170,9 @@ enum DurationParser {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !trimmed.isEmpty else { return nil }
         if let bare = Int(trimmed) {
-            return bare > 0 ? TimeInterval(bare * 60) : nil
+            guard bare > 0 else { return nil }
+            let (seconds, overflow) = bare.multipliedReportingOverflow(by: 60)
+            return overflow ? nil : TimeInterval(seconds)
         }
         var total = 0
         var number = ""
@@ -182,12 +184,19 @@ enum DurationParser {
                 continue
             } else {
                 guard let n = Int(number) else { return nil }
+                let multiplier: Int
                 switch ch {
-                case "d": total += n * 86_400
-                case "h": total += n * 3_600
-                case "m": total += n * 60
+                case "d": multiplier = 86_400
+                case "h": multiplier = 3_600
+                case "m": multiplier = 60
                 default: return nil
                 }
+                // Reject rather than trap on absurd values.
+                let (seconds, mulOverflow) = n.multipliedReportingOverflow(by: multiplier)
+                guard !mulOverflow else { return nil }
+                let (sum, addOverflow) = total.addingReportingOverflow(seconds)
+                guard !addOverflow else { return nil }
+                total = sum
                 number = ""
                 sawUnit = true
             }

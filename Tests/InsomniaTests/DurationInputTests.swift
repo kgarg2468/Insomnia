@@ -185,4 +185,13 @@ final class DurationInputTests: XCTestCase {
         XCTAssertNil(DurationParser.seconds(from: "h"))
         XCTAssertNil(DurationParser.seconds(from: "2h5"))
     }
+
+    func testParserRejectsOverflowInsteadOfTrapping() {
+        let huge = String(Int.max)
+        XCTAssertNil(DurationParser.seconds(from: huge))          // bare minutes × 60
+        XCTAssertNil(DurationParser.seconds(from: huge + "d"))    // unit multiply
+        XCTAssertNil(DurationParser.seconds(from: "9223372036854775d 1d")) // addition
+        XCTAssertNil(DurationParser.seconds(from: "99999999999999999999h")) // Int(...) fails
+        XCTAssertEqual(DurationParser.seconds(from: "1d 2h"), 93_600)
+    }
 }

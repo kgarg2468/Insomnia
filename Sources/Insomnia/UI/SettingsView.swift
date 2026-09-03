@@ -252,11 +252,12 @@ struct SettingsView: View {
                         try SMAppService.mainApp.unregister()
                     }
                     loginItemError = nil
+                    // Persist only what macOS actually applied.
+                    update { $0.launchAtLogin = on }
                 } catch {
                     loginItemError = "Login item: \(error.localizedDescription)"
                     Log.error("launch at login \(on ? "register" : "unregister") failed: \(error.localizedDescription)")
                 }
-                update { $0.launchAtLogin = on }
             }
         )
     }
