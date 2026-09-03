@@ -1,19 +1,17 @@
 import AppKit
 import SwiftUI
 
-/// Menu bar app. The status item is an `NSStatusItem` hosting SwiftUI (so
-/// its width can animate, spec 11); the only SwiftUI scene is Settings.
+/// Menu bar app. The status item is an `NSStatusItem` hosting SwiftUI, and
+/// the settings window is an `NSWindow` this app opens itself (see
+/// `SettingsWindow`), so there is no SwiftUI scene with any content in it.
+/// `App` still requires one, hence the empty `Settings`.
 @main
 struct InsomniaApp: App {
     @NSApplicationDelegateAdaptor private var delegate: AppDelegate
 
     var body: some Scene {
         Settings {
-            SettingsView(
-                manager: delegate.manager,
-                secrets: delegate.secrets,
-                locationPermission: delegate.locationPermission
-            )
+            EmptyView()
         }
     }
 }
@@ -25,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let secrets: any HotspotSecretStore
     let locationPermission: LocationPermission
     private var statusItem: StatusItemController?
+    private var settingsWindow: SettingsWindow?
     private var terminating = false
 
     override init() {
@@ -48,7 +47,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // No Dock icon even when run from `swift run` (the bundle has LSUIElement).
         NSApp.setActivationPolicy(.accessory)
         Log.info("launched")
-        statusItem = StatusItemController(manager: manager, status: status)
+        let settings = SettingsWindow { [manager, secrets, locationPermission] in
+            AnyView(
+                SettingsView(
+                    manager: manager,
+                    secrets: secrets,
+                    locationPermission: locationPermission
+                )
+            )
+        }
+        settingsWindow = settings
+        statusItem = StatusItemController(manager: manager, status: status) { [weak settings] in
+            settings?.show()
+        }
         Task { await manager.reconcile() }
     }
 

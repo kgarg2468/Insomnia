@@ -15,6 +15,9 @@ final class StatusItemController: NSObject {
     let status: any StatusSource
     let model = MenuBarModel()
     let reminder = ReminderScheduler()
+    /// Opens the settings window. Injected because the window is owned by the
+    /// app delegate, which outlives any one status item.
+    private let showSettings: () -> Void
 
     private let statusItem: NSStatusItem
     private var hostingView: StatusHostingView?
@@ -32,9 +35,10 @@ final class StatusItemController: NSObject {
     /// Autosave name so macOS remembers where the user drags the item.
     static let autosaveName = "insomnia.status"
 
-    init(manager: SessionManager, status: any StatusSource) {
+    init(manager: SessionManager, status: any StatusSource, showSettings: @escaping () -> Void) {
         self.manager = manager
         self.status = status
+        self.showSettings = showSettings
         Self.seedPreferredPositionIfNeeded()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.autosaveName = Self.autosaveName
@@ -414,11 +418,7 @@ final class StatusItemController: NSObject {
 
     @objc private func menuOpenSettings() {
         openSettings()
-        NSApp.activate(ignoringOtherApps: true)
-        // The Settings scene has no public opener from AppKit.
-        if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
-            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-        }
+        showSettings()
     }
 
     // MARK: Settings
