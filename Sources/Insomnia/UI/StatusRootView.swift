@@ -51,13 +51,8 @@ struct StatusRootView: View {
     /// Outline cup while idle; filled and tinted while sleep is held, so the
     /// app visibly does something even when Low Power Mode is not showing.
     private var icon: some View {
-        Image(systemName: isRunning ? "cup.and.saucer.fill" : "cup.and.saucer")
-            .font(.system(size: 14, weight: .medium))
-            .symbolRenderingMode(.hierarchical)
-            .foregroundStyle(isRunning ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+        CupMarkView(isRunning: isRunning, reduceMotion: reduceMotion)
             .tint(.accentColor)
-            .contentTransition(.symbolEffect(.replace))
-            .animation(Motion.base(reduceMotion: reduceMotion), value: isRunning)
             .frame(width: 20, height: 20)
             .contentShape(Rectangle())
             .phaseAnimator([CGFloat(1), reduceMotion ? 1 : 0.86, 1], trigger: model.iconBounce) { content, scale in

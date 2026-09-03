@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// Live machine status shown in the session popover. The system layer
+/// Live machine status shown in the right-click menu. The system layer
 /// (lid, battery, network, freeze, browser throttle) provides the real
 /// object; the UI only ever talks to this protocol.
 @MainActor
@@ -17,7 +17,7 @@ protocol StatusSource: AnyObject, Observable {
     /// Display names of browsers running without the occlusion flags.
     var throttledBrowsers: [String] { get }
 
-    /// Called when the popover opens; observers refresh anything not pushed.
+    /// Called when the menu opens; observers refresh anything not pushed.
     func refreshOnDemand()
     /// Battery draw read on demand from AppleSmartBattery. Never polled.
     func instantWatts() -> Double?
@@ -44,7 +44,7 @@ final class PlaceholderStatus: StatusSource {
     func relaunchUnthrottled(_ name: String) {}
 }
 
-/// Pure formatting for the popover's status block, kept out of the views so
+/// Pure formatting for the menu's status block, kept out of the views so
 /// it can be tested.
 enum StatusLines {
     /// "Lid: closed · 4.1 W · Wi-Fi: iPhone". Unknown parts are omitted.
@@ -88,4 +88,42 @@ enum StatusLines {
         }
         return "\u{26A0} \(names) \(browsers.count == 1 ? "is" : "are") throttled"
     }
+}
+
+/// The one line that says whether sleep is really held, read from the
+/// journal (`RuntimeState.sleepDisabledByUs`) rather than inferred from the
+/// presence of a session. Pure so it can be tested.
+enum SleepHeldLine {
+    struct Line: Equatable {
+        let text: String
+        let isWarning: Bool
+    }
+
+    static func line(sessionActive: Bool, sleepHeld: Bool) -> Line? {
+        switch (sessionActive, sleepHeld) {
+        case (true, true):
+            Line(text: "Sleep held \u{2014} safe to close the lid", isWarning: false)
+        case (true, false):
+            Line(text: "Sleep is not held \u{2014} this session is not keeping the Mac awake", isWarning: true)
+        case (false, true):
+            Line(text: "Sleep still held with no session", isWarning: true)
+        case (false, false):
+            nil
+        }
+    }
+}
+
+/// macOS hides Wi-Fi network names until Location is allowed; say so rather
+/// than reporting no network at all.
+enum WiFiStatusName {
+    static func display(ssid: String?, locationAuthorized: Bool) -> String? {
+        if let ssid, !ssid.isEmpty { return ssid }
+        return locationAuthorized ? nil : "on (name hidden until Location is allowed)"
+    }
+}
+
+/// Short label for a duration: "30m", "2h", "3d". Used by the preset list in
+/// Settings.
+func chipLabel(for seconds: TimeInterval) -> String {
+    SessionMath.formatRemaining(seconds).replacingOccurrences(of: " ", with: "")
 }

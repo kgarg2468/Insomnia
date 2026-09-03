@@ -9,8 +9,25 @@ final class MenuBarModel {
     enum Mode: Equatable, Sendable {
         /// Enter starts a new session.
         case start
-        /// Enter extends the running session (reached via Custom… in the popover).
+        /// Enter extends the running session (reached by clicking the cup or
+        /// the countdown while a session is running).
         case extend
+    }
+
+    /// What Enter does with the pills as they stand.
+    enum CommitAction: Equatable {
+        case run(TimeInterval)
+        /// Nothing to act on: shake the focused pill.
+        case reject
+    }
+
+    /// Bare Enter with every pill empty starts the default preset, so the
+    /// common case is one keystroke. While extending there is no sensible
+    /// default duration, so it shakes instead.
+    static func commitAction(mode: Mode, typed: TimeInterval?, defaultPreset: TimeInterval) -> CommitAction {
+        if let typed { return .run(typed) }
+        guard mode == .start, defaultPreset > 0 else { return .reject }
+        return .run(defaultPreset)
     }
 
     enum Phase: Equatable, Sendable {

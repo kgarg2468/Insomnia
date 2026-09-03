@@ -19,8 +19,8 @@ struct HoldToEndButton: View {
     @State private var pressed = false
     @State private var holdTask: Task<Void, Never>?
 
-    private let ringDiameter: CGFloat = 15
-    private let lineWidth: CGFloat = 1.5
+    private let ringDiameter: CGFloat = 18
+    private let lineWidth: CGFloat = 1.6
     /// Moving the pointer this far cancels the hold, so a drag that happens
     /// to start on the button does not end the session.
     private let cancelDistance: CGFloat = 12
@@ -28,17 +28,17 @@ struct HoldToEndButton: View {
     var body: some View {
         ZStack {
             Circle()
-                .stroke(.quaternary, lineWidth: lineWidth)
+                .stroke(Color.white.opacity(0.14), lineWidth: lineWidth)
             Circle()
                 .trim(from: 0, to: progress)
-                .stroke(.primary, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
             Image(systemName: "xmark")
                 .font(.system(size: 7, weight: .bold))
-                .foregroundStyle(holding ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .foregroundStyle(Color.white.opacity(0.85))
         }
         .frame(width: ringDiameter, height: ringDiameter)
-        .scaleEffect(holding && !reduceMotion ? 0.9 : 1)
+        .scaleEffect(holding && !reduceMotion ? 1.12 : 1)
         .animation(Motion.snappy(reduceMotion: reduceMotion), value: holding)
         .frame(width: 20, height: 20)
         .contentShape(Rectangle())

@@ -3,13 +3,6 @@ import XCTest
 
 final class UIStatusTests: XCTestCase {
     @MainActor
-    func testWidthSpringStartsAtRestOvershootsAndSettles() {
-        XCTAssertEqual(Motion.springProgress(elapsed: 0), 0, accuracy: 0.0001)
-        XCTAssertGreaterThan(Motion.springProgress(elapsed: Motion.baseResponse * 0.72), 1)
-        XCTAssertEqual(Motion.springProgress(elapsed: Motion.widthSettleDuration), 1, accuracy: 0.0001)
-    }
-
-    @MainActor
     func testStatusHostUsesIntrinsicSizingAndHasAnIdleFittingSize() {
         let harness = Harness()
         defer { harness.home.destroy() }
@@ -145,5 +138,75 @@ final class UIStatusTests: XCTestCase {
         XCTAssertEqual(StatusLines.throttleWarning(["Chrome"]), "\u{26A0} Chrome is throttled")
         XCTAssertEqual(StatusLines.throttleWarning(["Chrome", "Arc"]), "\u{26A0} Chrome and Arc are throttled")
         XCTAssertEqual(StatusLines.throttleWarning(["Chrome", "Arc", "Chromium"]), "\u{26A0} Chrome, Arc, and Chromium are throttled")
+    }
+
+    func testMenuListsStatusThenSettingsAndQuit() {
+        let items = StatusMenu.items(
+            sessionActive: true,
+            sleepHeld: true,
+            machine: "Lid: closed \u{00B7} 82%",
+            actions: "3 apps frozen",
+            throttle: "\u{26A0} Chrome is throttled",
+            error: nil
+        )
+        XCTAssertEqual(items, [
+            StatusMenu.Item(title: "Sleep held \u{2014} safe to close the lid", kind: .info),
+            StatusMenu.Item(title: "Lid: closed \u{00B7} 82%", kind: .info),
+            StatusMenu.Item(title: "3 apps frozen", kind: .info),
+            StatusMenu.Item(title: "\u{26A0} Chrome is throttled", kind: .warning),
+            StatusMenu.Item(title: "", kind: .separator),
+            StatusMenu.Item(title: StatusMenu.settingsTitle, kind: .settings),
+            StatusMenu.Item(title: StatusMenu.quitTitle, kind: .quit),
+        ])
+    }
+
+    func testIdleMenuIsJustSettingsAndQuitWithNoLeadingSeparator() {
+        let items = StatusMenu.items(
+            sessionActive: false,
+            sleepHeld: false,
+            machine: nil,
+            actions: nil,
+            throttle: nil,
+            error: ""
+        )
+        XCTAssertEqual(items, [
+            StatusMenu.Item(title: StatusMenu.settingsTitle, kind: .settings),
+            StatusMenu.Item(title: StatusMenu.quitTitle, kind: .quit),
+        ])
+        XCTAssertFalse(items.contains { $0.kind == .separator })
+    }
+
+    func testMenuShowsTheLastErrorAsAWarning() {
+        let items = StatusMenu.items(
+            sessionActive: false,
+            sleepHeld: false,
+            machine: nil,
+            actions: nil,
+            throttle: nil,
+            error: "sudo: a password is required"
+        )
+        XCTAssertEqual(items.first, StatusMenu.Item(title: "\u{26A0} sudo: a password is required", kind: .warning))
+        XCTAssertEqual(items.map(\.kind), [.warning, .separator, .settings, .quit])
+    }
+
+    @MainActor
+    func testBareEnterStartsTheDefaultPresetButNeverExtends() {
+        let preset: TimeInterval = 4 * 3600
+        XCTAssertEqual(
+            MenuBarModel.commitAction(mode: .start, typed: nil, defaultPreset: preset),
+            .run(preset)
+        )
+        XCTAssertEqual(
+            MenuBarModel.commitAction(mode: .start, typed: 1800, defaultPreset: preset),
+            .run(1800)
+        )
+        XCTAssertEqual(
+            MenuBarModel.commitAction(mode: .extend, typed: nil, defaultPreset: preset),
+            .reject
+        )
+        XCTAssertEqual(
+            MenuBarModel.commitAction(mode: .start, typed: nil, defaultPreset: 0),
+            .reject
+        )
     }
 }
