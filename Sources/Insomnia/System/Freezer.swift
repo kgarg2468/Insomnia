@@ -21,6 +21,15 @@ struct FreezeGroup: Sendable, Equatable {
     let name: String
     /// Main pid first, then descendants in discovery order.
     let pids: [Int32]
+    /// Kernel parent captured with the process tree, checked again at SIGSTOP.
+    let expectedParents: [Int32: Int32]
+
+    init(bundleId: String, name: String, pids: [Int32], expectedParents: [Int32: Int32] = [:]) {
+        self.bundleId = bundleId
+        self.name = name
+        self.pids = pids
+        self.expectedParents = expectedParents
+    }
 }
 
 /// Pure planning: denylist, tree grouping. No process access.
@@ -84,7 +93,11 @@ enum FreezePlanner {
                     pids.append(pid)
                 }
             }
-            out.append(FreezeGroup(bundleId: id, name: instances[0].name, pids: pids))
+            var expectedParents: [Int32: Int32] = [:]
+            for process in processes where pids.contains(process.pid) {
+                expectedParents[process.pid] = process.ppid
+            }
+            out.append(FreezeGroup(bundleId: id, name: instances[0].name, pids: pids, expectedParents: expectedParents))
         }
         return out
     }
@@ -94,7 +107,7 @@ enum FreezePlanner {
 protocol Freezing: Sendable {
     /// Groups for the given bundle ids that are running right now.
     func plan(bundleIds: [String], config: Config, applyDenylist: Bool) -> [FreezeGroup]
-    func suspend(pids: [Int32])
+    func suspend(pids: [Int32], expectedParents: [Int32: Int32])
     func resume(pids: [Int32])
 }
 
@@ -125,7 +138,9 @@ struct Freezer: Freezing {
         )
     }
 
-    func suspend(pids: [Int32]) { control.suspend(pids: pids) }
+    func suspend(pids: [Int32], expectedParents: [Int32: Int32]) {
+        control.suspend(pids: pids, expectedParents: expectedParents)
+    }
     func resume(pids: [Int32]) { control.resume(pids: pids) }
 
     static func runningApps() -> [RunningApp] {

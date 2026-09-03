@@ -52,7 +52,7 @@ struct FloorRuleDriver {
     }
 
     func run(percent: Int?, isCharging: Bool, thermal: ProcessInfo.ThermalState) async {
-        guard let manager, manager.isActive else { return }
+        guard let manager, manager.isActive, !Task.isCancelled else { return }
         let config = manager.config
         let actions = FloorRules.evaluate(
             percent: percent,
@@ -62,10 +62,12 @@ struct FloorRuleDriver {
             config: config
         )
         for action in actions {
+            guard manager.isActive, !Task.isCancelled else { return }
             switch action {
             case .enableLowPower:
                 let thermalCause = config.thermalRules && thermal == .serious
                 guard await manager.setLowPower(true) else { continue }
+                guard manager.isActive, !Task.isCancelled else { return }
                 if thermalCause {
                     notifier.post(title: "Low Power Mode on", body: "Thermal state is serious. Low Power Mode is on until it cools down.")
                 } else {
@@ -73,10 +75,12 @@ struct FloorRuleDriver {
                 }
             case .disableLowPower:
                 if await manager.setLowPower(false) {
+                    guard manager.isActive, !Task.isCancelled else { return }
                     notifier.post(title: "Low Power Mode off", body: isCharging ? "Charger connected." : "Back above the floor.")
                 }
             case let .endSession(reason):
                 await manager.end(reason: reason)
+                guard manager.isActive, !Task.isCancelled else { return }
             }
         }
     }

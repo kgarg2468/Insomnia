@@ -22,7 +22,7 @@ final class LidActions {
     }
 
     func onClose() async {
-        guard let manager, manager.isActive else {
+        guard let manager, manager.isActive, !Task.isCancelled else {
             Log.info("lid closed: no session, nothing to do")
             return
         }
@@ -37,7 +37,9 @@ final class LidActions {
             freeze(group, docker: false, manager: manager)
         }
 
-        if let dockerGroup = await docker.idleDockerGroup(config: config) {
+        let dockerGroup = await docker.idleDockerGroup(config: config)
+        guard manager.isActive, !Task.isCancelled else { return }
+        if let dockerGroup {
             freeze(dockerGroup, docker: true, manager: manager)
         }
 
@@ -45,11 +47,12 @@ final class LidActions {
     }
 
     func onOpen() async {
-        guard let manager, manager.isActive else {
+        guard let manager, manager.isActive, !Task.isCancelled else {
             Log.info("lid opened: no session, nothing to do")
             return
         }
         await manager.undoLidActions()
+        guard manager.isActive, !Task.isCancelled else { return }
         manager.resumeCountdown()
     }
 
@@ -83,7 +86,7 @@ final class LidActions {
             Log.error("could not journal freeze of \(group.bundleId): \(error.localizedDescription); left running")
             return
         }
-        freezer.suspend(pids: pids)
+        freezer.suspend(pids: pids, expectedParents: group.expectedParents)
         Log.info("froze \(group.name) (\(pids.count) pid(s))")
     }
 }

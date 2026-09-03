@@ -163,7 +163,7 @@ final class FakeKeychainStore: KeychainStoring, @unchecked Sendable {
 // MARK: - Driver
 
 /// NWPathMonitor on Wi-Fi, one retry timer that exists only during an
-/// outage, `networksetup` for the join, handoffs.log, tmux nudge and a
+/// outage, CoreWLAN for the join, handoffs.log, tmux nudge and a
 /// notification on recovery. Active only while a session is active.
 @MainActor
 final class NetworkFailover {
@@ -179,6 +179,7 @@ final class NetworkFailover {
     private let paths: Paths
     private let keychain: any KeychainStoring
     private let nudge: TmuxNudge
+    private let hotspotJoiner: any HotspotJoining
     private let notifier: any Notifying
     private let configProvider: @MainActor () -> Config
     private let clock: @Sendable () -> Date
@@ -191,14 +192,18 @@ final class NetworkFailover {
         paths: Paths,
         keychain: any KeychainStoring = KeychainStore(),
         nudge: TmuxNudge = TmuxNudge(),
+        hotspotJoiner: any HotspotJoining = CoreWLANHotspotJoiner(),
         notifier: any Notifying,
+        wifiInterface: String? = nil,
         clock: @escaping @Sendable () -> Date = { Date() },
         config: @escaping @MainActor () -> Config
     ) {
         self.paths = paths
         self.keychain = keychain
         self.nudge = nudge
+        self.hotspotJoiner = hotspotJoiner
         self.notifier = notifier
+        self.wifiInterface = wifiInterface
         self.clock = clock
         self.configProvider = config
     }
@@ -312,7 +317,7 @@ final class NetworkFailover {
         generation += 1
     }
 
-    private func joinHotspot() async {
+    func joinHotspot() async {
         let config = configProvider()
         let ssid = config.hotspotSSID.trimmingCharacters(in: .whitespaces)
         guard !ssid.isEmpty else {
@@ -336,13 +341,12 @@ final class NetworkFailover {
         }
         Log.info("joining hotspot \(ssid) on \(iface) (attempt \(machine.joins))")
         do {
-            let r = try await Shell.run(Self.networksetup, ["-setairportnetwork", iface, ssid, password], timeout: 30)
-            let msg = (r.stdout + r.stderr).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !r.succeeded || msg.lowercased().contains("error") || msg.lowercased().contains("failed") {
-                Log.error("setairportnetwork: \(msg.isEmpty ? "status \(r.status)" : msg)")
+            let joined = try await hotspotJoiner.join(ssid: ssid, password: password, interfaceName: iface)
+            if !joined {
+                Log.error("CoreWLAN scan found no network for hotspot \(ssid); retrying with backoff")
             }
         } catch {
-            Log.error("setairportnetwork failed: \(error.localizedDescription)")
+            Log.error("CoreWLAN hotspot join failed: \(error.localizedDescription)")
         }
     }
 

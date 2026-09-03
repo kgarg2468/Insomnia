@@ -1,6 +1,24 @@
 import XCTest
 @testable import Insomnia
 
+final class RecordingHotspotJoiner: HotspotJoining, @unchecked Sendable {
+    struct Call: Equatable {
+        let ssid: String
+        let password: String
+        let interfaceName: String
+    }
+
+    private let lock = NSLock()
+    private var _calls: [Call] = []
+    var result = true
+    var calls: [Call] { lock.withLock { _calls } }
+
+    func join(ssid: String, password: String, interfaceName: String) async throws -> Bool {
+        lock.withLock { _calls.append(Call(ssid: ssid, password: password, interfaceName: interfaceName)) }
+        return result
+    }
+}
+
 final class FailoverMachineTests: XCTestCase {
     let t0 = Date(timeIntervalSince1970: 1_800_000_000)
 
@@ -160,5 +178,27 @@ final class NetworkFailoverDriverTests: XCTestCase {
 
         XCTAssertEqual(nudged.value, ["agents:0.0"])
         XCTAssertEqual(notifier.posts.count, 1)
+    }
+
+    func testHotspotJoinUsesInjectedJoiner() async throws {
+        let keychain = FakeKeychainStore()
+        try keychain.set(service: KeychainStore.service, account: "Phone", value: "top secret")
+        let joiner = RecordingHotspotJoiner()
+        var config = Config()
+        config.hotspotSSID = "Phone"
+        let n = NetworkFailover(
+            paths: home.paths,
+            keychain: keychain,
+            hotspotJoiner: joiner,
+            notifier: RecordingNotifier(),
+            wifiInterface: "en0"
+        ) { config }
+
+        await n.joinHotspot()
+
+        XCTAssertEqual(
+            joiner.calls,
+            [.init(ssid: "Phone", password: "top secret", interfaceName: "en0")]
+        )
     }
 }

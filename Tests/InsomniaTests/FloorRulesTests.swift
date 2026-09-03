@@ -150,4 +150,21 @@ final class FloorRuleDriverTests: XCTestCase {
         XCTAssertEqual(h.guardFake.calls, [])
         XCTAssertEqual(h.notifier.posts.count, 0)
     }
+
+    func testSessionEndWhileLowPowerEnableIsSuspendedLeavesCleanState() async throws {
+        let gate = AsyncGate()
+        h.guardFake.lowPowerGate = gate
+        let m = h.makeManager()
+        await m.start(duration: 3600)
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        let floor = Task { await driver.run(percent: 35, isCharging: false, thermal: .nominal) }
+        await gate.waitUntilStarted()
+
+        await m.end(reason: .user)
+        await gate.open()
+        await floor.value
+
+        XCTAssertEqual(try h.store.loadState()?.lowPowerSetByUs, false)
+        XCTAssertFalse(h.notifier.posts.contains { $0.title == "Low Power Mode on" })
+    }
 }

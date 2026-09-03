@@ -54,8 +54,9 @@ final class AppServices {
     private var floors: FloorRuleDriver?
     private var network: NetworkFailover?
     private var networkTask: Task<Void, Never>?
-    private var lidTask: Task<Void, Never>?
-    private var floorTask: Task<Void, Never>?
+    private var lidTasks: [Task<Void, Never>] = []
+    private var floorTasks: [Task<Void, Never>] = []
+    private var browserTasks: [Task<Void, Never>] = []
     private(set) var running = false
 
     init(
@@ -112,7 +113,7 @@ final class AppServices {
             }
         }
 
-        Task { await self.refreshBrowsers() }
+        browserTasks.append(Task { await self.refreshBrowsers() })
         syncState()
     }
 
@@ -125,6 +126,12 @@ final class AppServices {
         power.onChange = nil
         networkTask?.cancel()
         networkTask = nil
+        for task in lidTasks { task.cancel() }
+        lidTasks.removeAll()
+        for task in floorTasks { task.cancel() }
+        floorTasks.removeAll()
+        for task in browserTasks { task.cancel() }
+        browserTasks.removeAll()
         network?.stop()
         network = nil
         lidActions = nil
@@ -171,9 +178,16 @@ final class AppServices {
 
     /// Quit and relaunch a Chromium browser with both anti-throttle flags.
     func relaunchUnthrottled(_ bundleId: String) async {
-        await browser.relaunchUnthrottled(bundleId: bundleId)
-        try? await Task.sleep(for: .seconds(2))
-        await refreshBrowsers()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.browser.relaunchUnthrottled(bundleId: bundleId)
+            guard !Task.isCancelled else { return }
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            await self.refreshBrowsers()
+        }
+        browserTasks.append(task)
+        await task.value
     }
 
     // MARK: Private
@@ -181,12 +195,15 @@ final class AppServices {
     private func lidChanged(_ closed: Bool) {
         status.lidClosed = closed
         guard let actions = lidActions else { return }
-        let previous = lidTask
-        lidTask = Task { @MainActor in
+        let previous = lidTasks.last
+        let task = Task { @MainActor in
             await previous?.value
+            guard !Task.isCancelled, self.running else { return }
             if closed { await actions.onClose() } else { await actions.onOpen() }
+            guard !Task.isCancelled, self.running else { return }
             self.syncState()
         }
+        lidTasks.append(task)
     }
 
     private func powerChanged() {
@@ -195,12 +212,15 @@ final class AppServices {
         let percent = power.percent
         let charging = power.isCharging
         let thermal = power.thermalState
-        let previous = floorTask
-        floorTask = Task { @MainActor in
+        let previous = floorTasks.last
+        let task = Task { @MainActor in
             await previous?.value
+            guard !Task.isCancelled, self.running else { return }
             await floors.run(percent: percent, isCharging: charging, thermal: thermal)
+            guard !Task.isCancelled, self.running else { return }
             self.syncState()
         }
+        floorTasks.append(task)
     }
 
     private func syncPower() {

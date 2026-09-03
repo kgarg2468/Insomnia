@@ -170,6 +170,24 @@ final class LidActionsTests: XCTestCase {
         XCTAssertEqual(h.audio.applied.count, 1)
     }
 
+    func testSessionEndWhileDockerProbeIsSuspendedNeverFreezesDocker() async throws {
+        let probe = AsyncGate()
+        let (m, actions) = await make(dockerIdle: {
+            await probe.wait()
+            return true
+        })
+        await m.start(duration: 3600)
+        let close = Task { await actions.onClose() }
+        await probe.waitUntilStarted()
+
+        await m.end(reason: .user)
+        await probe.open()
+        await close.value
+
+        XCTAssertEqual(h.procs.suspended, [[100, 101, 102]])
+        XCTAssertEqual(try h.store.loadState(), RuntimeState.clean)
+    }
+
     func testAudioReadFailureSkipsMuteButStillFreezes() async throws {
         let (m, actions) = await make()
         h.audio.throwOnRead = true

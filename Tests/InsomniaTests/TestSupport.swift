@@ -2,6 +2,34 @@ import Foundation
 import XCTest
 @testable import Insomnia
 
+actor AsyncGate {
+    private var started = false
+    private var opened = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var gateWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        started = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+        guard !opened else { return }
+        await withCheckedContinuation { gateWaiters.append($0) }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func open() {
+        opened = true
+        let waiters = gateWaiters
+        gateWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+}
+
 /// Creates a temp INSOMNIA_HOME and points the process environment at it.
 final class TempHome {
     let root: URL
@@ -26,12 +54,17 @@ final class FakeSleepGuard: SleepGuarding, @unchecked Sendable {
     private let lock = NSLock()
     private var _calls: [String] = []
     private var _sleepDisabled = false
+    private var _lowPowerGate: AsyncGate?
     var throwOn: Set<String> = []
 
     var calls: [String] { lock.withLock { _calls } }
     var sleepDisabled: Bool {
         get { lock.withLock { _sleepDisabled } }
         set { lock.withLock { _sleepDisabled = newValue } }
+    }
+    var lowPowerGate: AsyncGate? {
+        get { lock.withLock { _lowPowerGate } }
+        set { lock.withLock { _lowPowerGate = newValue } }
     }
 
     private func record(_ c: String) throws {
@@ -53,6 +86,7 @@ final class FakeSleepGuard: SleepGuarding, @unchecked Sendable {
 
     func setLowPowerMode(_ on: Bool) async throws {
         try record("lowpowermode \(on ? 1 : 0)")
+        if on, let gate = lowPowerGate { await gate.wait() }
     }
 }
 
@@ -66,7 +100,7 @@ final class FakeProcessControl: ProcessSignaling, @unchecked Sendable {
     /// at the moment the side effect happens.
     var onSuspend: (@Sendable ([Int32]) -> Void)?
     func resume(pids: [Int32]) { lock.withLock { _resumed.append(pids) } }
-    func suspend(pids: [Int32]) {
+    func suspend(pids: [Int32], expectedParents: [Int32: Int32]) {
         lock.withLock { _suspended.append(pids) }
         onSuspend?(pids)
     }
@@ -137,7 +171,9 @@ final class FakeFreezer: Freezing, @unchecked Sendable {
         }
     }
 
-    func suspend(pids: [Int32]) { control.suspend(pids: pids) }
+    func suspend(pids: [Int32], expectedParents: [Int32: Int32]) {
+        control.suspend(pids: pids, expectedParents: expectedParents)
+    }
     func resume(pids: [Int32]) { control.resume(pids: pids) }
 }
 
