@@ -14,6 +14,9 @@ enum StatusMenu {
             case separator
             case settings
             case quit
+            /// Relaunch this browser with the occlusion flags. Carries the
+            /// display name so the menu item knows what to relaunch.
+            case relaunchBrowser(String)
         }
 
         let title: String
@@ -31,7 +34,7 @@ enum StatusMenu {
         sleepHeld: Bool,
         machine: String?,
         actions: String?,
-        throttle: String?,
+        throttledBrowsers: [String],
         error: String?
     ) -> [Item] {
         var out: [Item] = []
@@ -44,8 +47,14 @@ enum StatusMenu {
         if let actions = present(actions) {
             out.append(Item(title: actions, kind: .info))
         }
-        if let throttle = present(throttle) {
+        if let throttle = present(StatusLines.throttleWarning(throttledBrowsers)) {
             out.append(Item(title: throttle, kind: .warning))
+            // The warning alone is a dead end; each throttled browser gets a
+            // live item so the relaunch is still one click away, as it was
+            // from the popover this menu replaced.
+            for name in throttledBrowsers {
+                out.append(Item(title: "Relaunch \(name) unthrottled", kind: .relaunchBrowser(name)))
+            }
         }
         if let error = present(error) {
             out.append(Item(title: "\u{26A0} \(error)", kind: .warning))
@@ -67,7 +76,13 @@ enum StatusMenu {
     /// are orange. `autoenablesItems` is off so the disabled lines stay
     /// disabled and the two actions stay live without validation.
     @MainActor
-    static func menu(_ items: [Item], target: AnyObject?, settings: Selector, quit: Selector) -> NSMenu {
+    static func menu(
+        _ items: [Item],
+        target: AnyObject?,
+        settings: Selector,
+        quit: Selector,
+        relaunchBrowser: Selector
+    ) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
         let lineFont = NSFont.menuFont(ofSize: NSFont.smallSystemFontSize)
@@ -90,6 +105,10 @@ enum StatusMenu {
                 menu.addItem(action(title: item.title, selector: settings, key: ",", target: target))
             case .quit:
                 menu.addItem(action(title: item.title, selector: quit, key: "q", target: target))
+            case let .relaunchBrowser(name):
+                let entry = action(title: item.title, selector: relaunchBrowser, key: "", target: target)
+                entry.representedObject = name
+                menu.addItem(entry)
             }
         }
         return menu

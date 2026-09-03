@@ -146,7 +146,7 @@ final class UIStatusTests: XCTestCase {
             sleepHeld: true,
             machine: "Lid: closed \u{00B7} 82%",
             actions: "3 apps frozen",
-            throttle: "\u{26A0} Chrome is throttled",
+            throttledBrowsers: ["Chrome"],
             error: nil
         )
         XCTAssertEqual(items, [
@@ -154,6 +154,7 @@ final class UIStatusTests: XCTestCase {
             StatusMenu.Item(title: "Lid: closed \u{00B7} 82%", kind: .info),
             StatusMenu.Item(title: "3 apps frozen", kind: .info),
             StatusMenu.Item(title: "\u{26A0} Chrome is throttled", kind: .warning),
+            StatusMenu.Item(title: "Relaunch Chrome unthrottled", kind: .relaunchBrowser("Chrome")),
             StatusMenu.Item(title: "", kind: .separator),
             StatusMenu.Item(title: StatusMenu.settingsTitle, kind: .settings),
             StatusMenu.Item(title: StatusMenu.quitTitle, kind: .quit),
@@ -166,7 +167,7 @@ final class UIStatusTests: XCTestCase {
             sleepHeld: false,
             machine: nil,
             actions: nil,
-            throttle: nil,
+            throttledBrowsers: [],
             error: ""
         )
         XCTAssertEqual(items, [
@@ -182,11 +183,30 @@ final class UIStatusTests: XCTestCase {
             sleepHeld: false,
             machine: nil,
             actions: nil,
-            throttle: nil,
+            throttledBrowsers: [],
             error: "sudo: a password is required"
         )
         XCTAssertEqual(items.first, StatusMenu.Item(title: "\u{26A0} sudo: a password is required", kind: .warning))
         XCTAssertEqual(items.map(\.kind), [.warning, .separator, .settings, .quit])
+    }
+
+    /// Greptile caught this as a regression: replacing the popover with a
+    /// menu left the throttle warning with no way to act on it.
+    func testEveryThrottledBrowserGetsItsOwnRelaunchItem() {
+        let items = StatusMenu.items(
+            sessionActive: true,
+            sleepHeld: true,
+            machine: nil,
+            actions: nil,
+            throttledBrowsers: ["Chrome", "Arc"],
+            error: nil
+        )
+        XCTAssertEqual(items.filter { $0.kind == .relaunchBrowser("Chrome") }.count, 1)
+        XCTAssertEqual(items.filter { $0.kind == .relaunchBrowser("Arc") }.count, 1)
+        XCTAssertEqual(
+            items.map(\.kind),
+            [.info, .warning, .relaunchBrowser("Chrome"), .relaunchBrowser("Arc"), .separator, .settings, .quit]
+        )
     }
 
     @MainActor

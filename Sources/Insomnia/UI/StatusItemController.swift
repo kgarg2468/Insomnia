@@ -400,16 +400,22 @@ final class StatusItemController: NSObject {
                 dockerPaused: status.dockerPaused,
                 lastGap: status.lastGap
             ),
-            throttle: StatusLines.throttleWarning(status.throttledBrowsers),
+            throttledBrowsers: status.throttledBrowsers,
             error: manager.lastError
         )
         let menu = StatusMenu.menu(
             items,
             target: self,
             settings: #selector(menuOpenSettings),
-            quit: #selector(menuQuit)
+            quit: #selector(menuQuit),
+            relaunchBrowser: #selector(menuRelaunchBrowser(_:))
         )
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+    }
+
+    @objc private func menuRelaunchBrowser(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        status.relaunchUnthrottled(name)
     }
 
     @objc private func menuQuit() {
