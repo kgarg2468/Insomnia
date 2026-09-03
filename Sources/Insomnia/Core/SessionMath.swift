@@ -60,9 +60,64 @@ enum SessionMath {
         return "\(minutes)m"
     }
 
+    /// Live menu bar countdown, ticking every second in a fixed `shape`.
+    ///
+    /// Partial seconds round *up*, so a fresh 30-minute session opens on
+    /// `30:00` and the text only reads all-zeros once the deadline is reached.
+    /// Negative input is floored at zero. Minutes and seconds are always two
+    /// digits; hours and days are never padded.
+    static func formatCountdown(remaining: TimeInterval, shape: CountdownShape) -> String {
+        let total = Int(max(remaining, 0).rounded(.up))
+        let seconds = total % 60
+        let minutes = (total / 60) % 60
+        func clock(hours: Int) -> String {
+            String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        switch shape {
+        case .days:
+            let days = total / 86400
+            guard days > 0 else { return clock(hours: total / 3600) }
+            return "\(days)d " + clock(hours: (total % 86400) / 3600)
+        case .hours:
+            return clock(hours: total / 3600)
+        case .minutes:
+            return String(format: "%02d:%02d", total / 60, seconds)
+        }
+    }
+
     /// Next wall-clock minute boundary at or after `now` (for the redraw timer).
     static func nextMinuteBoundary(after now: Date) -> Date {
         let t = now.timeIntervalSinceReferenceDate
         return Date(timeIntervalSinceReferenceDate: (floor(t / 60) + 1) * 60)
+    }
+
+    /// Next whole wall-clock second after `now` (for the 1 Hz countdown timer).
+    static func nextSecondBoundary(after now: Date) -> Date {
+        Date(timeIntervalSinceReferenceDate: floor(now.timeIntervalSinceReferenceDate) + 1)
+    }
+}
+
+/// Shape of the live menu bar countdown.
+///
+/// Chosen once from the session's initial duration and held for the whole
+/// session so the status item keeps a stable width instead of jittering as
+/// units drop off. The only mid-session change is `days` losing its day
+/// component once fewer than 24 hours remain.
+enum CountdownShape: Equatable, Sendable {
+    /// `Nd H:MM:SS` while a day or more remains, then `H:MM:SS`.
+    case days
+    /// `H:MM:SS` for the whole session, even under an hour (`0:04:07`).
+    case hours
+    /// `MM:SS` for the whole session (`04:07`, `00:09`).
+    case minutes
+
+    init(initialDuration: TimeInterval) {
+        if initialDuration >= 86400 {
+            self = .days
+        } else if initialDuration >= 3600 {
+            self = .hours
+        } else {
+            self = .minutes
+        }
     }
 }

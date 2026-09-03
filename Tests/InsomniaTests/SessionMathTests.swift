@@ -74,4 +74,61 @@ final class SessionMathTests: XCTestCase {
         let exact = Date(timeIntervalSinceReferenceDate: 1260)
         XCTAssertEqual(SessionMath.nextMinuteBoundary(after: exact).timeIntervalSinceReferenceDate, 1320)
     }
+
+    func testNextSecondBoundary() {
+        let d = Date(timeIntervalSinceReferenceDate: 1234.5)
+        XCTAssertEqual(SessionMath.nextSecondBoundary(after: d).timeIntervalSinceReferenceDate, 1235)
+        let exact = Date(timeIntervalSinceReferenceDate: 1235)
+        XCTAssertEqual(SessionMath.nextSecondBoundary(after: exact).timeIntervalSinceReferenceDate, 1236)
+    }
+
+    // MARK: Countdown
+
+    func testCountdownShapeFromInitialDuration() {
+        XCTAssertEqual(CountdownShape(initialDuration: 60), .minutes)
+        XCTAssertEqual(CountdownShape(initialDuration: 3599), .minutes)
+        XCTAssertEqual(CountdownShape(initialDuration: 3600), .hours)
+        XCTAssertEqual(CountdownShape(initialDuration: 86399), .hours)
+        XCTAssertEqual(CountdownShape(initialDuration: 86400), .days)
+        XCTAssertEqual(CountdownShape(initialDuration: 30 * 86400), .days)
+    }
+
+    func testCountdownDaysShapeDropsDaysOnceUnderTwentyFourHours() {
+        let two = 2 * 86400 + 3 * 3600 + 4 * 60 + 7
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: TimeInterval(two), shape: .days), "2d 3:04:07")
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 86400, shape: .days), "1d 0:00:00")
+        // Rollover: the day component goes away for good, hours stay unpadded.
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 86399, shape: .days), "23:59:59")
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 4 * 60 + 7, shape: .days), "0:04:07")
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 0, shape: .days), "0:00:00")
+    }
+
+    func testCountdownHoursShapeStaysWideUnderAnHour() {
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 4 * 3600, shape: .hours), "4:00:00")
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 2 * 3600 + 14 * 60 + 5, shape: .hours), "2:14:05")
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 4 * 60 + 7, shape: .hours), "0:04:07")
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 9, shape: .hours), "0:00:09")
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 0, shape: .hours), "0:00:00")
+    }
+
+    func testCountdownMinutesShapeIsAlwaysTwoDigitMinutes() {
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 30 * 60, shape: .minutes), "30:00")
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 4 * 60 + 7, shape: .minutes), "04:07")
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 9, shape: .minutes), "00:09")
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 0, shape: .minutes), "00:00")
+    }
+
+    func testCountdownFloorsAtZero() {
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: -5, shape: .days), "0:00:00")
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: -5, shape: .hours), "0:00:00")
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: -5, shape: .minutes), "00:00")
+    }
+
+    func testCountdownRoundsPartialSecondsUp() {
+        // A fresh session opens on the full duration, not one second short.
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 1799.4, shape: .minutes), "30:00")
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 3599.01, shape: .hours), "1:00:00")
+        // Only reads all-zeros once the deadline is actually reached.
+        XCTAssertEqual(SessionMath.formatCountdown(remaining: 0.3, shape: .hours), "0:00:01")
+    }
 }

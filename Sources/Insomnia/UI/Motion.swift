@@ -15,6 +15,10 @@ enum Motion {
     static let base: Animation = .spring(response: baseResponse, dampingFraction: baseDampingFraction)
     /// Focus bounce and chip taps: snappier, with a slight overshoot.
     static let snappy: Animation = .spring(response: 0.25, dampingFraction: 0.6)
+    /// One digit roll of the 1 Hz countdown; must settle well inside a second.
+    static let tick: Animation = .spring(response: 0.18, dampingFraction: 0.85)
+    /// How long the end button must be held before the session ends.
+    static let holdDuration: TimeInterval = 0.6
     /// Delay between consecutive pills appearing (reversed on collapse).
     static let stagger: TimeInterval = 0.04
     /// Scale a focused pill or tapped chip overshoots to before settling.
@@ -34,6 +38,10 @@ enum Motion {
 
     static func snappy(reduceMotion: Bool = Motion.reduceMotion) -> Animation {
         reduceMotion ? reduced : snappy
+    }
+
+    static func tick(reduceMotion: Bool = Motion.reduceMotion) -> Animation {
+        reduceMotion ? reduced : tick
     }
 
     /// Delay for pill `index` of `count` when expanding (`reversed == false`)

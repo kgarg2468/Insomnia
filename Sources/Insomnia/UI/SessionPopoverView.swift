@@ -85,6 +85,17 @@ struct SessionPopoverView: View {
 
     private var statusBlock: some View {
         VStack(alignment: .leading, spacing: 5) {
+            if let held = SleepHeldLine.line(sessionActive: manager.isActive, sleepHeld: manager.state.sleepDisabledByUs) {
+                HStack(spacing: 5) {
+                    Image(systemName: held.isWarning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(held.isWarning ? .orange : .green)
+                    Text(held.text)
+                        .foregroundStyle(held.isWarning ? .orange : .primary)
+                }
+                .font(.system(size: 11, weight: .medium))
+                .accessibilityElement(children: .combine)
+            }
+
             Text(StatusLines.machine(
                 lidClosed: status.lidClosed,
                 watts: watts,
@@ -115,6 +126,29 @@ struct SessionPopoverView: View {
                     .controlSize(.small)
                 }
             }
+        }
+    }
+}
+
+/// The one line that says whether sleep is really held, read from the
+/// journal (`RuntimeState.sleepDisabledByUs`) rather than inferred from the
+/// presence of a session. Pure so it can be tested.
+enum SleepHeldLine {
+    struct Line: Equatable {
+        let text: String
+        let isWarning: Bool
+    }
+
+    static func line(sessionActive: Bool, sleepHeld: Bool) -> Line? {
+        switch (sessionActive, sleepHeld) {
+        case (true, true):
+            Line(text: "Sleep held \u{2014} safe to close the lid", isWarning: false)
+        case (true, false):
+            Line(text: "Sleep is not held \u{2014} this session is not keeping the Mac awake", isWarning: true)
+        case (false, true):
+            Line(text: "Sleep still held with no session", isWarning: true)
+        case (false, false):
+            nil
         }
     }
 }

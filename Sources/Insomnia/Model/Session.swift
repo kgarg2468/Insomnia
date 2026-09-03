@@ -23,4 +23,13 @@ struct Session: Codable, Equatable, Sendable {
     func isExpired(at now: Date) -> Bool {
         SessionMath.isExpired(endsAt: endsAt, at: now)
     }
+
+    /// Shape of the menu bar countdown, derived from the session's span so it
+    /// survives a relaunch without another persisted field. Because
+    /// `remaining` never exceeds this span, the shape always has room for the
+    /// value. An extension widens the span and can promote the shape, which
+    /// is a one-off change at a user action, never a per-tick one.
+    var countdownShape: CountdownShape {
+        CountdownShape(initialDuration: endsAt.timeIntervalSince(startedAt))
+    }
 }

@@ -9,6 +9,7 @@ struct StatusRootView: View {
     let onTapIcon: () -> Void
     let onTapPill: (DurationInput.Field) -> Void
     let onTapCountdown: () -> Void
+    let onHoldEnd: () -> Void
     let onWidthChange: (CGFloat) -> Void
 
     @Namespace private var morph
@@ -16,9 +17,11 @@ struct StatusRootView: View {
 
     private var reduceMotion: Bool { reduceMotionEnv || Motion.reduceMotion }
     private var isEntering: Bool { model.phase.isEntering }
+    /// Sleep is held right now (journal-backed), independent of the UI phase.
+    private var isRunning: Bool { manager.isActive }
 
     private var countdownText: String {
-        if !manager.remainingText.isEmpty { return manager.remainingText }
+        if !manager.countdownText.isEmpty { return manager.countdownText }
         return model.pendingCountdown ?? ""
     }
 
@@ -29,6 +32,8 @@ struct StatusRootView: View {
                 pills
             } else if model.phase == .running {
                 countdown
+                HoldToEndButton(reduceMotion: reduceMotion, action: onHoldEnd)
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.5).combined(with: .opacity))
             }
         }
         .padding(.leading, 6)
@@ -43,10 +48,16 @@ struct StatusRootView: View {
         }
     }
 
+    /// Outline cup while idle; filled and tinted while sleep is held, so the
+    /// app visibly does something even when Low Power Mode is not showing.
     private var icon: some View {
-        Image(systemName: "cup.and.saucer.fill")
+        Image(systemName: isRunning ? "cup.and.saucer.fill" : "cup.and.saucer")
             .font(.system(size: 14, weight: .medium))
             .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(isRunning ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+            .tint(.accentColor)
+            .contentTransition(.symbolEffect(.replace))
+            .animation(Motion.base(reduceMotion: reduceMotion), value: isRunning)
             .frame(width: 20, height: 20)
             .contentShape(Rectangle())
             .phaseAnimator([CGFloat(1), reduceMotion ? 1 : 0.86, 1], trigger: model.iconBounce) { content, scale in
@@ -82,7 +93,7 @@ struct StatusRootView: View {
             .font(.system(size: 13, weight: .medium, design: .rounded))
             .monospacedDigit()
             .contentTransition(.numericText(countsDown: true))
-            .animation(Motion.base(reduceMotion: reduceMotion), value: countdownText)
+            .animation(Motion.tick(reduceMotion: reduceMotion), value: countdownText)
             .padding(.trailing, 1)
             .matchedGeometryEffect(id: "morph", in: morph, isSource: !isEntering)
             .transition(reduceMotion ? .opacity : .scale(scale: 0.7, anchor: .leading).combined(with: .opacity))

@@ -68,6 +68,7 @@ final class StatusItemController {
             onTapIcon: { [weak self] in self?.iconTapped() },
             onTapPill: { [weak self] field in self?.focus(field) },
             onTapCountdown: { [weak self] in self?.toggleSessionPopover() },
+            onHoldEnd: { [weak self] in self?.holdToEnd() },
             onWidthChange: { [weak self] w in self?.widthChanged(w) }
         )
         let host = Self.makeHostingView(root)
@@ -356,14 +357,16 @@ final class StatusItemController {
         removeMonitors()
         closePresetPopover()
         stageGeneration += 1
-        let expected: TimeInterval
+        // Morph now; the manager catches up (pmset takes a moment). Project
+        // the session so the placeholder already has the final shape.
+        let now = Date()
+        let projected: Session
         if mode == .extend, let s = manager.session {
-            expected = s.remaining(at: Date()) + duration
+            projected = SessionMath.extended(s, by: duration, now: now, maxDuration: manager.config.maxDuration)
         } else {
-            expected = duration
+            projected = SessionMath.newSession(now: now, duration: duration, maxDuration: manager.config.maxDuration)
         }
-        // Morph now; the manager catches up (pmset takes a moment).
-        model.pendingCountdown = SessionMath.formatRemaining(SessionMath.clamp(expected, maxDuration: manager.config.maxDuration))
+        model.pendingCountdown = SessionMath.formatCountdown(remaining: projected.remaining(at: now), shape: projected.countdownShape)
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
             model.focusVisible = false
             model.visiblePills = 0
@@ -413,6 +416,13 @@ final class StatusItemController {
         Task { @MainActor in
             await manager.end(reason: .user)
         }
+    }
+
+    /// The status item's hold-to-end ring completed. Same path as the
+    /// popover's "End now"; ignored while a start is still in flight.
+    private func holdToEnd() {
+        guard manager.isActive else { return }
+        endNow()
     }
 
     private func customExtend() {

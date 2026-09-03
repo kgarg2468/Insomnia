@@ -21,7 +21,10 @@ final class SessionManager {
     private(set) var session: Session?
     private(set) var state: RuntimeState
     var config: Config
+    /// Minute-granularity remaining time for the popover ("2h 14m").
     private(set) var remainingText: String = ""
+    /// Live `H:MM:SS` countdown for the status item, updated at 1 Hz.
+    private(set) var countdownText: String = ""
     /// Last failure worth showing in the menu; cleared on the next success.
     private(set) var lastError: String?
 
@@ -187,6 +190,7 @@ final class SessionManager {
         session = nil
         scheduledDeadline = nil
         remainingText = ""
+        countdownText = ""
         do {
             try store.deleteSession()
         } catch {
@@ -405,29 +409,37 @@ final class SessionManager {
         }
     }
 
-    // MARK: Countdown (60 s redraw)
+    // MARK: Countdown (1 Hz redraw)
 
-    /// Stop the minute redraw. PR2's lid observer calls this on lid close.
+    /// Stop the countdown redraw. The lid observer calls this on lid close,
+    /// which is what keeps a 1 Hz timer from costing battery in the bag.
     func pauseCountdown() {
         countdownPaused = true
         countdownTimer?.invalidate()
         countdownTimer = nil
     }
 
-    /// Restart the minute redraw. PR2's lid observer calls this on lid open.
+    /// Restart the countdown redraw. The lid observer calls this on lid open.
     func resumeCountdown() {
         countdownPaused = false
         refreshCountdown()
         armCountdownTimer()
     }
 
-    /// Recompute `remainingText` from the injected clock.
+    /// Recompute `remainingText` and `countdownText` from the injected clock.
+    /// Each is only assigned when it changes, so observers are not woken every
+    /// second for the minute-granularity text.
     func refreshCountdown() {
         guard let s = session else {
             remainingText = ""
+            countdownText = ""
             return
         }
-        remainingText = SessionMath.formatRemaining(s.remaining(at: clock()))
+        let remaining = s.remaining(at: clock())
+        let minute = SessionMath.formatRemaining(remaining)
+        if remainingText != minute { remainingText = minute }
+        let second = SessionMath.formatCountdown(remaining: remaining, shape: s.countdownShape)
+        if countdownText != second { countdownText = second }
     }
 
     // MARK: Private
@@ -460,13 +472,16 @@ final class SessionManager {
         if !countdownPaused { armCountdownTimer() }
     }
 
+    /// 1 Hz redraw aligned to whole wall-clock seconds so the digits change
+    /// in step with the menu bar clock. `pauseCountdown()` stops it entirely
+    /// while the lid is closed.
     private func armCountdownTimer() {
         countdownTimer?.invalidate()
-        let first = SessionMath.nextMinuteBoundary(after: clock())
-        let timer = Timer(fire: first, interval: 60, repeats: true) { [weak self] _ in
+        let first = SessionMath.nextSecondBoundary(after: clock())
+        let timer = Timer(fire: first, interval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshCountdown() }
         }
-        timer.tolerance = 5
+        timer.tolerance = 0.1
         RunLoop.main.add(timer, forMode: .common)
         countdownTimer = timer
     }
