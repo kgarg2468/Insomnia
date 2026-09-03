@@ -31,20 +31,32 @@ lets your user run exactly four commands without a password:
 
 Then `open ~/Applications/Insomnia.app` and pick a duration from the menu.
 
+**First run:** run `./scripts/install.sh`, start a 30m session, close the lid,
+then open `~/Library/Logs/Insomnia/insomnia.log` and check that the session and
+lid-close actions were logged.
+
 ## Hotspot handoff
 
 For fast Wi-Fi to iPhone hotspot failover, set
 **System Settings > Wi-Fi > Ask to join hotspots** to **Automatically** once.
-Insomnia's own failover (hotspot SSID in `config.json`, password in the login
-Keychain as `insomnia-hotspot`) lands in a later release.
+Enter the hotspot SSID and password in Insomnia Settings. The password is stored
+as a generic password in the login Keychain under service `insomnia-hotspot`,
+and Insomnia uses an SSID-filtered CoreWLAN scan to rejoin without putting the
+password in process arguments.
+
+macOS requires Location Services permission before CoreWLAN can reveal Wi-Fi
+network names or find the configured SSID. Insomnia requests that permission on
+the first hotspot save (or when a session starts with a hotspot already
+configured), never merely because the app launched. If access was denied, use
+the Location row in Settings to open **Privacy & Security > Location Services**.
 
 ## Chrome
 
 Chromium browsers throttle windows macOS reports as occluded, which is every
-window once the lid is closed. If a browser-driving agent stalls with the lid
-shut, relaunch Chrome with
-`--disable-backgrounding-occluded-windows --disable-renderer-backgrounding`.
-Insomnia will offer a one-click "Relaunch unthrottled" in a later release.
+window once the lid is closed. Insomnia detects a running Chrome, Chromium, or
+Arc process missing `--disable-backgrounding-occluded-windows` or
+`--disable-renderer-backgrounding` and offers **Relaunch unthrottled** in the
+session popover. Relaunch preserves the browser profile arguments.
 
 ## What happens when the lid closes
 

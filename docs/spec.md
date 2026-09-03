@@ -59,10 +59,10 @@ change. They are the source of truth for reconcile and for the backstop.
   ("2h 14m"). The redraw timer ticks once per minute and stops entirely while
   the lid is closed.
 - Popover while active: ends-at time, Extend (+30m, +1h, +4h, custom), End now.
-- Session start: write session + state to disk first, then
-  `sudo pmset -a disablesleep 1`. If pmset fails, delete the session file and
-  surface the error. The journal always exists before sleep is disabled, so a
-  crash between the two steps leaves a record the backstop can act on.
+- Session start: write session + state to disk, arm the launchd backstop, and
+  only then run `sudo pmset -a disablesleep 1`. A session never starts unless
+  the backstop is armed. If pmset fails, delete the session file and surface
+  the error. The journal and backstop always exist before sleep is disabled.
 - Session end (timer, End now, Quit, battery floor, thermal critical):
   `sudo pmset -a disablesleep 0`, undo every RuntimeState entry, delete
   session, notify.
@@ -155,11 +155,17 @@ to stretch a low battery or cool a hot bag.
 ### 7. Network failover
 
 - `NWPathMonitor` on the Wi-Fi interface. Event-driven.
-- Path unsatisfied for more than 5 s: run
-  `networksetup -setairportnetwork <iface> <hotspotSSID> <password>`.
-  Password is read from the login Keychain (item `insomnia-hotspot`).
-  Retry with backoff (5 s, 10 s, 20 s, 30 s, then every 30 s) until the path
-  is satisfied or the session ends.
+- Path unsatisfied for more than 5 s: use CoreWLAN to run an SSID-filtered
+  scan, then join with `associate(to:password:)`. The password is read from
+  the login Keychain (generic-password service `insomnia-hotspot`, account =
+  SSID) and is never placed in process arguments. Retry with backoff (5 s,
+  10 s, 20 s, 30 s, then every 30 s) until the path is satisfied or the
+  session ends.
+- macOS 26 requires Location Services permission before CoreWLAN exposes SSIDs
+  or returns results for an SSID-filtered scan. Insomnia requests when-in-use
+  access when the hotspot is saved or a configured session starts, never at
+  launch. The real hotspot join still must be run on the Mac in the manual
+  test plan below.
 - Each outage is logged with start, end, and gap length to
   `~/Library/Logs/Insomnia/handoffs.log`. The menu shows the last gap.
 - Path satisfied again after a gap longer than `nudgeThreshold` (default 90 s):
@@ -192,7 +198,12 @@ Backstop, independent of the app:
   `StartCalendarInterval` that Insomnia rewrites to the current `endsAt` on every
   session start or extend.
 - It runs `scripts/backstop.sh`, which does step 1 above using only the JSON
-  files and the sudoers-allowed commands. No Swift, no Insomnia process needed.
+  files and the sudoers-allowed commands. `backstop.sh --force` deliberately
+  ends even a still-valid session during install or uninstall. No Swift, no
+  Insomnia process needed.
+- The script edits `state.json` in place. Successful restores are cleared;
+  failed sleep or Low Power Mode restores stay journaled for the next backstop
+  run or app reconcile, and unrelated state keys survive.
 - Covers: Insomnia crash, force quit, `kill -9`, reboot mid-session, login after
   a reboot.
 
@@ -292,27 +303,72 @@ transitions. If it feels like a web dropdown, it is wrong.
 harbor/insomnia/
   Package.swift
   Sources/Insomnia/
-    InsomniaApp.swift        MenuBarExtra, menu, settings window
-    SessionManager.swift   start / extend / end / reconcile
-    SleepGuard.swift       pmset via sudo, pmset -g parsing
-    LidObserver.swift      IOKit clamshell notifications
-    LidActions.swift       freeze / docker / mute, with undo
-    Freezer.swift          process tree discovery, SIGSTOP / SIGCONT, denylist
-    PowerMonitor.swift     battery %, watts on demand, thermal state
-    NetworkFailover.swift  NWPathMonitor, networksetup, Keychain, handoff log
-    TmuxNudge.swift
-    BrowserThrottle.swift  flag detection, relaunch unthrottled
-    AppNap.swift
-    AudioControl.swift     CoreAudio default output volume + mute
-    Notifier.swift
-    Config.swift           config.json
-    State.swift            session.json, state.json
-    Log.swift
+    InsomniaApp.swift
+    Model/
+      Config.swift
+      RuntimeState.swift
+      Session.swift
+    Store/
+      Paths.swift
+      Store.swift
+    Core/
+      AppServices.swift
+      FloorRules.swift
+      LaunchdBackstop.swift
+      LidActions.swift
+      Log.swift
+      ProcessControl.swift
+      SessionManager.swift
+      SessionMath.swift
+      Shell.swift
+      SleepGuard.swift
+    System/
+      AppNap.swift
+      AudioControl.swift
+      BrowserThrottle.swift
+      DockerRule.swift
+      Freezer.swift
+      HotspotJoiner.swift
+      LidObserver.swift
+      LocationPermission.swift
+      NetworkFailover.swift
+      Notifier.swift
+      PowerMonitor.swift
+      ShellTimeout.swift
+      TmuxNudge.swift
+    UI/
+      Chip.swift
+      DurationInput.swift
+      HotspotSecretStore.swift
+      LiveStatusSource.swift
+      MenuBarModel.swift
+      Motion.swift
+      PillView.swift
+      PresetPopoverView.swift
+      ReminderScheduler.swift
+      SessionPopoverView.swift
+      SettingsView.swift
+      StatusItemController.swift
+      StatusRootView.swift
+      StatusSource.swift
   Tests/InsomniaTests/
-    SessionMathTests       durations, extend, expiry
-    ReconcileTests         every RuntimeState combination restores cleanly
-    FreezerTests           denylist, process-tree grouping (mocked)
-    ConfigTests
+    BrowserThrottleTests.swift
+    ConfigTests.swift
+    DurationInputTests.swift
+    FailoverMachineTests.swift
+    FloorRulesTests.swift
+    FreezerTests.swift
+    HardwarePortsParserTests.swift
+    IntegrationWiringTests.swift
+    LaunchdBackstopTests.swift
+    LidActionsTests.swift
+    PmsetParsingTests.swift
+    ReconcileLidGatingTests.swift
+    ReconcileTests.swift
+    SessionMathTests.swift
+    StoreTests.swift
+    TestSupport.swift
+    UIStatusTests.swift
   scripts/
     install.sh             build, bundle, codesign, sudoers, launchd, login item
     uninstall.sh           reverse all of the above, restore sleep
@@ -334,27 +390,32 @@ Then set the hotspot in Settings, pick a freeze list, and start a session.
 
 Run on the real MacBook Pro before calling it done.
 
-1. **Stays awake.** Start 30m session, close lid, wait 5 minutes, ping the Mac
+1. **First launch.** Confirm the status item is visible to the right of the
+   notch on first launch.
+2. **Stays awake.** Start 30m session, close lid, wait 5 minutes, ping the Mac
    from the phone or check the heartbeat log. Open lid: session still running,
    sleep still disabled until end.
-2. **Restores.** End now → `pmset -g` shows no `SleepDisabled`. Quit → same.
+3. **Restores.** End now → `pmset -g` shows no `SleepDisabled`. Quit → same.
    Timer expiry → same, plus notification.
-3. **Backstop.** Start session, `kill -9` Insomnia, wait for `endsAt` → sleep
+4. **Backstop.** Start session, `kill -9` Insomnia, wait for `endsAt` → sleep
    restored by launchd. Reboot mid-session → restored at login.
-4. **Freeze.** Slack and WhatsApp on list, close lid, `ps -o stat` shows `T`
+5. **Freeze.** Slack and WhatsApp on list, close lid, `ps -o stat` shows `T`
    for their whole trees. Open lid → running, reconnected, no relaunch.
-5. **Docker rule.** No containers → paused on close. One container → untouched.
-6. **Mute.** Volume 60%, close lid → muted. Open → 60%, unmuted.
-7. **Chrome occlusion.** Lid closed, Playwright attached to headed Chrome:
+6. **Docker rule.** No containers → paused on close. One container → untouched.
+7. **Mute.** Volume 60%, close lid → muted. Open → 60%, unmuted.
+8. **Chrome occlusion.** Lid closed, Playwright attached to headed Chrome:
    read `document.visibilityState` and measure `setInterval` drift. Repeat with
    both flags. Decide whether feature 5's browser section stays.
-8. **Handoff.** Turn off the router or walk away, watch `handoffs.log`, confirm
-   hotspot joined within ~10 s and a Claude Code turn in flight completes.
-9. **Nudge.** Gap forced above threshold → tagged tmux pane receives
+9. **Handoff and Location.** Save a hotspot for the first time and confirm the
+   Location permission prompt appears. After granting, confirm the popover
+   shows the SSID. Turn off the router or walk away, watch `handoffs.log`, and
+   confirm the hotspot join works within ~10 s and a Claude Code turn in flight
+   completes.
+10. **Nudge.** Gap forced above threshold → tagged tmux pane receives
    "continue", notification posted.
-10. **Floors.** Set `lowPowerFloor` above current charge → Low Power Mode on.
+11. **Floors.** Set `lowPowerFloor` above current charge → Low Power Mode on.
     Plug in charger → off. Set `endFloor` above current charge → session ends.
-11. **Thermal.** Simulate with a CPU burner; `serious` → LPM on, back to
+12. **Thermal.** Simulate with a CPU burner; `serious` → LPM on, back to
     `nominal` → off.
 
 ## Open decisions (defaults chosen, change if you disagree)
