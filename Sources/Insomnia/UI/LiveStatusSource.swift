@@ -21,8 +21,14 @@ final class LiveStatusSource: StatusSource {
     var throttledBrowsers: [String] { services.status.throttledBrowsers }
     var locationPermission: LocationPermission { services.locationPermission }
 
-    func refreshOnDemand() async {
-        await services.refreshOnDemand()
+    func refreshOnDemand() {
+        Task { @MainActor [services] in
+            await services.refreshOnDemand()
+        }
+    }
+
+    func refreshInstant() {
+        services.refreshInstant()
     }
 
     func instantWatts() -> Double? {

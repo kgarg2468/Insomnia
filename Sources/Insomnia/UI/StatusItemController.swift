@@ -26,10 +26,6 @@ final class StatusItemController: NSObject {
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
 
-    /// The right-click menu while it is up, so a late status refresh knows
-    /// whether there is still something to refill.
-    private weak var openMenu: NSMenu?
-
     /// Whoever was frontmost before we activated for typing; reactivated on collapse.
     private var previousApp: NSRunningApplication?
     /// Invalidates in-flight stagger steps when expand/collapse interleave.
@@ -219,9 +215,13 @@ final class StatusItemController: NSObject {
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
             model.focusVisible = false
         }
-        let target = Self.collapseTarget(sessionActive: manager.isActive)
         stagePills(to: 0) { [weak self] in
             guard let self else { return }
+            // Read the session here, not before the stagger: the pills take a
+            // moment to retract and the session can end (or a restored one can
+            // land) in that window, which would make a target captured up
+            // front install a countdown for a session that is already over.
+            let target = Self.collapseTarget(sessionActive: self.manager.isActive)
             withAnimation(Motion.base(reduceMotion: self.reduceMotion)) {
                 self.model.phase = target
             }
@@ -407,6 +407,14 @@ final class StatusItemController: NSObject {
     /// `statusItem.menu`, which would swallow the left click the pills need.
     private func showMenu() {
         guard let button else { return }
+        // The lid, the battery and the watts are read right here, so the menu
+        // opens on what the machine is doing now. The SSID and the throttled
+        // browser list are whatever the last scan found: both have to be
+        // awaited, and an open NSMenu blocks the main actor, so there is no
+        // moment at which they could be filled into a menu that is already up.
+        // Kick that scan off anyway, for the next opening.
+        status.refreshInstant()
+        status.refreshOnDemand()
         let menu = StatusMenu.menu(
             menuItems(),
             target: self,
@@ -414,17 +422,6 @@ final class StatusItemController: NSObject {
             quit: #selector(menuQuit),
             relaunchBrowser: #selector(menuRelaunchBrowser(_:))
         )
-        menu.delegate = self
-        openMenu = menu
-        // The refresh reads the SSID and rescans the browsers, which takes long
-        // enough to be felt, so the menu opens on the last snapshot instead of
-        // waiting. Between sessions nothing observes the machine, so that
-        // snapshot can be hours old: refill the menu while it is still up.
-        Task { @MainActor [weak self] in
-            await self?.status.refreshOnDemand()
-            guard let self, self.openMenu === menu else { return }
-            self.repopulate(menu)
-        }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
     }
 
@@ -449,18 +446,6 @@ final class StatusItemController: NSObject {
             ),
             throttledBrowsers: status.throttledBrowsers,
             error: manager.lastError
-        )
-    }
-
-    /// Swap an open menu's contents for the status as it now stands.
-    private func repopulate(_ menu: NSMenu) {
-        StatusMenu.populate(
-            menu,
-            with: menuItems(),
-            target: self,
-            settings: #selector(menuOpenSettings),
-            quit: #selector(menuQuit),
-            relaunchBrowser: #selector(menuRelaunchBrowser(_:))
         )
     }
 
@@ -576,12 +561,6 @@ final class StatusItemController: NSObject {
             // Swallow stray printable keys so nothing beeps while typing a time.
             return ch.isLetter || ch.isPunctuation || ch == " "
         }
-    }
-}
-
-extension StatusItemController: NSMenuDelegate {
-    func menuDidClose(_ menu: NSMenu) {
-        if openMenu === menu { openMenu = nil }
     }
 }
 

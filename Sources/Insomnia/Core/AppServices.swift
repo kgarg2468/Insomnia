@@ -167,15 +167,22 @@ final class AppServices {
         }
     }
 
-    /// Watts + SSID + battery + browser flags; the popover calls this.
-    func refreshOnDemand() async {
+    /// The part of the refresh that reads straight out of the system: watts,
+    /// battery, lid. Split out so a caller that cannot await — the right-click
+    /// menu, which blocks the main actor once it is up — still opens on these.
+    func refreshInstant() {
         status.watts = instantWatts()
         power.refreshBattery()
         syncPower()
         if let now = LidObserver.readClamshellState() { status.lidClosed = now }
+        syncState()
+    }
+
+    /// Watts + SSID + battery + browser flags; the popover calls this.
+    func refreshOnDemand() async {
+        refreshInstant()
         status.wifiSSID = await currentSSID()
         await refreshBrowsers()
-        syncState()
     }
 
     /// Instant battery power, read only when requested by the UI.
