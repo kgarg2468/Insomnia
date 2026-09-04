@@ -26,6 +26,10 @@ final class StatusItemController: NSObject {
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
 
+    /// The right-click menu while it is up, so a late status refresh knows
+    /// whether there is still something to refill.
+    private weak var openMenu: NSMenu?
+
     /// Whoever was frontmost before we activated for typing; reactivated on collapse.
     private var previousApp: NSRunningApplication?
     /// Invalidates in-flight stagger steps when expand/collapse interleave.
@@ -140,22 +144,36 @@ final class StatusItemController: NSObject {
 
     private func managerChanged() {
         reminder.sync(endsAt: manager.session?.endsAt)
-        switch (manager.isActive, model.phase) {
+        guard let next = Self.phase(forActive: manager.isActive, phase: model.phase) else { return }
+        switch next {
+        case .idle, .running:
+            withAnimation(Motion.base(reduceMotion: reduceMotion)) {
+                model.pendingCountdown = nil
+                model.phase = next
+            }
+        case .entering:
+            // Only the mode of the open pills changes, so nothing to animate.
+            model.phase = next
+        }
+    }
+
+    /// The phase a manager-side change puts the UI in, or nil to leave it
+    /// alone. Pure so the transitions can be checked without a status item.
+    static func phase(forActive active: Bool, phase: MenuBarModel.Phase) -> MenuBarModel.Phase? {
+        switch (active, phase) {
         case (true, .idle):
-            withAnimation(Motion.base(reduceMotion: reduceMotion)) {
-                model.pendingCountdown = nil
-                model.phase = .running
-            }
+            .running
         case (false, .running):
-            withAnimation(Motion.base(reduceMotion: reduceMotion)) {
-                model.pendingCountdown = nil
-                model.phase = .idle
-            }
+            .idle
         case (false, .entering(.extend)):
             // The session ended under the extend pills: they now start a new one.
-            model.phase = .entering(.start)
+            .entering(.start)
+        case (true, .entering(.start)):
+            // A session came up while the start pills were open (the user
+            // reopened them before the start finished): they now extend it.
+            .entering(.extend)
         default:
-            break
+            nil
         }
     }
 
@@ -194,14 +212,14 @@ final class StatusItemController: NSObject {
         installMonitors()
     }
 
-    /// Collapse to idle, or back to the countdown when extending.
+    /// Collapse to idle, or back to the countdown when a session is running.
     func collapse() {
-        guard case let .entering(mode) = model.phase else { return }
+        guard model.phase.isEntering else { return }
         removeMonitors()
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
             model.focusVisible = false
         }
-        let target: MenuBarModel.Phase = (mode == .extend && manager.isActive) ? .running : .idle
+        let target = Self.collapseTarget(sessionActive: manager.isActive)
         stagePills(to: 0) { [weak self] in
             guard let self else { return }
             withAnimation(Motion.base(reduceMotion: self.reduceMotion)) {
@@ -209,6 +227,13 @@ final class StatusItemController: NSObject {
             }
         }
         restorePreviousApp()
+    }
+
+    /// Where the pills land when dismissed. A live session always goes back
+    /// to its countdown, whichever mode the pills were opened in: start-mode
+    /// pills can outlive the start they were typed into.
+    static func collapseTarget(sessionActive: Bool) -> MenuBarModel.Phase {
+        sessionActive ? .running : .idle
     }
 
     /// Step `visiblePills` towards `target`, one pill per `Motion.stagger`.
@@ -370,8 +395,9 @@ final class StatusItemController: NSObject {
     }
 
     /// Clicking the cup or the countdown while a session runs: reopen the
-    /// pills, this time to extend.
+    /// pills, this time to extend. Ignored while a start is still in flight.
     private func customExtend() {
+        guard manager.isActive else { return }
         expand(mode: .extend)
     }
 
@@ -381,8 +407,29 @@ final class StatusItemController: NSObject {
     /// `statusItem.menu`, which would swallow the left click the pills need.
     private func showMenu() {
         guard let button else { return }
-        status.refreshOnDemand()
-        let items = StatusMenu.items(
+        let menu = StatusMenu.menu(
+            menuItems(),
+            target: self,
+            settings: #selector(menuOpenSettings),
+            quit: #selector(menuQuit),
+            relaunchBrowser: #selector(menuRelaunchBrowser(_:))
+        )
+        menu.delegate = self
+        openMenu = menu
+        // The refresh reads the SSID and rescans the browsers, which takes long
+        // enough to be felt, so the menu opens on the last snapshot instead of
+        // waiting. Between sessions nothing observes the machine, so that
+        // snapshot can be hours old: refill the menu while it is still up.
+        Task { @MainActor [weak self] in
+            await self?.status.refreshOnDemand()
+            guard let self, self.openMenu === menu else { return }
+            self.repopulate(menu)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+    }
+
+    private func menuItems() -> [StatusMenu.Item] {
+        StatusMenu.items(
             sessionActive: manager.isActive,
             sleepHeld: manager.state.sleepDisabledByUs,
             machine: StatusLines.machine(
@@ -403,14 +450,18 @@ final class StatusItemController: NSObject {
             throttledBrowsers: status.throttledBrowsers,
             error: manager.lastError
         )
-        let menu = StatusMenu.menu(
-            items,
+    }
+
+    /// Swap an open menu's contents for the status as it now stands.
+    private func repopulate(_ menu: NSMenu) {
+        StatusMenu.populate(
+            menu,
+            with: menuItems(),
             target: self,
             settings: #selector(menuOpenSettings),
             quit: #selector(menuQuit),
             relaunchBrowser: #selector(menuRelaunchBrowser(_:))
         )
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
     }
 
     @objc private func menuRelaunchBrowser(_ sender: NSMenuItem) {
@@ -525,6 +576,12 @@ final class StatusItemController: NSObject {
             // Swallow stray printable keys so nothing beeps while typing a time.
             return ch.isLetter || ch.isPunctuation || ch == " "
         }
+    }
+}
+
+extension StatusItemController: NSMenuDelegate {
+    func menuDidClose(_ menu: NSMenu) {
+        if openMenu === menu { openMenu = nil }
     }
 }
 

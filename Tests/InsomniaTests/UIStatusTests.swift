@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import Insomnia
 
@@ -96,7 +97,7 @@ final class UIStatusTests: XCTestCase {
     }
 
     @MainActor
-    func testPlaceholderReportsNothing() {
+    func testPlaceholderReportsNothing() async {
         let s = PlaceholderStatus()
         XCTAssertFalse(s.lidClosed)
         XCTAssertNil(s.batteryPercent)
@@ -107,7 +108,7 @@ final class UIStatusTests: XCTestCase {
         XCTAssertFalse(s.dockerPaused)
         XCTAssertTrue(s.throttledBrowsers.isEmpty)
         XCTAssertNil(s.instantWatts())
-        s.refreshOnDemand()
+        await s.refreshOnDemand()
         s.relaunchUnthrottled("Chrome")
     }
 
@@ -228,5 +229,66 @@ final class UIStatusTests: XCTestCase {
             MenuBarModel.commitAction(mode: .start, typed: nil, defaultPreset: 0),
             .reject
         )
+    }
+
+    /// The pills can be in start mode over a live session: the user reopened
+    /// them while the start was still in flight. Collapsing then has to show
+    /// the countdown, not pretend the Mac is free to sleep.
+    @MainActor
+    func testCollapsingPillsLandsOnTheCountdownWheneverASessionIsActive() {
+        XCTAssertEqual(StatusItemController.collapseTarget(sessionActive: true), .running)
+        XCTAssertEqual(StatusItemController.collapseTarget(sessionActive: false), .idle)
+    }
+
+    @MainActor
+    func testAStartLandingUnderTheStartPillsTurnsThemIntoExtendPills() {
+        XCTAssertEqual(StatusItemController.phase(forActive: true, phase: .entering(.start)), .entering(.extend))
+        XCTAssertEqual(StatusItemController.phase(forActive: false, phase: .entering(.extend)), .entering(.start))
+        XCTAssertEqual(StatusItemController.phase(forActive: true, phase: .idle), .running)
+        XCTAssertEqual(StatusItemController.phase(forActive: false, phase: .running), .idle)
+        // Nothing to do when the phase already matches the manager.
+        XCTAssertNil(StatusItemController.phase(forActive: true, phase: .running))
+        XCTAssertNil(StatusItemController.phase(forActive: false, phase: .idle))
+    }
+
+    /// The on-demand refresh lands after the menu is already up, so the menu
+    /// has to take the fresh lines in place rather than keep the snapshot it
+    /// opened with.
+    @MainActor
+    func testRepopulatingAnOpenMenuReplacesTheStaleLines() {
+        let quit = #selector(NSApplication.terminate(_:))
+        let stale = StatusMenu.items(
+            sessionActive: true,
+            sleepHeld: true,
+            machine: "Lid: open",
+            actions: nil,
+            throttledBrowsers: [],
+            error: nil
+        )
+        let menu = StatusMenu.menu(stale, target: nil, settings: quit, quit: quit, relaunchBrowser: quit)
+        XCTAssertEqual(titles(of: menu), stale.map(\.title))
+
+        let fresh = StatusMenu.items(
+            sessionActive: true,
+            sleepHeld: true,
+            machine: "Lid: closed",
+            actions: nil,
+            throttledBrowsers: ["Chrome"],
+            error: nil
+        )
+        StatusMenu.populate(menu, with: fresh, target: nil, settings: quit, quit: quit, relaunchBrowser: quit)
+
+        XCTAssertEqual(titles(of: menu), fresh.map(\.title))
+        XCTAssertTrue(titles(of: menu).contains("Relaunch Chrome unthrottled"))
+        XCTAssertFalse(titles(of: menu).contains("Lid: open"))
+        // Refilling replaces the items rather than appending to them.
+        XCTAssertEqual(titles(of: menu).filter { $0 == StatusMenu.quitTitle }.count, 1)
+    }
+
+    /// Status lines carry their text in `attributedTitle` so they can be
+    /// smaller and orange; the actions use the plain title.
+    @MainActor
+    private func titles(of menu: NSMenu) -> [String] {
+        menu.items.map { $0.attributedTitle?.string ?? $0.title }
     }
 }

@@ -18,7 +18,8 @@ protocol StatusSource: AnyObject, Observable {
     var throttledBrowsers: [String] { get }
 
     /// Called when the menu opens; observers refresh anything not pushed.
-    func refreshOnDemand()
+    /// Async so the caller can repopulate the open menu once it lands.
+    func refreshOnDemand() async
     /// Battery draw read on demand from AppleSmartBattery. Never polled.
     func instantWatts() -> Double?
     func relaunchUnthrottled(_ name: String)
@@ -39,7 +40,7 @@ final class PlaceholderStatus: StatusSource {
 
     init() {}
 
-    func refreshOnDemand() {}
+    func refreshOnDemand() async {}
     func instantWatts() -> Double? { nil }
     func relaunchUnthrottled(_ name: String) {}
 }

@@ -84,6 +84,23 @@ enum StatusMenu {
         relaunchBrowser: Selector
     ) -> NSMenu {
         let menu = NSMenu()
+        populate(menu, with: items, target: target, settings: settings, quit: quit, relaunchBrowser: relaunchBrowser)
+        return menu
+    }
+
+    /// Replace a menu's contents with `items`. Split out from `menu(_:…)` so
+    /// an already-open menu can be refilled once the on-demand status lands;
+    /// NSMenu allows that while it is tracking.
+    @MainActor
+    static func populate(
+        _ menu: NSMenu,
+        with items: [Item],
+        target: AnyObject?,
+        settings: Selector,
+        quit: Selector,
+        relaunchBrowser: Selector
+    ) {
+        menu.removeAllItems()
         menu.autoenablesItems = false
         let lineFont = NSFont.menuFont(ofSize: NSFont.smallSystemFontSize)
         for item in items {
@@ -111,7 +128,6 @@ enum StatusMenu {
                 menu.addItem(entry)
             }
         }
-        return menu
     }
 
     @MainActor
