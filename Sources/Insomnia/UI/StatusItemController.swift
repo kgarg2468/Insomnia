@@ -25,6 +25,8 @@ final class StatusItemController: NSObject {
     private var keyMonitor: Any?
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
+    /// Holds keyboard focus while the pills are open; see `KeyCatcherPanel`.
+    private var keyCatcher: KeyCatcherPanel?
 
     /// Whoever was frontmost before we activated for typing; reactivated on collapse.
     private var previousApp: NSRunningApplication?
@@ -195,8 +197,8 @@ final class StatusItemController: NSObject {
 
     func expand(mode: MenuBarModel.Mode) {
         previousApp = NSWorkspace.shared.frontmostApplication
-        NSApp.activate(ignoringOtherApps: true)
-
+        // The activation happens in `installMonitors()`, once there is a
+        // window for it to make key.
         model.input = DurationInput()
         model.focused = .hours
         model.focusVisible = false
@@ -370,7 +372,6 @@ final class StatusItemController: NSObject {
     private func reopenAfterFailure(mode: MenuBarModel.Mode) {
         let keep = model.input
         previousApp = NSWorkspace.shared.frontmostApplication
-        NSApp.activate(ignoringOtherApps: true)
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
             model.phase = .entering(mode)
             model.input = keep
@@ -484,6 +485,16 @@ final class StatusItemController: NSObject {
 
     private func installMonitors() {
         removeMonitors()
+        // The key monitor below is local, so it only fires while this app
+        // holds keyboard focus, which an accessory app with no window never
+        // does. Put the catcher panel up first and activate onto it: ordering
+        // a window front in an inactive app only makes it key once the app
+        // activates, so the activation has to come second.
+        let panel = KeyCatcherPanel()
+        if let button { panel.move(toStatusButton: button) }
+        panel.makeKeyAndOrderFront(nil)
+        keyCatcher = panel
+        NSApp.activate(ignoringOtherApps: true)
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             // Local monitors always run on the main thread.
             let consumed = MainActor.assumeIsolated { self?.handleKey(event) ?? false }
@@ -507,13 +518,17 @@ final class StatusItemController: NSObject {
         keyMonitor = nil
         localMouseMonitor = nil
         globalMouseMonitor = nil
+        keyCatcher?.orderOut(nil)
+        keyCatcher = nil
     }
 
     /// A click anywhere in this app that is not the status item collapses
     /// the pills.
     private func handleLocalMouse(window: NSWindow?) {
         guard model.phase.isEntering else { return }
-        if let w = window, w === button?.window { return }
+        // The catcher panel ignores the mouse so it should never be reported
+        // here, but it is ours: it must not dismiss the pills either.
+        if let w = window, w === button?.window || w === keyCatcher { return }
         collapse()
     }
 

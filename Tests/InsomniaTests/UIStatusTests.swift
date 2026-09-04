@@ -282,4 +282,48 @@ final class UIStatusTests: XCTestCase {
         XCTAssertEqual(controller.model.phase, .idle)
         XCTAssertEqual(controller.model.visiblePills, 0)
     }
+
+    /// The digits are read by a local key monitor, which only sees events sent
+    /// to a window this app owns. The catcher panel is that window, and the
+    /// whole fix rests on it being able to take key without taking a click.
+    @MainActor
+    func testTheKeyCatcherPanelTakesKeyStatusWithoutTakingClicks() {
+        _ = NSApplication.shared
+        let panel = KeyCatcherPanel()
+
+        XCTAssertTrue(panel.canBecomeKey)
+        XCTAssertTrue(panel.ignoresMouseEvents)
+        XCTAssertEqual(panel.level, .statusBar)
+        XCTAssertTrue(panel.collectionBehavior.contains(.canJoinAllSpaces))
+        XCTAssertTrue(panel.collectionBehavior.contains(.ignoresCycle))
+        XCTAssertFalse(panel.isReleasedWhenClosed)
+        XCTAssertFalse(panel.hidesOnDeactivate)
+    }
+
+    /// Opening the pills has to put up the window that keyboard focus hangs
+    /// off, and closing them has to take it away again.
+    ///
+    /// Key status itself cannot be asserted here: the test binary runs as a
+    /// background-only process (`.prohibited`), which the window server never
+    /// activates, so `NSApp.keyWindow` stays nil no matter what the app does.
+    /// What is pinned instead is the panel's lifecycle, on top of the
+    /// `canBecomeKey` contract above.
+    @MainActor
+    func testOpeningThePillsPutsUpTheKeyCatcherAndCollapsingTakesItDown() {
+        _ = NSApplication.shared
+        let h = Harness()
+        defer { h.home.destroy() }
+        let controller = StatusItemController(manager: h.makeManager(), status: PlaceholderStatus(), showSettings: {})
+        XCTAssertFalse(NSApp.windows.contains { $0 is KeyCatcherPanel && $0.isVisible })
+
+        controller.expand(mode: .start)
+
+        let panel = NSApp.windows.compactMap { $0 as? KeyCatcherPanel }.first { $0.isVisible }
+        XCTAssertNotNil(panel)
+
+        controller.collapse()
+
+        XCTAssertFalse(panel?.isVisible ?? true)
+        XCTAssertFalse(NSApp.windows.contains { $0 is KeyCatcherPanel && $0.isVisible })
+    }
 }
