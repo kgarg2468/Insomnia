@@ -257,7 +257,12 @@ final class UIStatusTests: XCTestCase {
     /// target has to be read when the pills land, so the countdown does not
     /// come back for a session that is already over.
     @MainActor
-    func testCollapseReadsTheSessionWhenThePillsLandNotWhenTheyStartRetracting() async {
+    func testCollapseReadsTheSessionWhenThePillsLandNotWhenTheyStartRetracting() async throws {
+        // Under Reduce Motion every stagger delay is zero, so the pills can
+        // land before the session ends and the sequence this pins never
+        // happens — the test would pass without exercising the fix. Skip
+        // rather than pretend.
+        try XCTSkipIf(Motion.reduceMotion, "needs a non-zero pill stagger")
         _ = NSApplication.shared
         let h = Harness()
         defer { h.home.destroy() }

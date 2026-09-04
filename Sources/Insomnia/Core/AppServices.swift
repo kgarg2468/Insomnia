@@ -10,8 +10,6 @@ final class SystemStatus {
     var lidClosed: Bool = false
     var batteryPercent: Int?
     var isCharging: Bool = false
-    /// Signed watts (negative while discharging); only set by refreshOnDemand.
-    var watts: Double?
     var thermalState: ProcessInfo.ThermalState = .nominal
     var wifiSSID: String?
     /// Length of the last Wi-Fi outage this session, in seconds.
@@ -167,18 +165,19 @@ final class AppServices {
         }
     }
 
-    /// The part of the refresh that reads straight out of the system: watts,
-    /// battery, lid. Split out so a caller that cannot await — the right-click
+    /// The part of the refresh that reads straight out of the system: battery
+    /// and lid. Split out so a caller that cannot await — the right-click
     /// menu, which blocks the main actor once it is up — still opens on these.
+    /// Watts are not read here: the menu calls `instantWatts()` itself.
     func refreshInstant() {
-        status.watts = instantWatts()
         power.refreshBattery()
         syncPower()
         if let now = LidObserver.readClamshellState() { status.lidClosed = now }
         syncState()
     }
 
-    /// Watts + SSID + battery + browser flags; the popover calls this.
+    /// Battery + lid + SSID + browser flags. The menu kicks this off for the
+    /// next opening, since the last two have to be awaited.
     func refreshOnDemand() async {
         refreshInstant()
         status.wifiSSID = await currentSSID()
