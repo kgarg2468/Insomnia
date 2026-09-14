@@ -28,7 +28,7 @@
 - Consumes: approved Warm Ceramic visual specification
 - Produces: a 1024×1024 PNG master and a valid macOS ICNS file named `AppIcon.icns`
 
-- [ ] **Step 1: Record the missing-asset failure**
+- [x] **Step 1: Record the missing-asset failure**
 
 Run:
 
@@ -38,7 +38,7 @@ test -f Resources/AppIcon-1024.png && test -f Resources/AppIcon.icns
 
 Expected: FAIL because neither icon asset exists.
 
-- [ ] **Step 2: Generate the approved master artwork**
+- [x] **Step 2: Generate the approved master artwork**
 
 Use the built-in image-generation tool with this production prompt:
 
@@ -46,23 +46,23 @@ Use the built-in image-generation tool with this production prompt:
 Use case: logo-brand
 Asset type: macOS application icon master, 1024 by 1024 pixels
 Primary request: a simple, polished coffee-cup app icon for an app named Insomnia
-Scene/backdrop: a warm ivory macOS-style rounded-square icon field, filled edge to edge
+Scene/backdrop: a warm ivory macOS-style rounded-square icon field with genuinely transparent exterior corners
 Subject: one centered white ceramic coffee cup, espresso-brown outline, two soft curls of steam, and a restrained saucer line
 Style/medium: minimal premium 3D/vector hybrid, tactile ceramic, Apple-like restraint without copying any Apple logo or product icon
 Composition/framing: centered, large simple silhouette, generous optical padding, readable at 16 px
 Lighting/mood: soft diffuse studio light, calm and warm
 Color palette: warm ivory, cream white, espresso brown
-Constraints: no text, no letters, no Apple marks, no extra objects, no watermark, no transparent exterior; crisp edges and strong small-size contrast
+Constraints: no text, no letters, no Apple marks, no extra objects, no watermark; preserve real alpha outside the rounded-square field; crisp edges and strong small-size contrast
 Avoid: photorealistic scene, busy texture, thin fragile lines, harsh shadows, gradients that muddy the silhouette
 ```
 
 Inspect the output, copy the selected artifact into `Resources/AppIcon-1024.png`, and confirm it is exactly 1024×1024 pixels.
 
-- [ ] **Step 3: Derive the standard iconset and ICNS**
+- [x] **Step 3: Derive the standard iconset and ICNS**
 
 Create temporary PNG renditions at 16, 32, 64, 128, 256, 512, and 1024 px using `sips`, with standard `icon_16x16.png` through `icon_512x512@2x.png` names. Run `iconutil -c icns` and save the result as `Resources/AppIcon.icns`.
 
-- [ ] **Step 4: Validate both assets**
+- [x] **Step 4: Validate both assets**
 
 Run:
 
@@ -74,7 +74,7 @@ iconutil -c iconset Resources/AppIcon.icns -o /tmp/insomnia-app-icon.iconset
 
 Expected: all commands exit 0 and the extracted iconset contains all standard representations.
 
-- [ ] **Step 5: Commit the artwork**
+- [x] **Step 5: Commit the artwork**
 
 ```bash
 git add Resources/AppIcon-1024.png Resources/AppIcon.icns
@@ -92,7 +92,7 @@ git commit -m "feat: add warm ceramic app icon"
 - Consumes: `Resources/AppIcon.icns` from Task 1
 - Produces: app bundles declaring `CFBundleIconFile=AppIcon` with the corresponding ICNS copied to `Contents/Resources/AppIcon.icns`
 
-- [ ] **Step 1: Verify bundle metadata and resource wiring are absent**
+- [x] **Step 1: Verify bundle metadata and resource wiring are absent**
 
 Run:
 
@@ -103,7 +103,7 @@ grep -Fq 'Resources/AppIcon.icns' scripts/install.sh
 
 Expected: FAIL because the plist key and installer copy step do not exist.
 
-- [ ] **Step 2: Add the icon metadata and bundle copy**
+- [x] **Step 2: Add the icon metadata and bundle copy**
 
 Add this property to `Resources/Info.plist`:
 
@@ -114,11 +114,11 @@ Add this property to `Resources/Info.plist`:
 
 During bundle assembly, create `Insomnia.app/Contents/Resources` and copy `Resources/AppIcon.icns` into it before code signing.
 
-- [ ] **Step 3: Document the branded icon**
+- [x] **Step 3: Document the branded icon**
 
 Add a short README note that the installer bundles the Warm Ceramic icon while the menu bar continues to use its monochrome status mark.
 
-- [ ] **Step 4: Verify packaging without privileged installation**
+- [x] **Step 4: Verify packaging without privileged installation**
 
 Run a temporary bundle assembly using the release binary, `Resources/Info.plist`, and `Resources/AppIcon.icns`; then run:
 
@@ -139,7 +139,7 @@ rm -rf "$ICON_TEST_ROOT"
 
 Expected: all commands exit 0.
 
-- [ ] **Step 5: Run the complete test suite**
+- [x] **Step 5: Run the complete test suite**
 
 Run:
 
@@ -149,7 +149,7 @@ swift test
 
 Expected: 178 tests pass with 0 failures.
 
-- [ ] **Step 6: Commit the integration**
+- [x] **Step 6: Commit the integration**
 
 ```bash
 git add Resources/Info.plist scripts/install.sh README.md

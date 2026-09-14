@@ -32,9 +32,10 @@ if pgrep -x Insomnia >/dev/null 2>&1; then
   sleep 2
 fi
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Insomnia"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 codesign --force --sign - --deep "$APP"
 echo "signed $(codesign -dv "$APP" 2>&1 | grep -i identifier || true)"

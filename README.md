@@ -8,6 +8,10 @@ same JSON journal and undoes everything.
 Personal tool. Ad-hoc signed, not distributed. Full design in
 [`docs/spec.md`](docs/spec.md).
 
+The installed app uses the warm ceramic coffee-cup icon in Finder and
+Spotlight. Its menu-bar status item stays monochrome so it follows the system
+menu-bar appearance.
+
 ## Install
 
 Requires macOS 26 and Xcode 26 (Swift 6.3).
