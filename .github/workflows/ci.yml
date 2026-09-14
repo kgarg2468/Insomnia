@@ -32,6 +32,30 @@ jobs:
           xcodebuild -version
           swift --version
 
+      - name: Install tmux
+        # The hosted macOS image has no tmux, so the tmux integration tests skip.
+        # Homebrew is preinstalled; on arm64 it links into /opt/homebrew/bin,
+        # which is a path TmuxNudge probes. Unprivileged, runner-only install.
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          HOMEBREW_NO_ENV_HINTS: "1"
+        run: |
+          if ! brew list --versions tmux >/dev/null 2>&1; then
+            brew install tmux
+          fi
+          tmux_bin="$(brew --prefix)/bin/tmux"
+          case "$tmux_bin" in
+            /opt/homebrew/bin/tmux|/usr/local/bin/tmux) ;;
+            *)
+              echo "tmux linked at unexpected path: $tmux_bin" >&2
+              exit 1
+              ;;
+          esac
+          test -x "$tmux_bin"
+          echo "tmux: $tmux_bin"
+          "$tmux_bin" -V
+
       - name: Run tests
         run: swift test
 
