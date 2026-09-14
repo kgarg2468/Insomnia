@@ -778,18 +778,18 @@ final class RecoveryScriptTests: XCTestCase {
 
     func testCommandThatIgnoresSigtermIsNeverKilledAndKeepsTheLock() throws {
         // A "terminated" signal is not a dead child. The fake ignores TERM and
-        // lives ~5 s; the script must return promptly but leave the lock held
-        // until the command really ends, and must not SIGKILL it (that would
-        // orphan a root pmset outside the transaction).
+        // lives until this test releases it; the script must return while it
+        // is still alive, leave the lock held until the command really ends,
+        // and must not SIGKILL it (that would orphan a root pmset outside the
+        // transaction).
         try fx.writeSession(endsAt: Date(timeIntervalSinceNow: -60))
         try fx.writeState(#"{"sleepDisabledByUs":true,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false}"#)
         fx.setMode("sudo", "ignore-term")
-        let started = Date()
 
         let r = try fx.run(fx.backstop)
 
         XCTAssertNotEqual(r.status, 0)
-        XCTAssertLessThan(Date().timeIntervalSince(started), 4, "1 s timeout + 1 s TERM grace, then fail closed")
+        XCTAssertNil(fx.commandEnded(), "the script returned while the command was still alive (it has not been released)")
         XCTAssertEqual(try fx.stateJSON()["sleepDisabledByUs"] as? Bool, true, "ownership retained")
         XCTAssertFalse(try fx.lockIsFree(), "the command survived SIGTERM, so it was not killed and still holds the lock")
         let log = fx.log()
@@ -802,8 +802,10 @@ final class RecoveryScriptTests: XCTestCase {
         let blocked = try fx.run(fx.backstop)
         XCTAssertEqual(blocked.status, 75, "no new transaction while the command lives: \(blocked.stderr)")
         XCTAssertEqual(fx.calls(), [], "no mutation outside the lock")
+        XCTAssertNil(fx.commandEnded(), "still alive before the release")
         fx.releaseCommand()
         XCTAssertTrue(try fx.waitUntilLockIsFree(), "the lock is released only when the command exits")
+        XCTAssertEqual(fx.commandEnded(), "released", "the command ended because of the release, not the watchdog")
         let after = try fx.run(fx.backstop)
         XCTAssertEqual(after.status, 0, after.stderr + fx.log())
         XCTAssertEqual(try fx.stateJSON()["sleepDisabledByUs"] as? Bool, false)
@@ -816,12 +818,11 @@ final class RecoveryScriptTests: XCTestCase {
         try fx.writeSession(endsAt: Date(timeIntervalSinceNow: -60))
         try fx.writeState(#"{"sleepDisabledByUs":true,"lowPowerSetByUs":true,"frozenProcesses":[],"dockerFrozen":false}"#)
         fx.setMode("sudo", "ignore-term")
-        let started = Date()
 
         let r = try fx.run(fx.backstop)
 
         XCTAssertNotEqual(r.status, 0)
-        XCTAssertLessThan(Date().timeIntervalSince(started), 4, "one timeout, then stop; not two")
+        XCTAssertNil(fx.commandEnded(), "the script returned while the first command was still alive (not released)")
         XCTAssertEqual(fx.calls(), ["sudo -n \(fx.fakePmset) -a disablesleep 0"], "no second undo while the first is alive")
         let s = try fx.stateJSON()
         XCTAssertEqual(s["sleepDisabledByUs"] as? Bool, true)
@@ -833,6 +834,7 @@ final class RecoveryScriptTests: XCTestCase {
         XCTAssertFalse(log.contains("lowpowermode"), "the second undo was never attempted: \(log)")
         fx.releaseCommand()
         XCTAssertTrue(try fx.waitUntilLockIsFree(), "the lock is released only when the command exits")
+        XCTAssertEqual(fx.commandEnded(), "released", "ended by the release, not the watchdog")
         fx.setMode("sudo", "ok")
         fx.clearCalls()
         let after = try fx.run(fx.backstop)
@@ -856,20 +858,22 @@ final class RecoveryScriptTests: XCTestCase {
         echo "captured rc=$rc"
         """#.write(to: capture, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: capture.path)
-        let started = Date()
 
         let r = try fx.run(capture, [fx.backstop.path])
 
-        XCTAssertLessThan(Date().timeIntervalSince(started), 4, "the capture must end when the script exits, not when the command does")
+        XCTAssertNil(fx.commandEnded(), "the capture got EOF while the command was still alive (not released): \(r.stdout) \(r.stderr)")
         XCTAssertTrue(r.stdout.contains("captured rc=1"), r.stdout + r.stderr)
         XCTAssertFalse(try fx.lockIsFree(), "the command is still alive and still holds the lock: \(r.stdout) \(r.stderr) \(fx.log())")
+        fx.releaseCommand()
+        XCTAssertTrue(try fx.waitUntilLockIsFree(), "the lock is released when the command exits")
+        XCTAssertEqual(fx.commandEnded(), "released", "ended by the release, not the watchdog")
     }
 
     func testLockOutlivesASudoThatClosedItsInheritedHandle() throws {
         // Real sudo closes extra descriptors before running pmset, so nothing
         // may rely on the command inheriting the lock. This fake closes fd 9
-        // first, ignores TERM and finishes on its own after ~4 s. The lock must
-        // stay held by the script's supervisor until then, and no new
+        // first, ignores TERM and lives until this test releases it. The lock
+        // must stay held by the script's supervisor until then, and no new
         // transaction may start in the meantime.
         try fx.writeSession(endsAt: Date(timeIntervalSinceNow: -60))
         try fx.writeState(#"{"sleepDisabledByUs":true,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false}"#)
@@ -878,6 +882,7 @@ final class RecoveryScriptTests: XCTestCase {
         let r = try fx.run(fx.backstop)
 
         XCTAssertNotEqual(r.status, 0)
+        XCTAssertNil(fx.commandEnded(), "the script returned while the command was still alive (not released)")
         XCTAssertEqual(try fx.stateJSON()["sleepDisabledByUs"] as? Bool, true, "ownership retained")
         XCTAssertFalse(try fx.lockIsFree(), "the supervisor, not the command, holds the lock")
         fx.setMode("sudo", "ok")
@@ -888,6 +893,7 @@ final class RecoveryScriptTests: XCTestCase {
         XCTAssertTrue(fx.log().contains("keeps the recovery lock"), fx.log())
         fx.releaseCommand()
         XCTAssertTrue(try fx.waitUntilLockIsFree(), "the lock is released when the command exits")
+        XCTAssertEqual(fx.commandEnded(), "released", "ended by the release, not the watchdog")
         let after = try fx.run(fx.backstop)
         XCTAssertEqual(after.status, 0, after.stderr + fx.log())
         XCTAssertEqual(try fx.stateJSON()["sleepDisabledByUs"] as? Bool, false)
@@ -1215,6 +1221,13 @@ private final class ScriptFixture {
         fm.createFile(atPath: root.appendingPathComponent("release").path, contents: nil)
     }
 
+    /// nil while a release-controlled fake command is still running;
+    /// "released" or "watchdog" once it has ended, saying what ended it.
+    func commandEnded() -> String? {
+        (try? String(contentsOf: root.appendingPathComponent("command.ended"), encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Polls until the recovery lock is free; false after `seconds`.
     func waitUntilLockIsFree(_ seconds: Double = 15) throws -> Bool {
         let deadline = Date(timeIntervalSinceNow: seconds)
@@ -1354,18 +1367,24 @@ private final class ScriptFixture {
         mode="$(cat "\(r)/sudo.mode" 2>/dev/null || echo ok)"
         # "ignore-term" and "closes-fd9" behave like a pmset that ignores
         # SIGTERM: they live until the test creates the release file (or the
-        # fixture is destroyed, or a 60 s watchdog), so a test decides when
-        # the command ends instead of racing a wall-clock sleep.
+        # fixture is destroyed, or a 60 s wall-clock watchdog), so a test decides when
+        # the command ends instead of racing a wall-clock sleep. On exit they
+        # write command.ended = released | watchdog, so a test can tell a
+        # command that is still alive (no file) from one that ended, and why.
         case "${1:-}" in
           -n) if [[ "${2:-}" == -l ]]; then exit 0; fi
               case "$mode" in
                 ok) exit 0 ;;
                 hang) exec /bin/sleep 60 ;;
-                ignore-term) trap '' TERM; i=0
-                  while [[ ! -e "\(r)/release" && -d "\(r)" && "$i" -lt 600 ]]; do /bin/sleep 0.1; i=$((i + 1)); done
+                ignore-term) trap '' TERM; deadline=$(( $(date +%s) + 60 ))
+                  while [[ ! -e "\(r)/release" && -d "\(r)" && $(date +%s) -lt $deadline ]]; do /bin/sleep 0.1; done
+                  if [[ -e "\(r)/release" ]]; then echo released > "\(r)/command.ended"
+                  elif [[ -d "\(r)" ]]; then echo watchdog > "\(r)/command.ended"; fi
                   exit 0 ;;
-                closes-fd9) exec 9<&-; trap '' TERM; i=0
-                  while [[ ! -e "\(r)/release" && -d "\(r)" && "$i" -lt 600 ]]; do /bin/sleep 0.1; i=$((i + 1)); done
+                closes-fd9) exec 9<&-; trap '' TERM; deadline=$(( $(date +%s) + 60 ))
+                  while [[ ! -e "\(r)/release" && -d "\(r)" && $(date +%s) -lt $deadline ]]; do /bin/sleep 0.1; done
+                  if [[ -e "\(r)/release" ]]; then echo released > "\(r)/command.ended"
+                  elif [[ -d "\(r)" ]]; then echo watchdog > "\(r)/command.ended"; fi
                   exit 0 ;;
                 *) exit 1 ;;
               esac ;;
