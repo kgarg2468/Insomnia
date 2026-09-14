@@ -13,7 +13,7 @@ Personal tool. Ad-hoc signed, not distributed. Full design in
 Requires macOS 26 and Xcode 26 (Swift 6.3).
 
 ```
-git clone https://github.com/kgarg2468/harbor && cd harbor/insomnia
+git clone https://github.com/kgarg2468/Insomnia.git && cd Insomnia
 ./scripts/install.sh
 ```
 

@@ -300,7 +300,7 @@ transitions. If it feels like a web dropdown, it is wrong.
 ## Repository layout
 
 ```
-harbor/insomnia/
+Insomnia/
   Package.swift
   Sources/Insomnia/
     InsomniaApp.swift
@@ -380,7 +380,7 @@ harbor/insomnia/
 ## Install
 
 ```
-git clone … harbor && cd harbor/insomnia
+git clone https://github.com/kgarg2468/Insomnia.git && cd Insomnia
 ./scripts/install.sh      # asks for sudo once, for the sudoers file
 ```
 
