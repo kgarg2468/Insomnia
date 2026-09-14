@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/eye-moon.svg" alt="Insomnia: an eye with a right-opening crescent moon" width="112">
+</p>
+
 <h1 align="center">Insomnia</h1>
 
 <p align="center">
@@ -19,9 +23,9 @@
 
 <p align="center">
   <a href="https://github.com/kgarg2468/Insomnia/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/kgarg2468/Insomnia/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/License-MIT-8B5E3C?style=flat-square"></a>
-  <img alt="macOS 26 or later" src="https://img.shields.io/badge/macOS-26%2B-3D3028?style=flat-square">
-  <img alt="Experimental source build" src="https://img.shields.io/badge/Status-experimental-8B5E3C?style=flat-square">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/License-MIT-6257A5?style=flat-square"></a>
+  <img alt="macOS 26 or later" src="https://img.shields.io/badge/macOS-26%2B-11151F?style=flat-square">
+  <img alt="Experimental source build" src="https://img.shields.io/badge/Status-experimental-6257A5?style=flat-square">
 </p>
 
 > **Use a stable, well-ventilated surface—not a closed bag.** Insomnia is
@@ -30,7 +34,7 @@
 > [Validation status](docs/release-validation.md) · [Apple's ventilation guidance](https://support.apple.com/en-us/102336)
 
 <p align="center">
-  <img src="docs/assets/session-flow.svg" alt="Choose a duration from the menu bar. Insomnia keeps the Mac awake during the timed session. When time expires or you end it, Insomnia attempts to restore its recorded changes; incomplete recovery needs attention." width="880">
+  <img src="docs/assets/session-flow.svg" alt="Illustrated menu-bar controls: enter Days, Hours, and Minutes, watch the countdown, and hold the end control to finish early. Click the eye or countdown to add time. Closing the lid is optional, and incomplete recovery needs attention." width="880">
 </p>
 
 ## Install
@@ -80,9 +84,9 @@ instructions before retrying.
 
 ## Using it
 
-1. **Start:** click the cup in the menu bar, enter Days / Hours / Minutes, and
+1. **Start:** click the eye in the menu bar, enter Days / Hours / Minutes, and
    press Enter.
-2. **Extend:** click the cup or countdown during a session and enter more time.
+2. **Extend:** click the eye or countdown during a session and enter more time.
 3. **End early:** press and hold the end control beside the countdown.
 4. **Inspect or configure:** right-click for status, recovery warnings,
    **Settings**, and **Quit Insomnia**. Quitting requests session cleanup and
@@ -98,7 +102,7 @@ check the status menu and `~/Library/Logs/Insomnia/insomnia.log` afterward.
 ## What happens when the lid closes
 
 <p align="center">
-  <img src="docs/assets/lid-actions.svg" alt="During an active session, closing the lid applies configured app-pausing, Docker, and audio actions. Reopening attempts to resume verified owned freezes and restore saved audio; the timed session continues. Without an active session, lid changes do nothing." width="880">
+  <img src="docs/assets/lid-actions.svg" alt="Illustrated Settings defaults: Slack, WhatsApp, and Discord on the freeze list, Docker's idle rule on, mute off. During a session, lid close applies configured actions; reopening attempts to resume verified owned freezes and restore saved audio. The session continues. Without an active session, lid changes do nothing." width="880">
 </p>
 
 During a session, Insomnia can pause selected background apps, check whether
@@ -242,6 +246,10 @@ CI runs Swift tests, a release build, and ShellCheck. tmux integration tests
 need tmux installed; check skip counts rather than assuming missing integration
 coverage passed. Tests use injected dependencies and temporary fixtures—not
 live installation or power changes on a contributor's machine.
+
+The app icon and menu-bar mark share [vector geometry](Sources/Insomnia/UI/EyeMoonGeometry.swift).
+After changing the artwork, run `./scripts/generate-app-icon.sh` to regenerate
+the packaged PNG and ICNS assets. No image-generation service is needed.
 
 [Contributing](CONTRIBUTING.md) · [Security reporting](SECURITY.md) ·
 [Release validation](docs/release-validation.md) · [Design notes](docs/spec.md)

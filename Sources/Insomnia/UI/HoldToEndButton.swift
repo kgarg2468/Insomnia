@@ -31,7 +31,7 @@ struct HoldToEndButton: View {
                 .stroke(Color.white.opacity(0.14), lineWidth: lineWidth)
             Circle()
                 .trim(from: 0, to: progress)
-                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .stroke(Color(brand: BrandPalette.violet), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
             Image(systemName: "xmark")
                 .font(.system(size: 7, weight: .bold))

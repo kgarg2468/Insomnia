@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// One of the Days / Hours / Minutes fields in the menu bar. Flat dark
-/// rounded rectangle, unit name as placeholder, a crisp accent ring when
+/// rounded rectangle, unit name as placeholder, a crisp violet ring when
 /// focused, snappy bounce on focus and on a rejected key.
 ///
 /// Nothing here blurs or uses a material: every frame of this view is
@@ -32,13 +32,13 @@ struct PillView: View {
             .padding(.horizontal, isPlaceholder ? 8 : 10)
             .frame(minWidth: 28)
             .frame(height: 19)
-            .background(shape.fill(Color(white: 0.09).opacity(0.92)))
+            .background(shape.fill(Color(brand: BrandPalette.charcoal).opacity(0.92)))
             .overlay {
                 shape.strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
             }
             .overlay {
                 shape
-                    .strokeBorder(Color.accentColor.opacity(ringVisible ? 1 : 0), lineWidth: 1.5)
+                    .strokeBorder(Color(brand: BrandPalette.violet).opacity(ringVisible ? 1 : 0), lineWidth: 1.5)
                     .animation(Motion.base(reduceMotion: reduceMotion), value: ringVisible)
             }
             .overlay {

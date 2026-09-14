@@ -9,7 +9,7 @@ final class MenuBarModel {
     enum Mode: Equatable, Sendable {
         /// Enter starts a new session.
         case start
-        /// Enter extends the running session (reached by clicking the cup or
+        /// Enter extends the running session (reached by clicking the mark or
         /// the countdown while a session is running).
         case extend
     }
