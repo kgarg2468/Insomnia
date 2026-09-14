@@ -201,6 +201,11 @@ final class NetworkFailover {
     private var monitor: NWPathMonitor?
     private var retryTimer: Timer?
     private var generation = 0
+    /// Bumped by `stop()`. Work that started under an older epoch (a
+    /// recovery mid-nudge) stops issuing commands as soon as it notices.
+    private var epoch = 0
+    /// Path/timer work spawned by the driver, cancelled by `stop()`.
+    private var inflight: [UUID: Task<Void, Never>] = [:]
 
     init(
         paths: Paths,
@@ -227,9 +232,14 @@ final class NetworkFailover {
         await resolveInterface()
         guard !Task.isCancelled else { return }
         let m = NWPathMonitor(requiredInterfaceType: .wifi)
+        let id = ObjectIdentifier(m)
         m.pathUpdateHandler = { [weak self] path in
             let satisfied = path.status == .satisfied
-            Task { @MainActor in self?.handlePath(satisfied: satisfied) }
+            Task { @MainActor in
+                // An update queued before stop() must not revive the driver.
+                guard let self, let current = self.monitor, ObjectIdentifier(current) == id else { return }
+                self.handlePath(satisfied: satisfied)
+            }
         }
         m.start(queue: .main)
         monitor = m
@@ -240,6 +250,9 @@ final class NetworkFailover {
         monitor?.cancel()
         monitor = nil
         cancelTimer()
+        for task in inflight.values { task.cancel() }
+        inflight.removeAll()
+        epoch += 1
         machine = FailoverMachine()
     }
 
@@ -273,8 +286,10 @@ final class NetworkFailover {
         }
     }
 
-    private func handlePath(satisfied: Bool) {
-        Task { await process(satisfied: satisfied) }
+    /// What the NWPathMonitor calls. Internal so tests can exercise the
+    /// driver-owned task without a monitor.
+    func handlePath(satisfied: Bool) {
+        track { [weak self] in await self?.process(satisfied: satisfied) }
     }
 
     /// Feed one path update through the machine and apply its outputs.
@@ -283,7 +298,17 @@ final class NetworkFailover {
         await process(satisfied: satisfied)
     }
 
+    /// Runs `operation` in a task that `stop()` cancels.
+    private func track(_ operation: @escaping @MainActor () async -> Void) {
+        let id = UUID()
+        inflight[id] = Task { @MainActor [weak self] in
+            await operation()
+            self?.inflight[id] = nil
+        }
+    }
+
     private func process(satisfied: Bool) async {
+        guard !Task.isCancelled else { return }
         let now = clock()
         let outputs = satisfied ? machine.pathSatisfied(at: now) : machine.pathUnsatisfied(at: now)
         if outputs.isEmpty { return }
@@ -294,7 +319,7 @@ final class NetworkFailover {
     private func fireTimer() {
         retryTimer = nil
         let outputs = machine.timerFired(at: clock())
-        Task { await apply(outputs) }
+        track { [weak self] in await self?.apply(outputs) }
     }
 
     private func apply(_ outputs: [FailoverMachine.Output]) async {
@@ -365,6 +390,7 @@ final class NetworkFailover {
     }
 
     private func recovered(start: Date, gap: TimeInterval) async {
+        let epoch = self.epoch
         let end = clock()
         lastGap = gap
         let line = FailoverMachine.logLine(start: start, end: end, gap: gap)
@@ -372,13 +398,23 @@ final class NetworkFailover {
         Log.info("wifi path satisfied after \(FailoverMachine.humanGap(gap))")
         let config = configProvider()
         if gap >= config.nudgeThreshold {
-            let count = await nudge.nudge(targets: config.tmuxTargets)
-            let panes = count == 1 ? "1 tmux pane" : "\(count) tmux panes"
-            notifier.post(
-                title: "Network recovered",
-                body: "Network was down \(FailoverMachine.humanGap(gap)). Nudged \(panes). Check GUI agents."
-            )
+            // Each pane is only nudged while this session is still the live one.
+            let count = await nudge.nudge(targets: config.tmuxTargets) { [weak self] in self?.epoch == epoch }
+            let stopped = self.epoch != epoch
+            if stopped {
+                Log.info("network failover stopped during recovery; \(count) tmux pane(s) had already been nudged")
+            }
+            // A keystroke that went out before the stop is still reported.
+            if !stopped || count > 0 {
+                let panes = count == 1 ? "1 tmux pane" : "\(count) tmux panes"
+                notifier.post(
+                    title: "Network recovered",
+                    body: "Network was down \(FailoverMachine.humanGap(gap)). Nudged \(panes). Check GUI agents."
+                )
+            }
         }
+        // A stopped driver must not write into the next session's status.
+        guard self.epoch == epoch else { return }
         onRecovered?(gap)
     }
 
