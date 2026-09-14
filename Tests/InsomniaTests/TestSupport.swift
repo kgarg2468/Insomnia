@@ -136,11 +136,14 @@ final class FakeSleepGuard: SleepGuarding, @unchecked Sendable {
 final class FakeProcessControl: ProcessSignaling, @unchecked Sendable {
     private let lock = NSLock()
     private var _resumed: [[Int32]] = []
+    private var _signaled: [Int32] = []
     private var _suspended: [[Int32]] = []
     private var _failResume: Set<Int32> = []
     private var _refuseSuspend: Set<Int32> = []
     private var _stoppedNow: Set<Int32> = []
     var resumed: [[Int32]] { lock.withLock { _resumed } }
+    /// Pids actually reported resumed (SIGCONT delivered), across all calls.
+    var signaled: [Int32] { lock.withLock { _signaled } }
     var suspended: [[Int32]] { lock.withLock { _suspended } }
     /// Pids whose SIGCONT is reported as failed (verified, still stopped).
     var failResume: Set<Int32> {
@@ -174,6 +177,7 @@ final class FakeProcessControl: ProcessSignaling, @unchecked Sendable {
                 report.resumed.append(p.pid)
             }
         }
+        lock.withLock { _signaled.append(contentsOf: report.resumed) }
         return report
     }
 

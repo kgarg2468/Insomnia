@@ -275,6 +275,96 @@ final class LidActionsTests: XCTestCase {
         await actions.onOpen()
         XCTAssertEqual(h.procs.resumed, [[100, 102]])
     }
+
+    // MARK: Provisional freeze entries
+
+    /// Until the kernel has reported which pids it stopped, the journal must
+    /// not claim any of them. Entries are written without identity first
+    /// and only the confirmed SIGSTOPs gain one.
+    func testCandidatesAreJournaledWithoutIdentityUntilTheKernelConfirmsTheStop() async throws {
+        let (m, actions) = await make()
+        h.procs.refuseSuspend = [101]
+        await m.start(duration: 3600)
+        let store = h.store
+        let provisional = Locked(true)
+        h.procs.onSuspend = { pids in
+            let s = (try? store.loadState()) ?? nil
+            let mine = (s?.frozenProcesses ?? []).filter { pids.contains($0.pid) }
+            if mine.map(\.pid) != pids || !mine.allSatisfy({ $0.identity == nil }) { provisional.value = false }
+        }
+
+        await actions.onClose()
+
+        XCTAssertTrue(provisional.value, "candidates were journaled as owned before the kernel confirmed the stop")
+        let s = try XCTUnwrap(try store.loadState())
+        XCTAssertEqual(s.frozenProcesses, [
+            FrozenProcess(pid: 100, startedAt: 1000),
+            FrozenProcess(pid: 102, startedAt: 1002),
+            FrozenProcess(pid: 400, startedAt: 4000),
+            FrozenProcess(pid: 401, startedAt: 4001),
+        ])
+        XCTAssertTrue(s.dockerFrozen)
+        XCTAssertEqual(m.state, s)
+    }
+
+    /// Greptile P1: a skipped pid whose removal from the journal fails must
+    /// not stay recorded as owned, or the next resume SIGCONTs a process
+    /// Insomnia never stopped. Whatever the failed confirmation leaves on
+    /// disk has to be non-resumable.
+    func testSkippedPidWhoseConfirmationSaveFailsIsNeverResumed() async throws {
+        let (m, actions) = await make(dockerIdle: { false })
+        h.procs.refuseSuspend = [101]
+        await m.start(duration: 3600)
+        let file = h.home.paths.stateFile.path
+        h.procs.onSuspend = { _ in
+            // The confirmation write after SIGSTOP fails: rename over an
+            // immutable state.json is refused.
+            try? FileManager.default.setAttributes([.immutable: true], ofItemAtPath: file)
+        }
+        defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: file) }
+
+        await actions.onClose()
+        try FileManager.default.setAttributes([.immutable: false], ofItemAtPath: file)
+
+        XCTAssertEqual(h.procs.suspended, [[100, 101, 102]])
+        let after = try XCTUnwrap(try h.store.loadState())
+        XCTAssertEqual(after.frozenPids, [100, 101, 102])
+        XCTAssertTrue(after.frozenProcesses.allSatisfy { $0.identity == nil },
+                      "failed confirmation left ownership evidence on disk: \(after.frozenProcesses)")
+        XCTAssertEqual(m.state, after)
+
+        // 100 and 102 were stopped by Insomnia. 101 is stopped too, but by
+        // somebody else: that is why the kernel refused our SIGSTOP. Nothing
+        // on disk distinguishes them, so none may be resumed.
+        h.procs.stoppedNow = [100, 101, 102]
+        await actions.onOpen()
+        XCTAssertFalse(h.procs.signaled.contains(101), "SIGCONT sent to a process Insomnia never stopped")
+        XCTAssertEqual(h.procs.signaled, [], "provisional entries were treated as ownership")
+        let opened = try XCTUnwrap(try h.store.loadState())
+        XCTAssertEqual(opened.frozenPids, [100, 101, 102], "stopped pids without proof must all stay for manual recovery")
+        XCTAssertTrue(opened.frozenProcesses.allSatisfy { $0.identity == nil }, "\(opened.frozenProcesses)")
+        let err = try XCTUnwrap(m.lastError)
+        XCTAssertTrue(err.contains("100, 101, 102"), err)
+        XCTAssertTrue(err.contains("interrupted"), "message must name an unconfirmed freeze as a cause: \(err)")
+        XCTAssertTrue(err.contains("Check each one first"), "message must ask for verification before any CONT: \(err)")
+    }
+
+    /// A crash between the provisional write and the confirmation leaves
+    /// identity-less entries. The next launch must not resume them.
+    func testProvisionalEntriesLeftByACrashAreNotResumedAfterRestart() async throws {
+        var crashed = RuntimeState()
+        crashed.frozenProcesses = [FrozenProcess(pid: 100, startedAt: nil), FrozenProcess(pid: 101, startedAt: nil)]
+        try h.store.saveState(crashed)
+        h.procs.stoppedNow = [100]
+
+        let m = h.makeManager()
+        await m.reconcile()
+
+        XCTAssertEqual(h.procs.signaled, [], "restart resumed a pid it cannot prove it stopped")
+        let s = try XCTUnwrap(try h.store.loadState())
+        XCTAssertEqual(s.frozenProcesses, [FrozenProcess(pid: 100, startedAt: nil)], "the stopped one stays for a person; the running one is gone")
+        XCTAssertNotNil(m.lastError)
+    }
 }
 
 final class Locked<T: Sendable>: @unchecked Sendable {

@@ -24,7 +24,11 @@ leaving the machine unattended.
 
 After a crash, saved audio settings require reopening the app; the shell
 backstop preserves them but cannot restore CoreAudio itself. Legacy stopped
-processes without recorded identity also need app or manual resolution.
+processes without recorded identity also need app or manual resolution. A
+crash or failed journal write between requesting a freeze and recording its
+confirmed result leaves an unconfirmed entry: neither recovery path resumes
+it automatically. Verify the live process and whether it should be resumed
+before taking manual action; do not blindly signal a PID from an old log.
 Uninstall refuses to remove recovery tools while unresolved changes remain.
 Process identity checks reduce PID-reuse risk but are not atomic with sending
 a signal; the shell checks start time only to the second, while the app also
