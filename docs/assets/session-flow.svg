@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="456" viewBox="0 0 880 456" role="img" aria-labelledby="sf-title sf-desc">
+  <title id="sf-title">Insomnia session flow</title>
+  <desc id="sf-desc">Three steps. One: pick a duration in days, hours, and minutes from the menu bar. Two: the Mac stays awake while the timer counts down, with the lid open or closed, and you can extend the session at any time. Three: the session ends when the timer expires or you end it early, and Insomnia attempts to undo the changes it made. Caveat: recovery can need attention, because Insomnia restores only what it can verify.</desc>
+  <style>
+    svg { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .bg { fill: #F6EFE4; }
+    .panel { fill: #FFFBF4; stroke: #DCCBB6; stroke-width: 1.5; }
+    .chip { fill: #F1E5D3; stroke: #DCCBB6; stroke-width: 1.5; }
+    .ring { fill: none; stroke: #DCCBB6; stroke-width: 4; }
+    .t { fill: #2E2119; }
+    .m { fill: #7A6350; }
+    .a { fill: #B5652C; }
+    .ln { fill: none; stroke: #B5652C; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+    .ic { fill: none; stroke: #6B4A32; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .warn { fill: #A35A1C; }
+    .warn-ic { fill: none; stroke: #A35A1C; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1E1712; }
+      .panel { fill: #2A2019; stroke: #4A3A2D; }
+      .chip { fill: #35291F; stroke: #4A3A2D; }
+      .ring { stroke: #4A3A2D; }
+      .t { fill: #F3E9DC; }
+      .m { fill: #BCA58F; }
+      .a { fill: #DB9256; }
+      .ln { stroke: #DB9256; }
+      .ic { stroke: #D9C4AB; }
+      .warn { fill: #E3A66B; }
+      .warn-ic { stroke: #E3A66B; }
+    }
+  </style>
+  <defs>
+    <marker id="sf-arrow" viewBox="0 0 14 14" markerWidth="14" markerHeight="14" refX="11" refY="7" markerUnits="userSpaceOnUse" orient="auto">
+      <path class="a" d="M2 2 L12 7 L2 12 Z"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="880" height="456" rx="24"/>
+
+  <!-- Coffee cup motif -->
+  <g class="ic" transform="translate(40 26)">
+    <path d="M6 12 H22 V21 A6 6 0 0 1 16 27 H12 A6 6 0 0 1 6 21 Z"/>
+    <path d="M22 14 H25 A4 4 0 0 1 25 22 H22"/>
+    <path d="M11 8 C9.5 6 12.5 5 11 3"/>
+    <path d="M17 8 C15.5 6 18.5 5 17 3"/>
+  </g>
+  <text class="t" x="84" y="50" font-size="26" font-weight="700">A timed awake session</text>
+  <text class="m" x="84" y="80" font-size="20">Start it from the menu bar. Closing the lid is optional.</text>
+
+  <!-- Step 1: pick a duration -->
+  <g>
+    <rect class="panel" x="40" y="112" width="240" height="244" rx="18"/>
+    <rect class="chip" x="68" y="140" width="56" height="34" rx="17"/>
+    <text class="t" x="96" y="164" font-size="20" text-anchor="middle">0d</text>
+    <rect class="chip" x="132" y="140" width="56" height="34" rx="17"/>
+    <text class="t" x="160" y="164" font-size="20" text-anchor="middle">3h</text>
+    <rect class="chip" x="196" y="140" width="56" height="34" rx="17"/>
+    <text class="t" x="224" y="164" font-size="20" text-anchor="middle">30m</text>
+    <text class="t" x="60" y="216" font-size="24" font-weight="700">Pick a duration</text>
+    <text class="m" x="60" y="248" font-size="20">Days, hours, minutes,</text>
+    <text class="m" x="60" y="274" font-size="20">set in the menu bar.</text>
+  </g>
+
+  <path class="ln" d="M286 234 H312" marker-end="url(#sf-arrow)"/>
+
+  <!-- Step 2: stays awake -->
+  <g>
+    <rect class="panel" x="320" y="112" width="240" height="244" rx="18"/>
+    <circle class="ring" cx="440" cy="157" r="26"/>
+    <path class="ln" d="M440 131 A26 26 0 1 1 414 157" stroke-width="4"/>
+    <g class="ic" transform="translate(429.5 146.5) scale(0.7)">
+      <path d="M6 12 H22 V21 A6 6 0 0 1 16 27 H12 A6 6 0 0 1 6 21 Z"/>
+      <path d="M22 14 H25 A4 4 0 0 1 25 22 H22"/>
+      <path d="M11 8 C9.5 6 12.5 5 11 3"/>
+      <path d="M17 8 C15.5 6 18.5 5 17 3"/>
+    </g>
+    <text class="t" x="340" y="216" font-size="24" font-weight="700">Stays awake</text>
+    <text class="m" x="340" y="248" font-size="20">Timer counts down,</text>
+    <text class="m" x="340" y="274" font-size="20">lid open or closed.</text>
+    <rect class="chip" x="340" y="298" width="188" height="36" rx="18"/>
+    <circle class="ic" cx="359" cy="316" r="9"/>
+    <path class="ic" d="M359 311.5 V320.5 M354.5 316 H363.5"/>
+    <text class="t" x="376" y="323" font-size="20">Extend anytime</text>
+  </g>
+
+  <path class="ln" d="M566 234 H592" marker-end="url(#sf-arrow)"/>
+
+  <!-- Step 3: session ends -->
+  <g>
+    <rect class="panel" x="600" y="112" width="240" height="244" rx="18"/>
+    <path class="ln" d="M720 133 A24 24 0 1 1 696 157" stroke-width="3" marker-end="url(#sf-arrow)"/>
+    <text class="t" x="620" y="216" font-size="24" font-weight="700">Session ends</text>
+    <text class="m" x="620" y="248" font-size="20">Timer expires, or</text>
+    <text class="m" x="620" y="274" font-size="20">you end it early.</text>
+    <text class="m" x="620" y="300" font-size="20">Insomnia attempts</text>
+    <text class="m" x="620" y="326" font-size="20">to undo its changes.</text>
+  </g>
+
+  <!-- Caveat -->
+  <g class="warn-ic">
+    <path d="M53 386 L66 410 H40 Z"/>
+    <path d="M53 394 V402"/>
+    <path d="M53 406 V406.5"/>
+  </g>
+  <text class="warn" x="78" y="399" font-size="20" font-weight="700">Recovery can need attention.</text>
+  <text class="m" x="78" y="427" font-size="20">Insomnia restores only what it can verify. Check the menu bar after a session.</text>
+</svg>

@@ -1,152 +1,251 @@
-# Insomnia
+<h1 align="center">Insomnia</h1>
 
-A macOS menu bar app for keeping a MacBook awake for a fixed, user-chosen
-time. A recovery journal and launchd backstop support restoring changed
-settings when the session ends or the app exits unexpectedly.
+<p align="center">
+  <strong>Keep your Mac awake. Give the session an end time.</strong>
+</p>
 
-Experimental, source-built software. The local app is ad-hoc signed, not a
-Developer ID-signed or notarized consumer download. See the
-[release validation record](docs/release-validation.md) for what has and has
-not been tested, and [design notes](docs/spec.md) for implementation context.
+<p align="center">
+  A native macOS menu bar app for timed awake sessions. Pick a duration for your
+  long-running work, choose what happens when the lid closes, and see when
+  recovery needs your attention.
+</p>
 
-## Safety and recovery limits
+<p align="center">
+  <a href="#install"><strong>Install</strong></a> ·
+  <a href="#using-it"><strong>Using it</strong></a> ·
+  <a href="#how-recovery-works"><strong>Recovery</strong></a> ·
+  <a href="SECURITY.md"><strong>Security</strong></a>
+</p>
 
-Use a stable, well-ventilated surface. **Do not run an awake MacBook inside a
-closed bag or other poorly ventilated enclosure.** See
-[Apple's operating-temperature guidance](https://support.apple.com/en-us/102336).
+<p align="center">
+  <a href="https://github.com/kgarg2468/Insomnia/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/kgarg2468/Insomnia/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/License-MIT-8B5E3C?style=flat-square"></a>
+  <img alt="macOS 26 or later" src="https://img.shields.io/badge/macOS-26%2B-3D3028?style=flat-square">
+  <img alt="Experimental source build" src="https://img.shields.io/badge/Status-experimental-8B5E3C?style=flat-square">
+</p>
 
-Battery and thermal session rules require the Insomnia app to be running.
-The independent backstop is not a battery or thermal monitor. A countdown or
-journal entry is not proof of safe temperature, sufficient battery, or the
-current operating-system power state. Recovery can fail when permissions,
-disk access, or system commands fail; inspect any recovery warning before
-leaving the machine unattended.
+> **Use a stable, well-ventilated surface—not a closed bag.** Insomnia is
+> experimental, source-built software, not a signed and notarized consumer
+> download. Recovery can fail; a running timer is not a safety guarantee.
+> [Validation status](docs/release-validation.md) · [Apple's ventilation guidance](https://support.apple.com/en-us/102336)
 
-After a crash, saved audio settings require reopening the app; the shell
-backstop preserves them but cannot restore CoreAudio itself. Legacy stopped
-processes without recorded identity also need app or manual resolution. A
-crash or failed journal write between requesting a freeze and recording its
-confirmed result leaves an unconfirmed entry: neither recovery path resumes
-it automatically. Verify the live process and whether it should be resumed
-before taking manual action; do not blindly signal a PID from an old log.
-Uninstall refuses to remove recovery tools while unresolved changes remain.
-Process identity checks reduce PID-reuse risk but are not atomic with sending
-a signal; the shell checks start time only to the second, while the app also
-checks microseconds. Both check the boot session.
-
-If a timed-out power command cannot be stopped, recovery deliberately keeps
-the lock until that command exits. New sessions and other recovery attempts
-wait or fail with a lock warning; they do not proceed beside a command that
-may still change power settings. Inspect the log and the current process
-before taking manual action—do not blindly signal a PID from an old log.
-
-App Nap defaults for configured agent apps intentionally persist after a
-session ends and after uninstall. Recovery does not promise to undo every
-preference change. Hardware crash, reboot, lid-close, and hotspot scenarios
-remain release-validation requirements, not guarantees inferred from CI.
+<p align="center">
+  <img src="docs/assets/session-flow.svg" alt="Choose a duration from the menu bar. Insomnia keeps the Mac awake during the timed session. When time expires or you end it, Insomnia attempts to restore its recorded changes; incomplete recovery needs attention." width="880">
+</p>
 
 ## Install
 
-Requires macOS 26 and Xcode 26 (Swift 6.3).
+Requires **macOS 26 or later** and **Xcode with Swift 6.2 or later**. Installation
+currently means building from source:
 
-```
-git clone https://github.com/kgarg2468/Insomnia.git && cd Insomnia
+```bash
+git clone https://github.com/kgarg2468/Insomnia.git
+cd Insomnia
 ./scripts/install.sh
+open "$HOME/Applications/Insomnia.app"
 ```
 
-The script builds a release binary, assembles `~/Applications/Insomnia.app`,
-installs `backstop.sh` and a `com.insomnia.backstop` LaunchAgent, and writes
-`/etc/sudoers.d/insomnia`. That sudoers file is the only privileged piece; it
-lets your user run exactly four commands without a password:
+The installer builds and ad-hoc signs the app, installs a background recovery
+agent, and asks for administrator access to install a narrowly scoped sudoers
+rule. It grants **your user account**, not just Insomnia, passwordless access to
+four power-setting commands. Review that permission before installing.
 
-```
+<details>
+<summary><strong>Exactly what gets installed</strong></summary>
+
+| Location | Purpose |
+| --- | --- |
+| `~/Applications/Insomnia.app` | The menu bar app |
+| `~/Library/Application Support/Insomnia/` | Configuration, session/recovery journals, and `backstop.sh` |
+| `~/Library/LaunchAgents/com.insomnia.backstop.plist` | Per-user recovery agent |
+| `~/Library/Logs/Insomnia/` | `insomnia.log` and `handoffs.log` |
+| `/etc/sudoers.d/insomnia` | Permission for the four commands below |
+
+```text
 /usr/bin/pmset -a disablesleep 1
 /usr/bin/pmset -a disablesleep 0
 /usr/bin/pmset -b lowpowermode 1
 /usr/bin/pmset -b lowpowermode 0
 ```
 
-Then `open ~/Applications/Insomnia.app`, click the cup, enter Days / Hours /
-Minutes, and press Enter. While running, click the cup or countdown to extend
-the duration. Right-click for status, Settings, and Quit.
+The grant is available to other processes running as your user. Insomnia is not
+sandboxed. The app, scripts, and journals are local; hotspot passwords use the
+login Keychain, not the configuration file.
 
-**First run:** run `./scripts/install.sh`, start a 30m session, close the lid,
-then open `~/Library/Logs/Insomnia/insomnia.log` and check that the session and
-lid-close actions were logged.
+An upgrade asks the running app to quit and stops if it refuses. Unresolved
+recovery prevents replacing the existing recovery agent; follow the reported
+instructions before retrying.
 
-## Hotspot handoff
+</details>
 
-For fast Wi-Fi to iPhone hotspot failover, set
-**System Settings > Wi-Fi > Ask to join hotspots** to **Automatically** once.
-Enter the hotspot SSID and password in Insomnia Settings. The password is stored
-as a generic password in the login Keychain under service `insomnia-hotspot`,
-and Insomnia uses an SSID-filtered CoreWLAN scan to rejoin without putting the
-password in process arguments.
+## Using it
 
-macOS requires Location Services permission before CoreWLAN can reveal Wi-Fi
-network names or find the configured SSID. Insomnia requests that permission on
-the first hotspot save (or when a session starts with a hotspot already
-configured), never merely because the app launched. If access was denied, use
-the Location row in Settings to open **Privacy & Security > Location Services**.
+1. **Start:** click the cup in the menu bar, enter Days / Hours / Minutes, and
+   press Enter.
+2. **Extend:** click the cup or countdown during a session and enter more time.
+3. **End early:** press and hold the end control beside the countdown.
+4. **Inspect or configure:** right-click for status, recovery warnings,
+   **Settings**, and **Quit Insomnia**. Quitting requests session cleanup and
+   can be refused while required recovery remains.
 
-Configured tmux targets opt into sending `continue` followed by Enter after a
-long outage. Use dedicated, disposable agent panes: Insomnia cannot determine
-whether the foreground program already has unsent text, and Enter can submit
-that text too. Removing targets disables this automation. Stopping a session
-cannot retract keystrokes already delivered.
+You do not need to close the lid to use a timed session. Opening the lid does
+not end it, and a sleeping display is not the same as a sleeping Mac.
 
-## Chrome
-
-Chromium browsers throttle windows macOS reports as occluded, which is every
-window once the lid is closed. Insomnia detects a running Chrome, Chromium, or
-Arc process missing `--disable-backgrounding-occluded-windows` or
-`--disable-renderer-backgrounding` and offers **Relaunch unthrottled** in the
-right-click menu. Relaunch preserves the browser profile arguments.
+Before the first session, review the settings—some lid actions are enabled by
+default. Start with a short, supervised session on a ventilated surface and
+check the status menu and `~/Library/Logs/Insomnia/insomnia.log` afterward.
 
 ## What happens when the lid closes
 
-During an active timed session, Insomnia optionally saves and mutes audio,
-freezes only the configured non-agent apps and an idle Docker Desktop, and
-pauses the countdown redraw. Opening the lid, ending the session, or quitting
-attempts to restore the recorded processes and audio from the on-disk journal.
-Without an active session, lid changes do nothing.
+<p align="center">
+  <img src="docs/assets/lid-actions.svg" alt="During an active session, closing the lid applies configured app-pausing, Docker, and audio actions. Reopening attempts to resume verified owned freezes and restore saved audio; the timed session continues. Without an active session, lid changes do nothing." width="880">
+</p>
 
-Docker's idle result is a point-in-time check, not a transaction with container
-startup. Leave the Docker rule disabled when pausing a newly started container
-would interrupt important work.
+During a session, Insomnia can pause selected background apps, check whether
+Docker Desktop is idle before pausing it, and save then mute audio. Reopening
+the lid attempts to undo those lid actions. **The timer keeps counting down
+while the lid is closed**; only its on-screen redraw pauses.
 
-## Files
+The defaults are worth knowing:
 
-```
-~/Library/Application Support/Insomnia/   session.json, state.json, config.json, backstop.sh
-~/Library/Logs/Insomnia/                  insomnia.log, handoffs.log
-~/Library/LaunchAgents/                   com.insomnia.backstop.plist
-/etc/sudoers.d/insomnia
-```
+- **Selected apps:** Slack, WhatsApp, and Discord are on the freeze list.
+  Configured agent apps are excluded from this ordinary list.
+- **Docker rule:** enabled, with a separate local Docker Desktop idle check.
+  Container startup can race that check; disable the rule for important Docker
+  workloads where an unexpected pause would be disruptive.
+- **Mute on close:** off.
+- **Battery rules:** below 40% on battery, request Low Power Mode; below 10%,
+  end the session. Serious thermal state requests Low Power Mode; critical
+  thermal state ends the session. These rules require the app to be running.
 
-Set `INSOMNIA_HOME` to relocate the first three into one directory (used by
-the app's tests and by `backstop.sh`). Do not treat this as an installation
-sandbox: the installation scripts also operate on the app, LaunchAgent, and
-sudoers locations above.
+## How recovery works
+
+<p align="center">
+  <img src="docs/assets/recovery-flow.svg" alt="The app and a launchd backstop coordinate through a shared lock and recovery journal. The app handles normal cleanup. The backstop checks every minute and attempts due recovery, leaving valid active sessions alone. Failed or unreadable recovery evidence stays on disk; saved audio needs the app and unconfirmed stopped processes need inspection." width="880">
+</p>
+
+Insomnia records pending changes in a recovery journal. On session end, the app
+attempts to undo them. An independent `launchd` agent checks every minute and
+can attempt recovery after the app exits unexpectedly, once the saved deadline
+has passed. It leaves a valid, unexpired session alone.
+
+The app and backstop use the same lock so they do not restore and rewrite the
+journal over one another. Failed restoration keeps the relevant entries;
+unreadable journals are preserved instead of treated as clean.
+
+**Recovery is not “everything always gets undone.”** The backstop does not
+monitor battery or temperature. Saved audio needs the app to reopen, and
+unconfirmed process freezes may need manual inspection. If a warning remains,
+resolve it before leaving the Mac unattended. Real-machine crash, reboot, and
+installation scenarios still need [release validation](docs/release-validation.md).
+
+<details>
+<summary><strong>Recovery limits and manual attention</strong></summary>
+
+- **Process ownership:** automatic resume checks the recorded process start
+  time and boot session. Old identity-less entries, or a crash/write failure
+  before a freeze is confirmed, are not automatically resumed while stopped.
+  Verify the live process and whether it should be resumed; never blindly
+  signal a PID from an old log.
+- **Identity is not an atomic guarantee:** the app checks start time to the
+  microsecond; the shell checks to the second. A lookup and a signal are still
+  separate operations.
+- **Stuck power commands:** a command that survives its timeout keeps the
+  recovery lock until it exits. Other recovery attempts or new sessions wait
+  or fail with a warning instead of running alongside it.
+- **Audio:** the backstop preserves volume/mute entries but cannot restore
+  CoreAudio. Reopen the app for recovery.
+- **Low Power Mode:** Insomnia checks the existing setting so it does not
+  claim ownership of an already-enabled preference.
+- **App Nap:** preferences applied to configured agent apps intentionally
+  persist after session end and uninstall.
+- **Uninstall:** refuses to remove recovery machinery while unresolved changes
+  remain. A failed uninstall is not confirmation that power settings are normal.
+
+</details>
+
+## Optional extras
+
+<details>
+<summary><strong>iPhone hotspot handoff and tmux</strong></summary>
+
+Set **System Settings → Wi-Fi → Ask to join hotspots → Automatically**, then
+enter the hotspot SSID and password in Insomnia Settings. The password is
+stored in the login Keychain under service `insomnia-hotspot`. Insomnia uses
+CoreWLAN to find and join that network without putting the password in process
+arguments.
+
+macOS requires Location Services permission to reveal network names. Insomnia
+requests it on the first hotspot save, or when starting a session with a
+configured hotspot—not merely on launch. If denied, use the Location row in
+Settings to open **Privacy & Security → Location Services**.
+
+Configured tmux targets opt into sending `continue` followed by Enter after a
+long outage (90 seconds by default). The default target list is empty. Use
+dedicated, disposable agent panes: pending text is opaque to Insomnia, and
+Enter can submit it too. Ending a session cancels pending automation but cannot
+retract keystrokes already sent.
+
+</details>
+
+<details>
+<summary><strong>Chrome, Chromium, and Arc throttling</strong></summary>
+
+Chromium browsers can throttle windows macOS considers occluded, including
+when the lid is closed. Insomnia detects supported running browsers missing
+`--disable-backgrounding-occluded-windows` or `--disable-renderer-backgrounding`
+and offers **Relaunch [browser] unthrottled** in the right-click menu. Relaunch
+preserves browser profile arguments. This is not a guarantee that every web
+app will keep working while the lid is closed.
+
+</details>
+
+<details>
+<summary><strong>Configuration and privacy</strong></summary>
+
+Configuration lives in `~/Library/Application Support/Insomnia/config.json`.
+Use Settings for the app's controls; [Config.swift](Sources/Insomnia/Model/Config.swift)
+defines the full configuration and defaults. Local logs can contain SSIDs,
+process metadata, and tmux targets. Check them before sharing publicly.
+
+`INSOMNIA_HOME` relocates app support files, logs, and LaunchAgents for testing.
+It is **not an installation sandbox**: installation/removal also involves the
+app bundle and sudoers rule. The installer refuses a relocated home. See
+[Paths.swift](Sources/Insomnia/Store/Paths.swift) for the layout.
+
+</details>
 
 ## Uninstall
 
-```
-./scripts/uninstall.sh          # restores sleep, removes agent, sudoers, app
-./scripts/uninstall.sh --purge  # also removes config.json and logs
+From your checkout:
+
+```bash
+./scripts/uninstall.sh
+# Also remove Insomnia-owned configuration and logs:
+./scripts/uninstall.sh --purge
 ```
 
-Uninstall stops if recovery is incomplete or the app refuses to quit. Resolve
-the reported problem before retrying. Purge removes Insomnia-owned files,
-not arbitrary directory contents; a small shared lock file is retained to
-avoid splitting the recovery lock between concurrent processes.
+The uninstaller requests cleanup before removing the app, agent, and sudoers
+rule. If recovery is incomplete or the app refuses to quit, it stops; resolve
+the reported problem and retry. Purge removes owned files, not arbitrary
+directory contents. A small shared lock file is retained to keep concurrent
+recovery operations coordinated.
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for safe testing boundaries and
-[SECURITY.md](SECURITY.md) for reporting suspected vulnerabilities.
-
-```
+```bash
 swift build
 swift test
 ```
+
+CI runs Swift tests, a release build, and ShellCheck. tmux integration tests
+need tmux installed; check skip counts rather than assuming missing integration
+coverage passed. Tests use injected dependencies and temporary fixtures—not
+live installation or power changes on a contributor's machine.
+
+[Contributing](CONTRIBUTING.md) · [Security reporting](SECURITY.md) ·
+[Release validation](docs/release-validation.md) · [Design notes](docs/spec.md)
+
+## License
+
+[MIT](LICENSE)

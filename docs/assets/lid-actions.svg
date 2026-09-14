@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="576" viewBox="0 0 880 576" role="img" aria-labelledby="la-title la-desc">
+  <title id="la-title">Insomnia lid actions during a session</title>
+  <desc id="la-desc">Two panels. When the lid closes during an active session, Insomnia pauses the selected apps from your freeze list, optionally mutes audio after saving your volume, and applies the Docker idle rule, which pauses Docker after an idle check. When the lid opens, it attempts to resume only the freezes it can verify it made, attempts to restore your saved volume, and attempts to resume Docker if the rule paused it. This repeats every time the lid closes and opens again. The session timer keeps counting the whole time. With no active session there are no lid actions.</desc>
+  <style>
+    svg { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .bg { fill: #F6EFE4; }
+    .panel { fill: #FFFBF4; stroke: #DCCBB6; stroke-width: 1.5; }
+    .chip { fill: #F1E5D3; stroke: #DCCBB6; stroke-width: 1.5; }
+    .t { fill: #2E2119; }
+    .m { fill: #7A6350; }
+    .a { fill: #B5652C; }
+    .ln { fill: none; stroke: #B5652C; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+    .ic { fill: none; stroke: #6B4A32; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .icf { fill: #6B4A32; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1E1712; }
+      .panel { fill: #2A2019; stroke: #4A3A2D; }
+      .chip { fill: #35291F; stroke: #4A3A2D; }
+      .t { fill: #F3E9DC; }
+      .m { fill: #BCA58F; }
+      .a { fill: #DB9256; }
+      .ln { stroke: #DB9256; }
+      .ic { stroke: #D9C4AB; }
+      .icf { fill: #D9C4AB; }
+    }
+  </style>
+  <defs>
+    <marker id="la-arrow" viewBox="0 0 14 14" markerWidth="14" markerHeight="14" refX="11" refY="7" markerUnits="userSpaceOnUse" orient="auto">
+      <path class="a" d="M2 2 L12 7 L2 12 Z"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="880" height="576" rx="24"/>
+
+  <!-- Coffee cup motif -->
+  <g class="ic" transform="translate(40 26)">
+    <path d="M6 12 H22 V21 A6 6 0 0 1 16 27 H12 A6 6 0 0 1 6 21 Z"/>
+    <path d="M22 14 H25 A4 4 0 0 1 25 22 H22"/>
+    <path d="M11 8 C9.5 6 12.5 5 11 3"/>
+    <path d="M17 8 C15.5 6 18.5 5 17 3"/>
+  </g>
+  <text class="t" x="84" y="50" font-size="26" font-weight="700">What the lid does during a session</text>
+  <text class="m" x="84" y="80" font-size="20">Lid actions run only while a session is active.</text>
+
+  <!-- Panel: lid closes -->
+  <g>
+    <rect class="panel" x="40" y="112" width="380" height="300" rx="18"/>
+    <!-- closed laptop -->
+    <g class="ic" transform="translate(64 136)">
+      <rect x="2" y="18" width="36" height="8" rx="3"/>
+      <path d="M8 13 H32"/>
+    </g>
+    <text class="t" x="116" y="160" font-size="24" font-weight="700">Lid closes</text>
+
+    <circle class="chip" cx="84" cy="209" r="16"/>
+    <path class="ic" d="M80 203 V215 M88 203 V215" stroke-width="2.5"/>
+    <text class="t" x="112" y="216" font-size="20" font-weight="600">Pause selected apps</text>
+    <text class="m" x="112" y="242" font-size="20">from your freeze list</text>
+
+    <circle class="chip" cx="84" cy="279" r="16"/>
+    <path class="ic" d="M75 276 H79 L85 271 V287 L79 282 H75 Z"/>
+    <path class="ic" d="M89 276 L95 282 M95 276 L89 282"/>
+    <text class="t" x="112" y="286" font-size="20" font-weight="600">Mute audio</text>
+    <text class="m" x="112" y="312" font-size="20">optional, saves your volume</text>
+
+    <circle class="chip" cx="84" cy="349" r="16"/>
+    <g class="ic">
+      <rect x="75" y="349" width="7" height="7" rx="1"/>
+      <rect x="83" y="349" width="7" height="7" rx="1"/>
+      <rect x="79" y="341" width="7" height="7" rx="1"/>
+      <rect x="91" y="349" width="2" height="7" rx="1"/>
+    </g>
+    <text class="t" x="112" y="356" font-size="20" font-weight="600">Docker idle rule</text>
+    <text class="m" x="112" y="382" font-size="20">paused after an idle check</text>
+  </g>
+
+  <path class="ln" d="M426 262 H452" marker-end="url(#la-arrow)"/>
+
+  <!-- Panel: lid opens -->
+  <g>
+    <rect class="panel" x="460" y="112" width="380" height="300" rx="18"/>
+    <!-- open laptop -->
+    <g class="ic" transform="translate(484 136)">
+      <rect x="8" y="2" width="24" height="17" rx="3"/>
+      <rect x="2" y="22" width="36" height="6" rx="3"/>
+    </g>
+    <text class="t" x="536" y="160" font-size="24" font-weight="700">Lid opens</text>
+
+    <circle class="chip" cx="504" cy="209" r="16"/>
+    <path class="icf" d="M500 202 L511 209 L500 216 Z"/>
+    <text class="t" x="532" y="216" font-size="20" font-weight="600">Resume paused apps</text>
+    <text class="m" x="532" y="242" font-size="20">only freezes it can verify</text>
+
+    <circle class="chip" cx="504" cy="279" r="16"/>
+    <path class="ic" d="M495 276 H499 L505 271 V287 L499 282 H495 Z"/>
+    <path class="ic" d="M510 274 A7 7 0 0 1 510 284"/>
+    <text class="t" x="532" y="286" font-size="20" font-weight="600">Restore audio</text>
+    <text class="m" x="532" y="312" font-size="20">attempts your saved volume</text>
+
+    <circle class="chip" cx="504" cy="349" r="16"/>
+    <g class="ic">
+      <rect x="495" y="349" width="7" height="7" rx="1"/>
+      <rect x="503" y="349" width="7" height="7" rx="1"/>
+      <rect x="499" y="341" width="7" height="7" rx="1"/>
+      <rect x="511" y="349" width="2" height="7" rx="1"/>
+    </g>
+    <text class="t" x="532" y="356" font-size="20" font-weight="600">Resume Docker</text>
+    <text class="m" x="532" y="382" font-size="20">if the rule paused it</text>
+  </g>
+
+  <!-- Loop back -->
+  <path class="ln" d="M650 412 V444 H230 V416" stroke-dasharray="6 7" marker-end="url(#la-arrow)"/>
+  <text class="m" x="440" y="474" font-size="20" text-anchor="middle">Repeats every time the lid closes and opens again.</text>
+
+  <!-- Captions -->
+  <g class="ic">
+    <circle cx="52" cy="510" r="11"/>
+    <path d="M52 504 V510 H57"/>
+  </g>
+  <text class="t" x="76" y="517" font-size="20">The session timer keeps counting the whole time.</text>
+  <g class="ic">
+    <circle cx="52" cy="544" r="11"/>
+    <path d="M44.5 536.5 L59.5 551.5"/>
+  </g>
+  <text class="t" x="76" y="551" font-size="20">No active session means no lid actions.</text>
+</svg>

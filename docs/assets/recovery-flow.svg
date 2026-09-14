@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="780" viewBox="0 0 880 780" role="img" aria-labelledby="rf-title rf-desc">
+  <title id="rf-title">Insomnia recovery flow</title>
+  <desc id="rf-desc">A shared recovery journal records changes before they are made, and the app and the launchd backstop share a recovery lock. Two paths read the journal. First, the Insomnia app: when a session ends normally, the app attempts cleanup right away. Second, the launchd backstop: it checks every 60 seconds and recovers only if the session is due, invalid, or a run is forced. Both paths restore what can be verified, and failed or unverified entries stay in the journal. Some entries may need your attention: saved audio requires reopening the app to restore it, and an unconfirmed freeze means you should inspect the process yourself. The launchd backstop only recovers journaled changes. It does not monitor battery or thermals and does not restore audio.</desc>
+  <style>
+    svg { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .bg { fill: #F6EFE4; }
+    .panel { fill: #FFFBF4; stroke: #DCCBB6; stroke-width: 1.5; }
+    .chip { fill: #F1E5D3; stroke: #DCCBB6; stroke-width: 1.5; }
+    .t { fill: #2E2119; }
+    .m { fill: #7A6350; }
+    .a { fill: #B5652C; }
+    .ln { fill: none; stroke: #B5652C; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+    .ic { fill: none; stroke: #6B4A32; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .warn { fill: #A35A1C; }
+    .warn-ic { fill: none; stroke: #A35A1C; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #1E1712; }
+      .panel { fill: #2A2019; stroke: #4A3A2D; }
+      .chip { fill: #35291F; stroke: #4A3A2D; }
+      .t { fill: #F3E9DC; }
+      .m { fill: #BCA58F; }
+      .a { fill: #DB9256; }
+      .ln { stroke: #DB9256; }
+      .ic { stroke: #D9C4AB; }
+      .warn { fill: #E3A66B; }
+      .warn-ic { stroke: #E3A66B; }
+    }
+  </style>
+  <defs>
+    <marker id="rf-arrow" viewBox="0 0 14 14" markerWidth="14" markerHeight="14" refX="11" refY="7" markerUnits="userSpaceOnUse" orient="auto">
+      <path class="a" d="M2 2 L12 7 L2 12 Z"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="880" height="780" rx="24"/>
+
+  <!-- Coffee cup motif -->
+  <g class="ic" transform="translate(40 26)">
+    <path d="M6 12 H22 V21 A6 6 0 0 1 16 27 H12 A6 6 0 0 1 6 21 Z"/>
+    <path d="M22 14 H25 A4 4 0 0 1 25 22 H22"/>
+    <path d="M11 8 C9.5 6 12.5 5 11 3"/>
+    <path d="M17 8 C15.5 6 18.5 5 17 3"/>
+  </g>
+  <text class="t" x="84" y="50" font-size="26" font-weight="700">Two ways back to normal</text>
+  <text class="m" x="84" y="80" font-size="20">Changes are journaled first. The app and backstop share a recovery lock.</text>
+
+  <!-- Shared journal -->
+  <g>
+    <rect class="panel" x="250" y="104" width="380" height="64" rx="16"/>
+    <g class="ic" transform="translate(270 122)">
+      <rect x="1" y="1" width="22" height="28" rx="3"/>
+      <path d="M7 9 H17 M7 15 H17 M7 21 H13"/>
+    </g>
+    <text class="t" x="306" y="144" font-size="24" font-weight="700">Shared recovery journal</text>
+  </g>
+
+  <!-- Split to two paths -->
+  <path class="ln" d="M440 168 V192 H230 V222" marker-end="url(#rf-arrow)"/>
+  <path class="ln" d="M440 192 H650 V222" marker-end="url(#rf-arrow)"/>
+
+  <!-- Path: app cleanup -->
+  <g>
+    <rect class="panel" x="40" y="226" width="380" height="170" rx="18"/>
+    <g class="ic" transform="translate(64 246)">
+      <path d="M6 12 H22 V21 A6 6 0 0 1 16 27 H12 A6 6 0 0 1 6 21 Z"/>
+      <path d="M22 14 H25 A4 4 0 0 1 25 22 H22"/>
+      <path d="M11 8 C9.5 6 12.5 5 11 3"/>
+      <path d="M17 8 C15.5 6 18.5 5 17 3"/>
+    </g>
+    <text class="t" x="108" y="272" font-size="24" font-weight="700">Insomnia app</text>
+    <text class="m" x="64" y="316" font-size="20">When a session ends normally,</text>
+    <text class="m" x="64" y="342" font-size="20">the app attempts cleanup</text>
+    <text class="m" x="64" y="368" font-size="20">right away.</text>
+  </g>
+
+  <!-- Path: launchd backstop -->
+  <g>
+    <rect class="panel" x="460" y="226" width="380" height="170" rx="18"/>
+    <g class="ic" transform="translate(484 246)">
+      <circle cx="16" cy="16" r="13"/>
+      <path d="M16 8 V16 H22"/>
+    </g>
+    <text class="t" x="528" y="272" font-size="24" font-weight="700">launchd backstop</text>
+    <text class="m" x="484" y="316" font-size="20">Checks every 60 seconds.</text>
+    <text class="m" x="484" y="342" font-size="20">Recovers only if the session is</text>
+    <text class="m" x="484" y="368" font-size="20">due, invalid, or a run is forced.</text>
+  </g>
+
+  <!-- Converge -->
+  <path class="ln" d="M230 396 V424 H650 V396"/>
+  <path class="ln" d="M440 424 V452" marker-end="url(#rf-arrow)"/>
+
+  <!-- Restore -->
+  <g>
+    <rect class="panel" x="170" y="456" width="540" height="96" rx="16"/>
+    <text class="t" x="440" y="492" font-size="24" font-weight="700" text-anchor="middle">Restore what can be verified</text>
+    <text class="m" x="440" y="524" font-size="20" text-anchor="middle">Failed or unverified entries stay in the journal.</text>
+  </g>
+
+  <!-- Attention branch -->
+  <path class="ln" d="M440 552 V580" marker-end="url(#rf-arrow)"/>
+  <g class="warn-ic">
+    <path d="M285 588 L297 610 H273 Z"/>
+    <path d="M285 596 V603"/>
+    <path d="M285 606.5 V607"/>
+  </g>
+  <text class="warn" x="308" y="608" font-size="24" font-weight="700">May need your attention</text>
+
+  <g>
+    <rect class="chip" x="120" y="626" width="310" height="68" rx="16"/>
+    <text class="t" x="140" y="654" font-size="20" font-weight="600">Saved audio</text>
+    <text class="m" x="140" y="680" font-size="20">Reopen the app to restore it.</text>
+  </g>
+  <g>
+    <rect class="chip" x="450" y="626" width="310" height="68" rx="16"/>
+    <text class="t" x="470" y="654" font-size="20" font-weight="600">Unconfirmed freeze</text>
+    <text class="m" x="470" y="680" font-size="20">Inspect the process yourself.</text>
+  </g>
+
+  <!-- Scope note -->
+  <text class="m" x="40" y="732" font-size="20">The launchd backstop only recovers journaled changes.</text>
+  <text class="m" x="40" y="760" font-size="20">It does not monitor battery or thermals and does not restore audio.</text>
+</svg>
