@@ -6,6 +6,9 @@ protocol SleepGuarding: Sendable {
     func setSleepDisabled(_ disabled: Bool) async throws
     func isSleepDisabled() async throws -> Bool
     func setLowPowerMode(_ on: Bool) async throws
+    /// Battery Low Power Mode as pmset reports it now. Throws when it cannot
+    /// be read; callers must then not take ownership of the mode.
+    func isLowPowerModeOn() async throws -> Bool
 }
 
 struct SleepGuardError: Error, LocalizedError, Sendable {
@@ -29,6 +32,9 @@ struct SleepGuardError: Error, LocalizedError, Sendable {
 struct PmsetSleepGuard: SleepGuarding {
     static let sudo = "/usr/bin/sudo"
     static let pmset = "/usr/bin/pmset"
+    /// pmset normally returns in well under a second; a hung powerd must not
+    /// hang a quit or a lid action forever.
+    static let timeout: TimeInterval = 20
 
     func setSleepDisabled(_ disabled: Bool) async throws {
         try await sudoPmset(["-a", "disablesleep", disabled ? "1" : "0"])
@@ -39,11 +45,22 @@ struct PmsetSleepGuard: SleepGuarding {
     }
 
     func isSleepDisabled() async throws -> Bool {
-        let r = try await Shell.run(Self.pmset, ["-g"])
+        let r = try await CancellableCommand().run(Self.pmset, ["-g"], timeout: Self.timeout)
         guard r.succeeded else {
             throw SleepGuardError(command: "pmset -g", status: r.status, stderr: r.stderr)
         }
         return Self.parseSleepDisabled(r.stdout)
+    }
+
+    func isLowPowerModeOn() async throws -> Bool {
+        let r = try await CancellableCommand().run(Self.pmset, ["-g", "custom"], timeout: Self.timeout)
+        guard r.succeeded else {
+            throw SleepGuardError(command: "pmset -g custom", status: r.status, stderr: r.stderr)
+        }
+        guard let on = Self.parseLowPowerMode(r.stdout) else {
+            throw SleepGuardError(command: "pmset -g custom", status: 0, stderr: "no lowpowermode line under Battery Power")
+        }
+        return on
     }
 
     /// True when `pmset -g` output has a line whose first token is
@@ -59,9 +76,38 @@ struct PmsetSleepGuard: SleepGuarding {
         return false
     }
 
+    /// `lowpowermode` in the `Battery Power:` section of `pmset -g custom`
+    /// (the one `pmset -b` writes). nil when the section or key is absent,
+    /// as on a desktop, or when the value is anything but an explicit `0`
+    /// or `1`: an unreadable value is not proof that the mode is off, and
+    /// treating it as off would take over a preference the user may have set.
+    static func parseLowPowerMode(_ output: String) -> Bool? {
+        var inBattery = false
+        for rawLine in output.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasSuffix(":") {
+                inBattery = line == "Battery Power:"
+                continue
+            }
+            guard inBattery else { continue }
+            let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            guard parts.count >= 2, parts[0] == "lowpowermode" else { continue }
+            switch parts[1] {
+            case "1": return true
+            case "0": return false
+            default: return nil
+            }
+        }
+        return nil
+    }
+
     private func sudoPmset(_ args: [String]) async throws {
         let full = [Self.pmset] + args
-        let r = try await Shell.run(Self.sudo, ["-n"] + full)
+        // CancellableCommand, not Shell.run(timeout:): it reports a child
+        // that had to be stopped at the deadline as a timeout even if the
+        // child exits 0 on SIGTERM, and a caller cancelled mid-flight kills
+        // the child instead of leaving it running.
+        let r = try await CancellableCommand().run(Self.sudo, ["-n"] + full, timeout: Self.timeout)
         guard r.succeeded else {
             throw SleepGuardError(command: "sudo -n \(full.joined(separator: " "))", status: r.status, stderr: r.stderr)
         }

@@ -1,24 +1,94 @@
 import Foundation
 
+/// What makes a pid "the process Insomnia froze": its kernel start time to
+/// the microsecond and the boot session it started in. A reused pid, or the
+/// same pid after a reboot, cannot match all three.
+///
+/// backstop.sh can only read whole seconds from `ps -o lstart`, so the shell
+/// compares `startedAt` and `bootSession` and treats that as one-second
+/// identity, not an exact match. Only the app compares the microseconds.
+struct ProcessIdentity: Codable, Equatable, Hashable, Sendable {
+    /// Seconds since the epoch, the same value `ps -o lstart` prints.
+    let startedAt: Int64
+    let startedAtMicros: Int32
+    /// `kern.bootsessionuuid`, stable for one boot.
+    let bootSession: String
+
+    init(startedAt: Int64, startedAtMicros: Int32, bootSession: String) {
+        self.startedAt = startedAt
+        self.startedAtMicros = startedAtMicros
+        self.bootSession = bootSession
+    }
+}
+
+/// One journaled SIGSTOP. `identity` is nil for entries written by an older
+/// build as `frozenPids`, which recorded the pid alone, and for provisional
+/// entries `LidActions.freeze` writes before the kernel has confirmed the
+/// stop. Either way such an entry is never signaled, because nothing proves
+/// the stopped process is ours.
+struct FrozenProcess: Codable, Equatable, Hashable, Sendable {
+    let pid: Int32
+    let identity: ProcessIdentity?
+
+    init(pid: Int32, identity: ProcessIdentity?) {
+        self.pid = pid
+        self.identity = identity
+    }
+
+    // Flat keys so backstop.sh can read them with plutil.
+    private enum CodingKeys: String, CodingKey {
+        case pid, startedAt, startedAtMicros, bootSession
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        pid = try c.decode(Int32.self, forKey: .pid)
+        if let sec = try c.decodeIfPresent(Int64.self, forKey: .startedAt),
+           let micros = try c.decodeIfPresent(Int32.self, forKey: .startedAtMicros),
+           let boot = try c.decodeIfPresent(String.self, forKey: .bootSession) {
+            identity = ProcessIdentity(startedAt: sec, startedAtMicros: micros, bootSession: boot)
+        } else {
+            identity = nil
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(pid, forKey: .pid)
+        if let identity {
+            try c.encode(identity.startedAt, forKey: .startedAt)
+            try c.encode(identity.startedAtMicros, forKey: .startedAtMicros)
+            try c.encode(identity.bootSession, forKey: .bootSession)
+        }
+    }
+}
+
 /// Everything Insomnia has changed on the machine and must undo.
 /// Written to disk *before* each change is made and undone from disk, never
 /// from memory (spec section 8 invariants).
 struct RuntimeState: Codable, Equatable, Sendable {
     var sleepDisabledByUs: Bool = false
     var lowPowerSetByUs: Bool = false
-    var frozenPids: [Int32] = []
+    var frozenProcesses: [FrozenProcess] = []
     var dockerFrozen: Bool = false
     /// nil when mute is off or the lid is open.
     var savedOutputVolume: Float? = nil
     var savedMuted: Bool? = nil
+
+    /// Bare pids of every journaled freeze, for display and de-duplication.
+    var frozenPids: [Int32] { frozenProcesses.map(\.pid) }
 
     /// A state with nothing left to undo.
     static let clean = RuntimeState()
 
     /// True when at least one entry still needs undoing.
     var isDirty: Bool {
-        sleepDisabledByUs || lowPowerSetByUs || !frozenPids.isEmpty || dockerFrozen
+        sleepDisabledByUs || lowPowerSetByUs || !frozenProcesses.isEmpty || dockerFrozen
             || savedOutputVolume != nil || savedMuted != nil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sleepDisabledByUs, lowPowerSetByUs, frozenProcesses, frozenPids, dockerFrozen, savedOutputVolume, savedMuted
     }
 
     // Tolerate missing keys so a state.json written by an older build, or by
@@ -29,9 +99,27 @@ struct RuntimeState: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         sleepDisabledByUs = try c.decodeIfPresent(Bool.self, forKey: .sleepDisabledByUs) ?? false
         lowPowerSetByUs = try c.decodeIfPresent(Bool.self, forKey: .lowPowerSetByUs) ?? false
-        frozenPids = try c.decodeIfPresent([Int32].self, forKey: .frozenPids) ?? []
+        frozenProcesses = try c.decodeIfPresent([FrozenProcess].self, forKey: .frozenProcesses) ?? []
+        // Legacy list from an older build: pids without identity.
+        let legacy = try c.decodeIfPresent([Int32].self, forKey: .frozenPids) ?? []
+        let known = Set(frozenProcesses.map(\.pid))
+        for pid in legacy where !known.contains(pid) {
+            frozenProcesses.append(FrozenProcess(pid: pid, identity: nil))
+        }
         dockerFrozen = try c.decodeIfPresent(Bool.self, forKey: .dockerFrozen) ?? false
         savedOutputVolume = try c.decodeIfPresent(Float.self, forKey: .savedOutputVolume)
         savedMuted = try c.decodeIfPresent(Bool.self, forKey: .savedMuted)
+    }
+
+    /// `frozenPids` is read for migration only and never written again, so
+    /// an older backstop.sh can no longer SIGCONT an unverified pid from it.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(sleepDisabledByUs, forKey: .sleepDisabledByUs)
+        try c.encode(lowPowerSetByUs, forKey: .lowPowerSetByUs)
+        try c.encode(frozenProcesses, forKey: .frozenProcesses)
+        try c.encode(dockerFrozen, forKey: .dockerFrozen)
+        try c.encodeIfPresent(savedOutputVolume, forKey: .savedOutputVolume)
+        try c.encodeIfPresent(savedMuted, forKey: .savedMuted)
     }
 }

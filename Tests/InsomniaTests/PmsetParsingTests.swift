@@ -67,4 +67,39 @@ final class PmsetParsingTests: XCTestCase {
         XCTAssertTrue(msg.contains("password is required"))
         XCTAssertTrue(msg.contains("install.sh"))
     }
+
+    // Real `pmset -g custom` shape on a MacBook: one block per power source.
+    let custom = """
+    Battery Power:
+     lidwake              1
+     lowpowermode         1
+     standbydelayhigh     86400
+     sleep                1
+    AC Power:
+     lidwake              1
+     lowpowermode         0
+     sleep                1
+    """
+
+    func testLowPowerModeIsReadFromTheBatterySectionOnly() {
+        XCTAssertEqual(PmsetSleepGuard.parseLowPowerMode(custom), true)
+        let swapped = custom.replacingOccurrences(of: "lowpowermode         1", with: "lowpowermode         X")
+            .replacingOccurrences(of: "lowpowermode         0", with: "lowpowermode         1")
+            .replacingOccurrences(of: "lowpowermode         X", with: "lowpowermode         0")
+        XCTAssertEqual(PmsetSleepGuard.parseLowPowerMode(swapped), false, "read the AC value instead of the battery value")
+    }
+
+    func testLowPowerModeIsUnknownWithoutABatterySection() {
+        XCTAssertNil(PmsetSleepGuard.parseLowPowerMode("AC Power:\n lowpowermode 1\n"))
+        XCTAssertNil(PmsetSleepGuard.parseLowPowerMode(""))
+    }
+
+    /// Only an explicit 0 or 1 is an answer. Anything else is unknown, and
+    /// unknown must not become "off", or Insomnia would take over a mode the
+    /// user may have switched on.
+    func testLowPowerModeValueMustBeAnExplicitZeroOrOne() {
+        XCTAssertEqual(PmsetSleepGuard.parseLowPowerMode("Battery Power:\n lowpowermode 0\n"), false)
+        XCTAssertNil(PmsetSleepGuard.parseLowPowerMode("Battery Power:\n lowpowermode 2\n"))
+        XCTAssertNil(PmsetSleepGuard.parseLowPowerMode("Battery Power:\n lowpowermode (unknown)\n"), "an unreadable value was taken as proof the mode is off")
+    }
 }

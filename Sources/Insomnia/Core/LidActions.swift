@@ -26,24 +26,33 @@ final class LidActions {
             Log.info("lid closed: no session, nothing to do")
             return
         }
-        let config = manager.config
+        // One lifecycle transaction: journal writes and SIGSTOPs happen
+        // under the recovery lock, after any end already in flight.
+        let ran = await manager.runExclusive("lid close") { [self, manager] in
+            guard manager.isActive, !Task.isCancelled else { return }
+            let ticket = manager.endTicket
+            let config = manager.config
 
-        if config.muteOnLidClose {
-            muteSavingCurrent(manager)
+            if config.muteOnLidClose {
+                muteSavingCurrent(manager)
+            }
+
+            let groups = freezer.plan(bundleIds: config.freezeList, config: config)
+            for group in groups {
+                freeze(group, docker: false, manager: manager)
+            }
+
+            let dockerGroup = await docker.idleDockerGroup(config: config)
+            // An end requested while the probe ran wins: it is queued right
+            // behind this transaction and must not find a fresh freeze.
+            guard manager.isActive, manager.endTicket == ticket, !Task.isCancelled else { return }
+            if let dockerGroup {
+                freeze(dockerGroup, docker: true, manager: manager)
+            }
+
+            manager.pauseCountdown()
         }
-
-        let groups = freezer.plan(bundleIds: config.freezeList, config: config)
-        for group in groups {
-            freeze(group, docker: false, manager: manager)
-        }
-
-        let dockerGroup = await docker.idleDockerGroup(config: config)
-        guard manager.isActive, !Task.isCancelled else { return }
-        if let dockerGroup {
-            freeze(dockerGroup, docker: true, manager: manager)
-        }
-
-        manager.pauseCountdown()
+        if !ran { Log.error("lid close actions skipped: recovery lock busy") }
     }
 
     func onOpen() async {
@@ -75,18 +84,47 @@ final class LidActions {
 
     private func freeze(_ group: FreezeGroup, docker: Bool, manager: SessionManager) {
         let already = Set(manager.state.frozenPids)
-        let pids = group.pids.filter { !already.contains($0) }
-        guard !pids.isEmpty else { return }
+        var candidates: [FrozenProcess] = []
+        for pid in group.pids where !already.contains(pid) {
+            guard let identity = group.identities[pid] else {
+                Log.error("freeze: no start identity for pid \(pid) of \(group.name); left running")
+                continue
+            }
+            candidates.append(FrozenProcess(pid: pid, identity: identity))
+        }
+        guard !candidates.isEmpty else { return }
+        let candidatePids = Set(candidates.map(\.pid))
+        // Journal first, but without identity: an entry with no identity is
+        // never resumed by the app or backstop.sh, so until the kernel has
+        // said which pids it actually stopped the journal claims none of
+        // them. Identity is added below only for the confirmed stops.
+        let provisional = candidates.map { FrozenProcess(pid: $0.pid, identity: nil) }
         do {
             try manager.journal { s in
-                s.frozenPids.append(contentsOf: pids)
+                s.frozenProcesses.append(contentsOf: provisional)
                 if docker { s.dockerFrozen = true }
             }
         } catch {
             Log.error("could not journal freeze of \(group.bundleId): \(error.localizedDescription); left running")
             return
         }
-        freezer.suspend(pids: pids, expectedParents: group.expectedParents)
-        Log.info("froze \(group.name) (\(pids.count) pid(s))")
+        let report = freezer.suspend(candidates, expectedParents: group.expectedParents)
+        // One write replaces the provisional entries: confirmed stops gain
+        // their identity, skipped pids (already stopped, gone, reparented,
+        // reused) leave. If this write fails the provisional entries stay
+        // on disk, still without identity, so nothing later resumes them;
+        // any that really are stopped are reported for manual recovery.
+        let suspended = Set(report.suspended)
+        let confirmed = candidates.filter { suspended.contains($0.pid) }
+        do {
+            try manager.journal { s in
+                s.frozenProcesses.removeAll { candidatePids.contains($0.pid) }
+                s.frozenProcesses.append(contentsOf: confirmed)
+                if docker, confirmed.isEmpty { s.dockerFrozen = false }
+            }
+        } catch {
+            Log.error("could not confirm freeze of \(group.bundleId) in the journal: \(error.localizedDescription); \(candidates.count) pid(s) stay journaled without identity and will not be resumed automatically")
+        }
+        Log.info("froze \(group.name) (\(report.suspended.count) pid(s), \(report.skipped.count) skipped)")
     }
 }

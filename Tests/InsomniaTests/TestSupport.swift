@@ -54,17 +54,39 @@ final class FakeSleepGuard: SleepGuarding, @unchecked Sendable {
     private let lock = NSLock()
     private var _calls: [String] = []
     private var _sleepDisabled = false
+    private var _lowPowerOn = false
     private var _lowPowerGate: AsyncGate?
+    private var _sleepGate: AsyncGate?
+    private var _readGate: AsyncGate?
     var throwOn: Set<String> = []
+    /// Commands that take effect and *then* fail (a timeout after pmset
+    /// already applied the setting): the ambiguous failure shape.
+    var throwAfterEffect: Set<String> = []
 
     var calls: [String] { lock.withLock { _calls } }
     var sleepDisabled: Bool {
         get { lock.withLock { _sleepDisabled } }
         set { lock.withLock { _sleepDisabled = newValue } }
     }
+    /// Simulated battery Low Power Mode, as `pmset -g custom` would report it.
+    var lowPowerOn: Bool {
+        get { lock.withLock { _lowPowerOn } }
+        set { lock.withLock { _lowPowerOn = newValue } }
+    }
+    /// Holds `lowpowermode 1` after the call is recorded, before it takes effect.
     var lowPowerGate: AsyncGate? {
         get { lock.withLock { _lowPowerGate } }
         set { lock.withLock { _lowPowerGate = newValue } }
+    }
+    /// Holds `disablesleep 1` after the call is recorded, before it takes effect.
+    var sleepGate: AsyncGate? {
+        get { lock.withLock { _sleepGate } }
+        set { lock.withLock { _sleepGate = newValue } }
+    }
+    /// Holds `pmset -g` after the call is recorded, before it answers.
+    var readGate: AsyncGate? {
+        get { lock.withLock { _readGate } }
+        set { lock.withLock { _readGate = newValue } }
     }
 
     private func record(_ c: String) throws {
@@ -74,35 +96,100 @@ final class FakeSleepGuard: SleepGuarding, @unchecked Sendable {
         }
     }
 
+    private func afterEffect(_ c: String) throws {
+        if throwAfterEffect.contains(c) {
+            throw ShellTimeoutError.timedOut(exe: "/usr/bin/pmset", seconds: 20)
+        }
+    }
+
     func setSleepDisabled(_ disabled: Bool) async throws {
         try record("disablesleep \(disabled ? 1 : 0)")
+        if disabled, let gate = sleepGate { await gate.wait() }
         sleepDisabled = disabled
+        try afterEffect("disablesleep \(disabled ? 1 : 0)")
     }
 
     func isSleepDisabled() async throws -> Bool {
         try record("pmset -g")
+        if let gate = readGate { await gate.wait() }
         return sleepDisabled
     }
 
     func setLowPowerMode(_ on: Bool) async throws {
         try record("lowpowermode \(on ? 1 : 0)")
         if on, let gate = lowPowerGate { await gate.wait() }
+        lowPowerOn = on
+        try afterEffect("lowpowermode \(on ? 1 : 0)")
+    }
+
+    func isLowPowerModeOn() async throws -> Bool {
+        try record("pmset -g custom")
+        return lowPowerOn
     }
 }
 
+/// Signal layer double. Records what it was asked to signal; the identity
+/// checks themselves live in `SignalProcessControl` and are tested there.
+/// It honours the protocol contract that an entry without identity is never
+/// signaled, and can be told that SIGCONT fails for particular pids, that
+/// SIGSTOP is refused for some, or that some pids are stopped right now.
 final class FakeProcessControl: ProcessSignaling, @unchecked Sendable {
     private let lock = NSLock()
     private var _resumed: [[Int32]] = []
+    private var _signaled: [Int32] = []
     private var _suspended: [[Int32]] = []
+    private var _failResume: Set<Int32> = []
+    private var _refuseSuspend: Set<Int32> = []
+    private var _stoppedNow: Set<Int32> = []
     var resumed: [[Int32]] { lock.withLock { _resumed } }
+    /// Pids actually reported resumed (SIGCONT delivered), across all calls.
+    var signaled: [Int32] { lock.withLock { _signaled } }
     var suspended: [[Int32]] { lock.withLock { _suspended } }
+    /// Pids whose SIGCONT is reported as failed (verified, still stopped).
+    var failResume: Set<Int32> {
+        get { lock.withLock { _failResume } }
+        set { lock.withLock { _failResume = newValue } }
+    }
+    /// Pids the fake kernel will not stop (already stopped, exited, reused).
+    var refuseSuspend: Set<Int32> {
+        get { lock.withLock { _refuseSuspend } }
+        set { lock.withLock { _refuseSuspend = newValue } }
+    }
+    /// Pids currently stopped in the fake kernel. An identity-less entry for
+    /// one of these is unverifiable; for any other pid it is gone.
+    var stoppedNow: Set<Int32> {
+        get { lock.withLock { _stoppedNow } }
+        set { lock.withLock { _stoppedNow = newValue } }
+    }
     /// Called synchronously inside `suspend`, so a test can inspect disk
     /// at the moment the side effect happens.
     var onSuspend: (@Sendable ([Int32]) -> Void)?
-    func resume(pids: [Int32]) { lock.withLock { _resumed.append(pids) } }
-    func suspend(pids: [Int32], expectedParents: [Int32: Int32]) {
+
+    func resume(_ processes: [FrozenProcess]) -> ResumeReport {
+        lock.withLock { _resumed.append(processes.map(\.pid)) }
+        var report = ResumeReport()
+        for p in processes {
+            if p.identity == nil {
+                if stoppedNow.contains(p.pid) { report.unverifiable.append(p.pid) } else { report.gone.append(p.pid) }
+            } else if failResume.contains(p.pid) {
+                report.failed.append(p.pid)
+            } else {
+                report.resumed.append(p.pid)
+            }
+        }
+        lock.withLock { _signaled.append(contentsOf: report.resumed) }
+        return report
+    }
+
+    func suspend(_ processes: [FrozenProcess], expectedParents: [Int32: Int32]) -> SuspendReport {
+        let pids = processes.map(\.pid)
         lock.withLock { _suspended.append(pids) }
         onSuspend?(pids)
+        var report = SuspendReport()
+        for pid in pids {
+            if refuseSuspend.contains(pid) { report.skipped.append(pid) } else { report.suspended.append(pid) }
+        }
+        return report
     }
 }
 
@@ -171,10 +258,38 @@ final class FakeFreezer: Freezing, @unchecked Sendable {
         }
     }
 
-    func suspend(pids: [Int32], expectedParents: [Int32: Int32]) {
-        control.suspend(pids: pids, expectedParents: expectedParents)
+    func suspend(_ processes: [FrozenProcess], expectedParents: [Int32: Int32]) -> SuspendReport {
+        control.suspend(processes, expectedParents: expectedParents)
     }
-    func resume(pids: [Int32]) { control.resume(pids: pids) }
+    func resume(_ processes: [FrozenProcess]) -> ResumeReport { control.resume(processes) }
+}
+
+// MARK: Identity conveniences for fixtures
+
+extension ProcessIdentity {
+    /// Fixture identity: start seconds only, in the fixture boot session.
+    init(startedAt: Int64) {
+        self.init(startedAt: startedAt, startedAtMicros: 0, bootSession: "boot")
+    }
+}
+
+extension ProcessEntry {
+    init(pid: Int32, ppid: Int32, startedAt: Int64, stopped: Bool = false) {
+        self.init(pid: pid, ppid: ppid, identity: ProcessIdentity(startedAt: startedAt), stopped: stopped)
+    }
+}
+
+extension FrozenProcess {
+    /// nil start time models a legacy `frozenPids` entry.
+    init(pid: Int32, startedAt: Int64?) {
+        self.init(pid: pid, identity: startedAt.map { ProcessIdentity(startedAt: $0) })
+    }
+}
+
+extension ProcessSignalState {
+    init(ppid: Int32, stopped: Bool, startedAt: Int64) {
+        self.init(ppid: ppid, stopped: stopped, identity: ProcessIdentity(startedAt: startedAt))
+    }
 }
 
 /// Mutable clamshell reading for reconcile gating tests.
@@ -190,20 +305,25 @@ final class FakeClamshell: @unchecked Sendable {
 
 final class FakeBackstop: BackstopScheduling, @unchecked Sendable {
     private let lock = NSLock()
-    private var _scheduled: [Date] = []
-    private var _clears = 0
-    private var _failSchedule = false
-    var scheduled: [Date] { lock.withLock { _scheduled } }
-    var clears: Int { lock.withLock { _clears } }
-    var failSchedule: Bool {
-        get { lock.withLock { _failSchedule } }
-        set { lock.withLock { _failSchedule = newValue } }
+    private var _arms = 0
+    private var _failArm = false
+    private var _armGate: AsyncGate?
+    /// Successful `arm()` calls.
+    var arms: Int { lock.withLock { _arms } }
+    var failArm: Bool {
+        get { lock.withLock { _failArm } }
+        set { lock.withLock { _failArm = newValue } }
     }
-    func schedule(endsAt: Date) async throws {
-        if failSchedule { throw BackstopError(message: "fake launchd refused") }
-        lock.withLock { _scheduled.append(endsAt) }
+    /// Holds `arm()` before it answers, like a slow launchctl.
+    var armGate: AsyncGate? {
+        get { lock.withLock { _armGate } }
+        set { lock.withLock { _armGate = newValue } }
     }
-    func clear() async throws { lock.withLock { _clears += 1 } }
+    func arm() async throws {
+        if let gate = armGate { await gate.wait() }
+        if failArm { throw BackstopError(message: "fake launchd refused") }
+        lock.withLock { _arms += 1 }
+    }
 }
 
 /// A mutable fake clock usable from the @Sendable clock closure.
@@ -242,7 +362,9 @@ struct Harness {
         clamshell = FakeClamshell(false)
     }
 
-    func makeManager() -> SessionManager {
+    /// `lockTimeout` is short so contention tests fail closed quickly;
+    /// `retryDelay` is long so the in-process retry never fires by accident.
+    func makeManager(lockTimeout: TimeInterval = 0.3, retryDelay: TimeInterval = 60) -> SessionManager {
         let c = clock
         let lid = clamshell
         return SessionManager(
@@ -253,7 +375,18 @@ struct Harness {
             audio: audio,
             notifier: notifier,
             clamshell: { lid.closed },
-            clock: { c.now }
+            clock: { c.now },
+            recoveryLockTimeout: lockTimeout,
+            recoveryRetryDelay: retryDelay
         )
     }
+}
+
+/// Let tasks created just now run up to their first suspension (the
+/// lifecycle queue), so the request order is fixed before a held operation
+/// is released. Serialized tests must release the held operation and only
+/// then await the operation queued behind it.
+@MainActor
+func settleQueuedRequests() async {
+    for _ in 0..<5 { await Task.yield() }
 }

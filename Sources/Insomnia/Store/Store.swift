@@ -61,20 +61,49 @@ struct Store: Sendable {
     func saveSession(_ s: Session) throws { try write(s, to: paths.sessionFile) }
     func deleteSession() throws { try remove(at: paths.sessionFile) }
 
-    func loadState() throws -> RuntimeState? { try read(RuntimeState.self, from: paths.stateFile) }
+    /// Non-mutating. A journal that does not decode stays exactly where it
+    /// is: it is the only record of what a previous run changed, and moving
+    /// or rewriting it would let the next reader (this app, backstop.sh,
+    /// uninstall.sh) see no journal and call the machine clean. The error
+    /// names the file so a person can fix or move it.
+    func loadState() throws -> RuntimeState? {
+        do {
+            return try read(RuntimeState.self, from: paths.stateFile)
+        } catch let error as DecodingError {
+            throw StoreError.corrupt(file: paths.stateFile.path, detail: Self.brief(error))
+        }
+    }
     func saveState(_ s: RuntimeState) throws { try write(s, to: paths.stateFile) }
 
     func loadConfig() throws -> Config? { try read(Config.self, from: paths.configFile) }
     func saveConfig(_ c: Config) throws { try write(c, to: paths.configFile) }
+
+    /// One line about why decoding failed, fit for a notification.
+    private static func brief(_ error: DecodingError) -> String {
+        func path(_ c: DecodingError.Context) -> String {
+            let p = c.codingPath.map(\.stringValue).joined(separator: ".")
+            return p.isEmpty ? "" : "\(p): "
+        }
+        switch error {
+        case let .dataCorrupted(c): return path(c) + c.debugDescription
+        case let .keyNotFound(k, c): return path(c) + "missing key \(k.stringValue)"
+        case let .typeMismatch(t, c): return path(c) + "expected \(t)"
+        case let .valueNotFound(t, c): return path(c) + "missing \(t)"
+        @unknown default: return String(describing: error)
+        }
+    }
 }
 
 enum StoreError: Error, LocalizedError {
     case rename(from: String, to: String, errno: Int32)
+    case corrupt(file: String, detail: String)
 
     var errorDescription: String? {
         switch self {
         case let .rename(from, to, errno):
             return "rename \(from) -> \(to) failed: \(String(cString: strerror(errno)))"
+        case let .corrupt(file, detail):
+            return "\(file) could not be decoded (\(detail)); it was left in place"
         }
     }
 }

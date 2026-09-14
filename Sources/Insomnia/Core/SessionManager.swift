@@ -8,6 +8,41 @@ enum EndReason: String, Sendable {
     case batteryFloor
     case thermalCritical
     case backstop
+    /// Reconcile found a session on disk but could not arm the recovery
+    /// agent, journal, or hold sleep for it, so it ended the session instead
+    /// of holding sleep with nothing to release it.
+    case recoveryUnavailable
+    /// `pmset disablesleep 1` failed or timed out during start. The setting
+    /// may still have been applied, so the start is undone from the journal
+    /// like an end rather than rolled back from memory.
+    case startFailed
+}
+
+/// What `end` achieved. Callers that are about to quit need to know whether
+/// leaving now abandons anything.
+enum EndOutcome: Sendable, Equatable {
+    /// Journal clean, machine restored.
+    case restored
+    /// Some entries could not be undone and stay journaled. `agentArmed`
+    /// says whether the polling agent is confirmed loaded to retry them.
+    case incomplete(agentArmed: Bool)
+    /// The recovery lock stayed busy; nothing was read or changed and the
+    /// session is still active. An in-process retry is scheduled.
+    case locked
+    /// session.json could not be removed. Whatever the journal held was
+    /// undone, but a relaunch would find a valid session and hold sleep
+    /// again, so the end is retried in process and quit is refused.
+    case sessionRetained
+    /// state.json cannot be read. Nothing was changed: Insomnia does not
+    /// know what to undo and will not guess. The session stays active until
+    /// a person fixes or moves the file.
+    case journalUnreadable
+}
+
+/// Why a lifecycle transaction did not run at all.
+enum TransactionRefusal: Error, Sendable {
+    case lockBusy(String)
+    case journalUnreadable(String)
 }
 
 /// Owns the session lifecycle: start / extend / end / reconcile.
@@ -15,6 +50,16 @@ enum EndReason: String, Sendable {
 /// Journal-first: every mutation is written to session.json / state.json
 /// *before* the matching side effect, and undo always reads state.json from
 /// disk, never memory (spec section 8 invariants).
+///
+/// One transaction at a time: every operation that reads the journal,
+/// decides, changes the machine and writes the journal runs on a single
+/// queue while holding the cross-process recovery lock shared with
+/// backstop.sh, and starts from the journal as it is on disk at that
+/// moment, never from a copy cached earlier: backstop.sh may have written
+/// it in between. An end requested while a start, extend or Low Power change
+/// is still queued or in flight wins: the older operation abandons itself
+/// before anything irreversible, or leaves its effect journaled for the
+/// end that runs right behind it.
 @MainActor
 @Observable
 final class SessionManager {
@@ -42,6 +87,9 @@ final class SessionManager {
     private let notifier: any Notifying
     private let clamshell: @Sendable () -> Bool?
     private let clock: @Sendable () -> Date
+    private let recoveryLock: RecoveryLock
+    private let recoveryLockTimeout: TimeInterval
+    private let recoveryRetryDelay: TimeInterval
 
     /// System integrations (lid, battery, network, ...). Set by `live()`;
     /// nil in tests. Started after a session starts, stopped when it ends.
@@ -49,10 +97,26 @@ final class SessionManager {
 
     @ObservationIgnored private var deadlineTimer: Timer?
     @ObservationIgnored private var countdownTimer: Timer?
+    @ObservationIgnored private var retryTimer: Timer?
     /// Whether the 1 Hz redraw is currently on the run loop. Tests assert on
     /// this to prove an idle session leaves no repeating wakeup behind.
     var countdownTimerArmed: Bool { countdownTimer != nil }
     @ObservationIgnored private var countdownPaused = false
+
+    /// Counts end requests. Start, extend and Low Power changes capture it
+    /// when requested and compare after each await, so an end that arrived
+    /// in the meantime wins.
+    @ObservationIgnored private(set) var endTicket = 0
+    /// Set by a quit request; new sessions are refused from then on.
+    @ObservationIgnored private(set) var quitRequested = false
+    /// An end that could not complete (lock busy, or dirty with no agent to
+    /// retry). Retried in process; new starts wait until it is resolved.
+    @ObservationIgnored private(set) var pendingEnd: EndReason?
+    /// Tail of the lifecycle queue.
+    @ObservationIgnored private var lifecycleTail: Task<Void, Never>?
+    /// Detail of the last unreadable-journal notification, so a journal
+    /// that stays broken is announced once, not on every transaction.
+    @ObservationIgnored private var announcedCorruption: String?
 
     init(
         paths: Paths,
@@ -62,7 +126,9 @@ final class SessionManager {
         audio: any AudioControlling = NoopAudioControl(),
         notifier: any Notifying = RecordingNotifier(),
         clamshell: @escaping @Sendable () -> Bool? = { LidObserver.readClamshellState() },
-        clock: @escaping @Sendable () -> Date = { Date() }
+        clock: @escaping @Sendable () -> Date = { Date() },
+        recoveryLockTimeout: TimeInterval = 10,
+        recoveryRetryDelay: TimeInterval = 30
     ) {
         self.paths = paths
         self.store = Store(paths: paths)
@@ -73,10 +139,23 @@ final class SessionManager {
         self.notifier = notifier
         self.clamshell = clamshell
         self.clock = clock
+        self.recoveryLock = RecoveryLock(url: paths.recoveryLock)
+        self.recoveryLockTimeout = recoveryLockTimeout
+        self.recoveryRetryDelay = recoveryRetryDelay
 
         try? paths.createDirectories()
-        let loadedState = (try? store.loadState()) ?? nil
+        var loadedState: RuntimeState?
+        var loadError: String?
+        do {
+            loadedState = try store.loadState()
+        } catch {
+            // The journal stays on disk untouched; every transaction re-reads
+            // it under the lock and refuses to run until it decodes again.
+            loadError = Self.unreadableJournalMessage(error)
+            Log.error(loadError!)
+        }
         self.state = loadedState ?? .clean
+        self.lastError = loadError
         if let c = (try? store.loadConfig()) ?? nil {
             self.config = c
         } else {
@@ -104,51 +183,144 @@ final class SessionManager {
         return m
     }
 
+    // MARK: Lifecycle queue
+
+    /// Runs `op` after every earlier lifecycle operation, holding the
+    /// recovery lock, with `state` freshly read from disk under that lock.
+    /// `op` is not run at all when the lock cannot be taken within the
+    /// bound or when state.json does not decode: nothing is read, decided
+    /// or changed unlocked, and an unreadable journal is never overwritten.
+    /// Never blocks the main actor; the wait is polled.
+    private func exclusive<T: Sendable>(_ what: String, _ op: @escaping @MainActor @Sendable () async -> T) async -> Result<T, TransactionRefusal> {
+        let previous = lifecycleTail
+        let task = Task<Result<T, TransactionRefusal>, Never> { @MainActor in
+            await previous?.value
+            let handle: RecoveryLockHandle
+            do {
+                handle = try await self.recoveryLock.acquire(timeout: self.recoveryLockTimeout)
+            } catch {
+                self.fail("\(what) skipped, nothing changed: \(error.localizedDescription)")
+                return .failure(.lockBusy(error.localizedDescription))
+            }
+            defer { handle.release() }
+            do {
+                try self.loadJournal()
+            } catch {
+                self.refuseForUnreadableJournal(what, error)
+                return .failure(.journalUnreadable(error.localizedDescription))
+            }
+            return .success(await op())
+        }
+        lifecycleTail = Task { _ = await task.value }
+        return await task.value
+    }
+
+    /// Disk is the source of truth. Missing means clean; anything that does
+    /// not decode throws and is left exactly as it is.
+    private func loadJournal() throws {
+        state = try store.loadState() ?? .clean
+    }
+
+    private func refuseForUnreadableJournal(_ what: String, _ error: Error) {
+        let message = Self.unreadableJournalMessage(error)
+        fail("\(what) refused, nothing changed: \(message)")
+        let detail = error.localizedDescription
+        if announcedCorruption != detail {
+            announcedCorruption = detail
+            notifier.post(title: Self.journalTitle, body: message)
+        }
+    }
+
+    private static func unreadableJournalMessage(_ error: Error) -> String {
+        "\(error.localizedDescription). Insomnia has changed nothing and will not start, extend or end sessions until the file is fixed or moved by hand; it is the only record of what a previous run changed."
+    }
+
+    /// Lid actions run their journal writes and signals as one transaction
+    /// on the same queue. False when the lock could not be taken or the
+    /// journal could not be read.
+    @discardableResult
+    func runExclusive(_ what: String, _ op: @escaping @MainActor @Sendable () async -> Void) async -> Bool {
+        if case .success = await exclusive(what, op) { return true }
+        return false
+    }
+
     // MARK: Start / extend / end
 
     /// Start a session of `duration` seconds (clamped to `config.maxDuration`).
     /// Ignored if a session is already active; use `extend`.
     ///
-    /// Ordering: session.json, then state.json, then `pmset disablesleep 1`.
-    /// If pmset fails the journal is rolled back so nothing is left on disk.
+    /// Ordering: session.json, then state.json, then the recovery agent,
+    /// then `pmset disablesleep 1`. A failure before pmset is rolled back:
+    /// nothing has touched the machine. A pmset failure is ambiguous (the
+    /// setting may have been applied before the error or timeout), so it is
+    /// undone from the journal like an end, and the journal keeps the entry
+    /// until that undo is confirmed.
     func start(duration: TimeInterval) async {
+        guard !quitRequested else {
+            Log.info("start ignored: quit requested")
+            return
+        }
+        guard pendingEnd == nil else {
+            fail("start refused: the previous session is still being ended; retrying shortly")
+            return
+        }
+        let ticket = endTicket
+        _ = await exclusive("start") { await self.performStart(duration: duration, ticket: ticket) }
+    }
+
+    private func performStart(duration: TimeInterval, ticket: Int) async {
         guard session == nil else {
             Log.info("start ignored: session already active")
             return
         }
+        guard endTicket == ticket, !quitRequested else {
+            Log.info("start abandoned: an end was requested first")
+            return
+        }
         let now = clock()
         let new = SessionMath.newSession(now: now, duration: duration, maxDuration: config.maxDuration)
+        // What was on disk before this attempt, read under the lock. A
+        // rollback puts exactly this back: an entry an earlier failed restore
+        // left behind is evidence, not something this start may clear.
+        let journalBefore = state
+        let sessionBefore = (try? store.loadSession()) ?? nil
 
         do {
             try store.saveSession(new)
-            var s = state
-            s.sleepDisabledByUs = true
-            try persistState(s)
+            try journal { $0.sleepDisabledByUs = true }
         } catch {
             fail("could not write session: \(error.localizedDescription)")
-            try? store.deleteSession()
+            rollBackStart(journal: journalBefore, session: sessionBefore)
             return
         }
 
-        // The backstop is armed before sleep is disabled, so a crash at any
-        // later point already has a launchd job waiting at the deadline.
-        // RunAtLoad fires backstop.sh immediately; the session on disk is
-        // valid, so that run is a no-op.
+        // The agent is confirmed loaded before sleep is disabled, so a crash
+        // at any later point already has launchd polling the deadline.
         do {
-            try await backstop.schedule(endsAt: new.endsAt)
+            try await backstop.arm()
         } catch {
-            rollBackStart()
+            rollBackStart(journal: journalBefore, session: sessionBefore)
             fail("could not arm backstop: \(error.localizedDescription)")
+            return
+        }
+        guard endTicket == ticket else {
+            rollBackStart(journal: journalBefore, session: sessionBefore)
+            Log.info("start abandoned before disabling sleep: end requested meanwhile")
             return
         }
 
         do {
             try await sleepGuard.setSleepDisabled(true)
         } catch {
-            // Roll back the journal: no session may exist if sleep is not disabled.
-            rollBackStart()
-            try? await backstop.clear()
             fail("could not disable sleep: \(error.localizedDescription)")
+            _ = await performEnd(reason: .startFailed)
+            return
+        }
+        guard endTicket == ticket else {
+            // Sleep is disabled and journaled as ours. The end that was
+            // requested runs next and restores from that journal; the session
+            // is never surfaced.
+            Log.info("start abandoned after disabling sleep: end requested meanwhile; journal left for it")
             return
         }
 
@@ -162,13 +334,24 @@ final class SessionManager {
     }
 
     func extend(by extra: TimeInterval) async {
-        guard let current = session else { return }
+        guard session != nil else { return }
+        let ticket = endTicket
+        _ = await exclusive("extend") { await self.performExtend(by: extra, ticket: ticket) }
+    }
+
+    private func performExtend(by extra: TimeInterval, ticket: Int) async {
+        guard let current = session, endTicket == ticket else { return }
         let updated = SessionMath.extended(current, by: extra, now: clock(), maxDuration: config.maxDuration)
-        // Move the backstop first; if launchd rejects it the old deadline stays.
+        // The agent enforces whatever deadline is on disk; confirm it is
+        // still loaded before moving that deadline out.
         do {
-            try await backstop.schedule(endsAt: updated.endsAt)
+            try await backstop.arm()
         } catch {
-            fail("could not move backstop: \(error.localizedDescription)")
+            fail("could not confirm backstop: \(error.localizedDescription)")
+            return
+        }
+        guard endTicket == ticket, session == current else {
+            Log.info("extend abandoned: end requested meanwhile")
             return
         }
         do {
@@ -185,8 +368,46 @@ final class SessionManager {
 
     /// Full session end: delete the session file first (so a crash here leaves
     /// a clean "no session" for reconcile/backstop), then undo RuntimeState
-    /// from disk, then clear the backstop trigger.
-    func end(reason: EndReason) async {
+    /// from disk. The polling agent stays loaded.
+    ///
+    /// Requesting an end invalidates every start, extend or Low Power change
+    /// still queued or in flight. If the recovery lock cannot be taken the
+    /// end changes nothing and is retried in process. If the journal cannot
+    /// be read the end changes nothing and waits for a person.
+    @discardableResult
+    func end(reason: EndReason) async -> EndOutcome {
+        endTicket += 1
+        if reason == .quit { quitRequested = true }
+        retryTimer?.invalidate()
+        retryTimer = nil
+        let outcome: EndOutcome
+        switch await exclusive("end", { await self.performEnd(reason: reason) }) {
+        case let .success(o): outcome = o
+        case .failure(.lockBusy): outcome = .locked
+        case .failure(.journalUnreadable): outcome = .journalUnreadable
+        }
+        switch outcome {
+        case .restored, .incomplete(agentArmed: true):
+            pendingEnd = nil
+        case .locked:
+            notifier.post(
+                title: Self.notEndedTitle,
+                body: "The recovery lock is held by another process, so nothing was changed. The session is still active; Insomnia retries in \(Int(recoveryRetryDelay)) s."
+            )
+            scheduleEndRetry(reason)
+        case .incomplete(agentArmed: false), .sessionRetained:
+            scheduleEndRetry(reason)
+        case .journalUnreadable:
+            // No timer: a broken file does not heal by itself. The end stays
+            // pending, so new starts are refused and quit is deferred, until
+            // the next end request finds a readable journal.
+            pendingEnd = reason
+            quitRequested = false
+        }
+        return outcome
+    }
+
+    private func performEnd(reason: EndReason) async -> EndOutcome {
         let had = session != nil
         Log.info("session end (\(reason.rawValue))")
         stopTimers()
@@ -194,20 +415,66 @@ final class SessionManager {
         scheduledDeadline = nil
         remainingText = ""
         countdownText = ""
+        var deletionError: String?
         do {
             try store.deleteSession()
         } catch {
-            Log.error("could not delete session.json: \(error.localizedDescription)")
+            deletionError = error.localizedDescription
+            fail("could not remove session.json: \(error.localizedDescription)")
         }
         await restoreAll()
-        do {
-            try await backstop.clear()
-        } catch {
-            Log.error("backstop clear failed: \(error.localizedDescription)")
-        }
         // App Nap defaults are intentionally left set (spec: open decisions).
         services?.stop()
+
+        if state.isDirty || deletionError != nil {
+            // The journal is the retry list. Make sure something will read it.
+            var armed = true
+            if state.isDirty {
+                do {
+                    try await backstop.arm()
+                } catch {
+                    armed = false
+                    fail("recovery agent could not be confirmed: \(error.localizedDescription)")
+                }
+            }
+            if let deletionError {
+                // The agent enforces deadlines, it does not remove a live
+                // session file; only this process can, so it stays to retry.
+                let journalNote = state.isDirty ? " Some changes are also still journaled." : ""
+                notifier.post(
+                    title: Self.incompleteTitle,
+                    body: "session.json could not be removed (\(deletionError)); a relaunch would hold sleep again for it.\(journalNote) Insomnia retries in \(Int(recoveryRetryDelay)) s; do not quit until it is removed."
+                )
+                scheduleEndRetry(reason)
+                return .sessionRetained
+            }
+            let detail = lastError ?? "some changes could not be undone"
+            let retry = armed ? "The recovery agent retries every minute." : "Insomnia retries in \(Int(recoveryRetryDelay)) s; do not quit until it is restored."
+            notifier.post(title: Self.incompleteTitle, body: "\(detail). \(retry)")
+            // Reconcile and a failed start reach here without `end()`; the
+            // retry is scheduled here so they are covered too (rescheduling
+            // from `end()` is harmless).
+            if !armed { scheduleEndRetry(reason) }
+            return .incomplete(agentArmed: armed)
+        }
         notifier.post(title: Self.endTitle(reason, had: had), body: endBody(reason))
+        return .restored
+    }
+
+    private func scheduleEndRetry(_ reason: EndReason) {
+        pendingEnd = reason
+        // The app is staying alive for this, so a quit reason no longer applies.
+        quitRequested = false
+        retryTimer?.invalidate()
+        let timer = Timer(timeInterval: recoveryRetryDelay, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let pending = self.pendingEnd else { return }
+                Log.info("retrying pending end (\(pending.rawValue))")
+                await self.end(reason: pending == .quit ? .user : pending)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        retryTimer = timer
     }
 
     // MARK: Journal hooks for LidActions / FloorRules
@@ -223,11 +490,35 @@ final class SessionManager {
 
     /// Low Power Mode with journaling: the flag is written before `pmset -b
     /// lowpowermode 1` and cleared only after `... 0` succeeds. Returns true
-    /// when the mode was actually changed.
+    /// when the mode was actually changed by Insomnia.
+    ///
+    /// A mode the user already had on is never taken over: it would be
+    /// switched off at session end. If pmset cannot be read, no ownership
+    /// is taken either. If `lowpowermode 1` fails or times out, the mode may
+    /// still have been applied: the flag stays journaled until `lowpowermode
+    /// 0` is confirmed.
     @discardableResult
     func setLowPower(_ on: Bool) async -> Bool {
+        let ticket = endTicket
+        if case let .success(changed) = await exclusive("low power", { await self.performSetLowPower(on, ticket: ticket) }) {
+            return changed
+        }
+        return false
+    }
+
+    private func performSetLowPower(_ on: Bool, ticket: Int) async -> Bool {
         if on {
-            guard !state.lowPowerSetByUs else { return false }
+            guard !state.lowPowerSetByUs, endTicket == ticket else { return false }
+            do {
+                if try await sleepGuard.isLowPowerModeOn() {
+                    Log.info("low power mode already on; leaving it alone")
+                    return false
+                }
+            } catch {
+                Log.error("could not read low power mode; not enabling it: \(error.localizedDescription)")
+                return false
+            }
+            guard endTicket == ticket else { return false }
             do {
                 try journal { $0.lowPowerSetByUs = true }
             } catch {
@@ -236,13 +527,25 @@ final class SessionManager {
             }
             do {
                 try await sleepGuard.setLowPowerMode(true)
-                Log.info("low power mode on")
-                return true
             } catch {
-                Log.error("could not enable low power mode: \(error.localizedDescription)")
-                try? journal { $0.lowPowerSetByUs = false }
+                fail("could not enable low power mode: \(error.localizedDescription)")
+                do {
+                    try await sleepGuard.setLowPowerMode(false)
+                    try? journal { $0.lowPowerSetByUs = false }
+                } catch {
+                    fail("low power mode may be on and could not be switched off: \(error.localizedDescription); kept in the journal to retry")
+                    do { try await backstop.arm() } catch { Log.error("recovery agent could not be confirmed: \(error.localizedDescription)") }
+                }
                 return false
             }
+            guard endTicket == ticket else {
+                // The mode is on and journaled as ours; the end queued behind
+                // this call clears it. Nothing to announce.
+                Log.info("low power mode on, but an end was requested meanwhile; journal left for it")
+                return false
+            }
+            Log.info("low power mode on")
+            return true
         } else {
             guard state.lowPowerSetByUs else { return false }
             do {
@@ -258,87 +561,84 @@ final class SessionManager {
     }
 
     /// Undo every lid-close action recorded on disk: resume frozen pids,
-    /// clear the Docker marker, restore volume and mute. Used by lid open,
-    /// reconcile (lid open) and the full restore.
+    /// clear the Docker marker, restore volume and mute. Used by lid open.
     func undoLidActions() async {
-        var s: RuntimeState
-        do {
-            s = try store.loadState() ?? .clean
-        } catch {
-            Log.error("state.json unreadable (\(error.localizedDescription)); assuming in-memory state")
-            s = state
-        }
-        undoLidActions(in: &s)
-        state = s
+        _ = await exclusive("lid open") { self.undoLidActionsInJournal() }
     }
 
     // MARK: Restore
 
-    /// Undo every RuntimeState entry, reading state.json from disk. Each undo
-    /// is persisted as soon as it succeeds so a crash mid-way loses nothing.
-    /// Failures are logged and the entry is left set so the next reconcile or
-    /// the backstop retries it.
+    /// Undo every RuntimeState entry of the journal read under the current
+    /// transaction's lock. Each undo is journaled as soon as it succeeds,
+    /// through the live journal rather than a copy, so a write that lands
+    /// while pmset is running (a lid-close freeze, say) is never overwritten.
+    /// Failures are logged and the entry is left set so the next end,
+    /// reconcile or the backstop retries it.
     func restoreAll() async {
-        var s: RuntimeState
-        do {
-            s = try store.loadState() ?? .clean
-        } catch {
-            Log.error("state.json unreadable (\(error.localizedDescription)); assuming in-memory state")
-            s = state
-        }
-
-        if s.sleepDisabledByUs {
+        if state.sleepDisabledByUs {
             do {
                 try await sleepGuard.setSleepDisabled(false)
-                s.sleepDisabledByUs = false
-                try? persistState(s)
+                try? journal { $0.sleepDisabledByUs = false }
                 Log.info("sleep restored")
             } catch {
-                Log.error("could not restore sleep: \(error.localizedDescription)")
-                lastError = "could not restore sleep: \(error.localizedDescription)"
+                fail("could not restore sleep: \(error.localizedDescription)")
             }
         }
 
-        if s.lowPowerSetByUs {
+        if state.lowPowerSetByUs {
             do {
                 try await sleepGuard.setLowPowerMode(false)
-                s.lowPowerSetByUs = false
-                try? persistState(s)
+                try? journal { $0.lowPowerSetByUs = false }
                 Log.info("low power mode cleared")
             } catch {
-                Log.error("could not clear low power mode: \(error.localizedDescription)")
+                fail("could not clear low power mode: \(error.localizedDescription)")
             }
         }
 
-        undoLidActions(in: &s)
-        state = s
+        undoLidActionsInJournal()
     }
 
-    /// Shared body of `undoLidActions()` and `restoreAll()`; each entry is
-    /// persisted as soon as it is undone.
-    private func undoLidActions(in s: inout RuntimeState) {
-        if !s.frozenPids.isEmpty {
-            processControl.resume(pids: s.frozenPids)
-            Log.info("resumed \(s.frozenPids.count) frozen pid(s)")
-            s.frozenPids = []
-            // Docker Desktop is frozen via its pids too; the flag is only a marker.
-            s.dockerFrozen = false
-            try? persistState(s)
-        } else if s.dockerFrozen {
-            s.dockerFrozen = false
-            try? persistState(s)
+    /// Shared body of lid open, reconcile (lid open) and `restoreAll()`;
+    /// each entry is journaled as soon as it is undone.
+    private func undoLidActionsInJournal() {
+        if !state.frozenProcesses.isEmpty {
+            let report = processControl.resume(state.frozenProcesses)
+            // Only entries that still need a retry, or that a person has to
+            // look at, stay journaled. Gone and resumed entries are done.
+            let keep = Set(report.failed + report.unverifiable + report.unobserved)
+            try? journal { s in
+                s.frozenProcesses.removeAll { !keep.contains($0.pid) }
+                // Docker Desktop is frozen via its pids too; the flag is only a marker.
+                if s.frozenProcesses.isEmpty { s.dockerFrozen = false }
+            }
+            Log.info("resumed \(report.resumed.count) frozen pid(s); \(report.gone.count) gone, \(report.failed.count) failed, \(report.unverifiable.count) unverifiable, \(report.unobserved.count) unobserved")
+            if !report.failed.isEmpty {
+                fail("could not resume pid(s) \(report.failed.map(String.init).joined(separator: ", ")); kept in the journal to retry")
+            }
+            if !report.unobserved.isEmpty {
+                fail("could not read the state of pid(s) \(report.unobserved.map(String.init).joined(separator: ", ")); kept in the journal to retry")
+            }
+            if !report.unverifiable.isEmpty {
+                let list = report.unverifiable.map(String.init).joined(separator: ", ")
+                fail("pid(s) \(list) are stopped but journaled without identity (a legacy entry from an older build, or a freeze interrupted before the kernel confirmed the stop), so Insomnia cannot prove it froze them and will not resume them. Check each one first, for example `ps -o pid,stat,lstart,command -p <pid>`, and only if it is a process you expected Insomnia to freeze run `kill -CONT <pid>`; the entry stays in the journal until resumed or gone")
+            }
+        } else if state.dockerFrozen {
+            try? journal { $0.dockerFrozen = false }
         }
 
-        if s.savedOutputVolume != nil || s.savedMuted != nil {
+        if state.savedOutputVolume != nil || state.savedMuted != nil {
             do {
                 let current = try audio.read()
-                try audio.apply(volume: s.savedOutputVolume ?? current.volume, muted: s.savedMuted ?? current.muted)
-                Log.info("audio restored (volume \(s.savedOutputVolume ?? current.volume), muted \(s.savedMuted ?? current.muted))")
-                s.savedOutputVolume = nil
-                s.savedMuted = nil
-                try? persistState(s)
+                let volume = state.savedOutputVolume ?? current.volume
+                let muted = state.savedMuted ?? current.muted
+                try audio.apply(volume: volume, muted: muted)
+                Log.info("audio restored (volume \(volume), muted \(muted))")
+                try? journal { s in
+                    s.savedOutputVolume = nil
+                    s.savedMuted = nil
+                }
             } catch {
-                Log.error("could not restore audio: \(error.localizedDescription)")
+                fail("could not restore audio: \(error.localizedDescription)")
             }
         }
     }
@@ -346,6 +646,10 @@ final class SessionManager {
     // MARK: Reconcile (spec section 8)
 
     func reconcile() async {
+        _ = await exclusive("reconcile") { await self.performReconcile() }
+    }
+
+    private func performReconcile() async {
         let now = clock()
         var onDisk: Session?
         do {
@@ -356,33 +660,42 @@ final class SessionManager {
         }
 
         if let s = onDisk, !s.isExpired(at: now) {
-            // Step 2: valid session. Re-apply disablesleep (idempotent), rearm timers.
+            // Step 2: valid session. Arm first, then journal, then hold
+            // sleep. Any failure ends the session rather than holding sleep
+            // with nothing guaranteed to release it.
             session = s
-            var st = state
-            if !st.sleepDisabledByUs {
-                st.sleepDisabledByUs = true
-                try? persistState(st)
+            do {
+                try await backstop.arm()
+            } catch {
+                fail("could not arm recovery agent for the session on disk: \(error.localizedDescription); ending it")
+                _ = await performEnd(reason: .recoveryUnavailable)
+                return
+            }
+            if !state.sleepDisabledByUs {
+                do {
+                    try journal { $0.sleepDisabledByUs = true }
+                } catch {
+                    fail("could not journal sleep guard: \(error.localizedDescription); ending session")
+                    _ = await performEnd(reason: .recoveryUnavailable)
+                    return
+                }
             }
             do {
                 try await sleepGuard.setSleepDisabled(true)
                 lastError = nil
             } catch {
-                fail("could not re-apply sleep guard: \(error.localizedDescription)")
+                fail("could not re-apply sleep guard: \(error.localizedDescription); ending session")
+                _ = await performEnd(reason: .recoveryUnavailable)
+                return
             }
             Log.info("reconcile: session valid until \(iso(s.endsAt))")
-            do {
-                try await backstop.schedule(endsAt: s.endsAt)
-            } catch {
-                fail("could not re-arm backstop: \(error.localizedDescription)")
-            }
             // Lid-close actions still on disk are undone only if the lid is
             // open now. Closed (or unknown): they are already journaled and
             // will be undone on the next lid open or at session end.
             let lidClosed = clamshell()
             if lidClosed == false {
-                undoLidActions(in: &st)
-                state = st
-            } else if st.frozenPids.isEmpty == false || st.savedOutputVolume != nil {
+                undoLidActionsInJournal()
+            } else if !state.frozenPids.isEmpty || state.savedOutputVolume != nil {
                 Log.info("reconcile: lid \(lidClosed == nil ? "unknown" : "closed"), keeping lid-close actions")
             }
             await armDeadline(s.endsAt)
@@ -393,10 +706,10 @@ final class SessionManager {
         // Step 1: missing or expired -> full end.
         if onDisk != nil {
             Log.info("reconcile: session expired, restoring")
-            await end(reason: .timer)
+            _ = await performEnd(reason: .timer)
         } else if state.isDirty {
             Log.info("reconcile: no session but dirty state, restoring")
-            await end(reason: .backstop)
+            _ = await performEnd(reason: .backstop)
         } else {
             Log.info("reconcile: no session, nothing to restore")
         }
@@ -404,6 +717,10 @@ final class SessionManager {
         // Step 3: SleepDisabled set with no session -> clear it.
         do {
             if try await sleepGuard.isSleepDisabled() {
+                guard session == nil else {
+                    Log.info("reconcile: a session started meanwhile; leaving SleepDisabled")
+                    return
+                }
                 Log.info("reconcile: pmset reports SleepDisabled with no session, clearing")
                 try await sleepGuard.setSleepDisabled(false)
             }
@@ -447,16 +764,28 @@ final class SessionManager {
 
     // MARK: Private
 
-    /// Undo the journal written at the top of `start`.
-    private func rollBackStart() {
-        var s = state
-        s.sleepDisabledByUs = false
-        try? persistState(s)
-        try? store.deleteSession()
+    /// Undo the writes made at the top of `start` by restoring the journal
+    /// and session file exactly as they were read under this transaction's
+    /// lock. Nothing has touched the machine at this point.
+    private func rollBackStart(journal before: RuntimeState, session previous: Session?) {
+        do {
+            try persistState(before)
+        } catch {
+            fail("could not restore the journal after a failed start: \(error.localizedDescription)")
+        }
+        do {
+            if let previous {
+                try store.saveSession(previous)
+            } else {
+                try store.deleteSession()
+            }
+        } catch {
+            fail("could not restore session.json after a failed start: \(error.localizedDescription)")
+        }
     }
 
-    /// In-process timers only; the launchd backstop is scheduled by callers
-    /// before this runs.
+    /// In-process timers only; the launchd agent is armed by callers before
+    /// this runs.
     private func armDeadline(_ endsAt: Date) async {
         deadlineTimer?.invalidate()
         scheduledDeadline = endsAt
@@ -516,9 +845,14 @@ final class SessionManager {
         ISO8601DateFormatter().string(from: d)
     }
 
+    static let incompleteTitle = "Restore incomplete"
+    static let notEndedTitle = "Session not ended"
+    static let journalTitle = "Recovery journal unreadable"
+
     private static func endTitle(_ reason: EndReason, had: Bool) -> String {
         switch reason {
         case .backstop: "Sleep restored"
+        case .startFailed: "Session not started"
         default: had ? "Session ended" : "Session restored"
         }
     }
@@ -531,6 +865,8 @@ final class SessionManager {
         case .batteryFloor: "Battery fell below \(config.endFloor)%. Sleep is back to normal."
         case .thermalCritical: "Thermal state is critical. Sleep is back to normal."
         case .backstop: "A previous session left changes behind; everything has been undone."
+        case .recoveryUnavailable: "Insomnia could not arm its recovery agent for the session found on disk, so it ended the session. Sleep is back to normal."
+        case .startFailed: "Insomnia could not disable sleep, so no session was started. Sleep is back to normal."
         }
     }
 }

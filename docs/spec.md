@@ -1,14 +1,22 @@
 # Insomnia — keep the Mac awake and working with the lid closed
 
+These are design notes, not a release certification. The
+[README](../README.md) describes supported use and recovery limits; the
+[release validation record](release-validation.md) tracks unverified hardware
+scenarios. Historical model sketches and UI proposals below are not exhaustive
+descriptions of the current code.
+
 ## Purpose
 
-Coding agents (T3 Code, Conductor, Claude Code, Codex) keep running while the
-MacBook is closed and in a bag. Insomnia is a menu bar app that:
+Insomnia is a menu bar app for timed awake sessions on a MacBook, used on a
+stable, well-ventilated surface. It must not be used to keep a Mac awake in a
+closed bag. Its design goals are to:
 
-1. Prevents lid-close sleep for a fixed, user-chosen duration. Never a toggle.
-2. Cuts battery waste while the lid is closed without slowing the agents.
-3. Shortens Wi-Fi to hotspot handoffs so agent API retries succeed.
-4. Always restores the machine to normal, even if Insomnia crashes or is killed.
+1. Prevent lid-close sleep for a fixed, user-chosen duration. Never a toggle.
+2. Reduce battery waste while the lid is closed without slowing the agents.
+3. Shorten Wi-Fi to hotspot handoffs so agent API retries succeed.
+4. Journal changes and support recovery after interruption, while reporting
+   incomplete restoration rather than promising unconditional success.
 
 ## Non-goals
 
@@ -17,12 +25,14 @@ MacBook is closed and in a bag. Insomnia is a menu bar app that:
 - Does not manage or restart the agents themselves. The only agent interaction
   is an optional "continue" keystroke into tagged tmux panes.
 - Does not touch sleep behaviour outside an active session.
-- No polling loops. Every input is an OS event (see "Event sources").
+- Prefer OS events for live observations; recovery retries and countdown redraws
+  require bounded recurring work.
 
 ## Platform
 
 - macOS 26 on Apple Silicon (built and tested on MacBook Pro M5).
-- Swift 6, SwiftUI `MenuBarExtra`, Swift Package. No Xcode project.
+- Swift 6, SwiftUI content hosted in a custom `NSStatusItem`, Swift Package.
+  No Xcode project.
 - `install.sh` assembles a minimal `Insomnia.app` bundle (`LSUIElement = true`,
   no Dock icon), ad-hoc codesigns it, and installs it to `~/Applications`.
 
@@ -38,7 +48,7 @@ Session {
 RuntimeState {                // everything Insomnia changed and must undo
   sleepDisabledByUs:  Bool
   lowPowerSetByUs:    Bool
-  frozenPids:         [Int32]
+  frozenProcesses:    [{pid, startedAt, startedAtMicros, bootSession}]
   dockerFrozen:       Bool
   savedOutputVolume:  Float?  // nil when mute is off or lid is open
   savedMuted:         Bool?
@@ -47,18 +57,19 @@ RuntimeState {                // everything Insomnia changed and must undo
 
 Both are written to `~/Library/Application Support/Insomnia/` as JSON on every
 change. They are the source of truth for reconcile and for the backstop.
+Legacy `frozenPids` entries lack ownership identity and need conservative
+recovery; newly written journals use `frozenProcesses`.
 
 ## Features
 
 ### 1. Timed sessions (the only way to keep the Mac awake)
 
-- Time is entered inline in the menu bar as Days / Hours / Minutes pills
-  (section 11), or with one click on a preset chip: 30m, 1h, 2h, 4h, 8h,
-  12h, 24h, 3d. Presets are editable in settings. Maximum 30 days.
-- While active the menu bar shows the remaining time at minute granularity
-  ("2h 14m"). The redraw timer ticks once per minute and stops entirely while
-  the lid is closed.
-- Popover while active: ends-at time, Extend (+30m, +1h, +4h, custom), End now.
+- Time is entered inline in the menu bar as Days / Hours / Minutes pills.
+  Enter with empty fields uses the configured default preset. Maximum 30 days.
+- While active the menu bar shows a second-resolution countdown. The redraw
+  timer runs at 1 Hz and stops while the lid is closed.
+- Click the cup/countdown to enter an extension; hold the end control to end.
+  Right-click opens the status, browser actions, Settings, and Quit menu.
 - Session start: write session + state to disk, arm the launchd backstop, and
   only then run `sudo pmset -a disablesleep 1`. A session never starts unless
   the backstop is armed. If pmset fails, delete the session file and surface
@@ -120,7 +131,8 @@ Instant Hotspot, and negligible).
   Ghostty, Warp, Chrome, Chromium, Arc, Docker Desktop). Editable.
 - On session start Insomnia sets `NSAppSleepDisabled = YES` for each listed app
   so App Nap never throttles them. This is a persistent per-app default and is
-  left in place; it is harmless when no session is running.
+  left in place after session end and uninstall. This changes the affected
+  apps' behavior outside an Insomnia session too.
 - Browser throttling: Chromium browsers throttle windows macOS reports as
   occluded, which is every window once the lid is closed with no external
   display. Timers drop to 1 Hz, animation frames stop, pages report hidden.
@@ -148,9 +160,9 @@ percentage change) and `ProcessInfo.thermalStateDidChangeNotification`.
 | thermal state `serious` | `lowpowermode 1` | thermal back to `nominal`/`fair`, or session end |
 | thermal state `critical` | end session, notify | — |
 
-Low Power Mode is never on by default. It slows local builds and tests by
-roughly a fifth to a third and does not affect model speed, so it is used only
-to stretch a low battery or cool a hot bag.
+Insomnia does not enable Low Power Mode merely because a session starts.
+Battery and thermal rules run only while the app is alive; they are not
+provided by the standalone backstop. Performance effects depend on workload.
 
 ### 7. Network failover
 
@@ -176,7 +188,7 @@ to stretch a low battery or cool a hot bag.
 - Recommended one-time setting, documented in the README: System Settings >
   Wi-Fi > "Ask to join hotspots" = Automatically.
 
-### 8. Reconcile and backstop (always restore)
+### 8. Reconcile and backstop (recovery goals)
 
 Invariants:
 
@@ -186,26 +198,29 @@ Invariants:
 
 Reconcile runs at every Insomnia launch:
 
-1. Session file missing or expired → run full session end (restore sleep,
-   `SIGCONT` recorded pids, unset Low Power Mode if we set it, restore volume).
-2. Session valid → re-apply `disablesleep 1` (idempotent), resume observers,
-   and if the lid is currently open, undo any lid-close actions still recorded.
+1. Session file missing or expired → restore journaled changes: sleep,
+   verified owned processes, Low Power Mode if we set it, and saved audio.
+   Unverified entries and failed restoration remain unresolved, not successful.
+2. Session valid → establish the independent recovery agent before reapplying
+   the sleep guard, then resume observers. If the lid is open, restore recorded
+   lid-close actions. Arming or restoration errors must remain visible.
 3. `pmset -g` reports `SleepDisabled 1` with no session → set it to 0.
 
 Backstop, independent of the app:
 
-- launchd agent `com.insomnia.backstop`, `RunAtLoad = true`, plus a
-  `StartCalendarInterval` that Insomnia rewrites to the current `endsAt` on every
-  session start or extend.
-- It runs `scripts/backstop.sh`, which does step 1 above using only the JSON
-  files and the sudoers-allowed commands. `backstop.sh --force` deliberately
-  ends even a still-valid session during install or uninstall. No Swift, no
-  Insomnia process needed.
-- The script edits `state.json` in place. Successful restores are cleared;
-  failed sleep or Low Power Mode restores stay journaled for the next backstop
-  run or app reconcile, and unrelated state keys survive.
-- Covers: Insomnia crash, force quit, `kill -9`, reboot mid-session, login after
-  a reboot.
+- The agent reads the saved deadline; recurring recovery checks avoid replacing
+  the loaded job for every extension and allow retries after a failure.
+- App and script transactions must coordinate through a shared lock. Failure
+  to acquire it must not permit an unprotected journal write or side effect.
+- Successful restores may clear their entries; failures must stay journaled.
+  Process recovery must verify identity and avoid resuming a process that
+  Insomnia did not stop. Old PID-only entries need conservative handling.
+- The shell does not restore CoreAudio settings. Saved audio must remain in
+  the journal for the app to restore. Uninstall must preserve recovery tools
+  and state when restoration is incomplete, including saved audio.
+- The agent is a recovery mechanism, not a guarantee of crash/reboot behavior
+  or a replacement for battery/thermal observers. These scenarios require
+  the separate hardware validation record.
 
 ### 9. Notifications
 
@@ -250,18 +265,17 @@ one after another with a short stagger.
   move between pills, Enter starts the session, Esc collapses.
 - The "?" badge on each pill is a help affordance: hover shows a tooltip
   ("Up to 30 days" etc.). It is not an input.
-- A row of preset chips (30m, 1h, 2h, 4h, 8h, 12h, 24h, 3d) sits in a
-  small popover under the pills for one-click starts. Clicking a chip fills
-  the pills, which then animate into the running state.
+- The current interface uses inline entry, not the preset-popover proposal
+  from the original design. Empty-field Enter starts the default preset.
 
 **Running state.** On Enter the pills collapse and morph into a compact
-countdown next to the icon: `☕ 2h 14m`. Clicking the countdown opens a
-popover with: ends-at time, Extend chips (+30m, +1h, +4h), End now, the status
-lines (lid, watts, Wi-Fi, frozen apps, Docker), the Chrome throttle warning
-with its relaunch button, Settings…, and Quit.
+second-resolution countdown next to the icon. Clicking the cup or countdown
+opens inline duration entry for an extension. Hold the end control to end the
+session. The right-click menu contains status lines (lid, watts, Wi-Fi, frozen
+apps, Docker), browser relaunch actions, Settings, and Quit.
 
 Battery watts are read from `AppleSmartBattery` (`InstantAmperage` ×
-`Voltage`) only when the popover is opened. Never polled.
+`Voltage`) on demand when status is requested. Never continuously polled.
 
 **Motion and feel.** This is a hard requirement, not polish.
 
@@ -293,8 +307,8 @@ transitions. If it feels like a web dropdown, it is wrong.
 | battery % | IOPS run loop source | none |
 | thermal | `ProcessInfo` notification | none |
 | network path | `NWPathMonitor` | none |
-| session deadline | one `Timer` at `endsAt` + launchd calendar backstop | none |
-| countdown redraw | 60 s timer, stopped while lid closed | one wake per minute |
+| session deadline | one in-app timer plus independent launchd recovery | recovery checks may wake periodically |
+| countdown redraw | 1 Hz timer, stopped while lid closed | one wake per second while active and visible |
 | hotspot retry | only during an outage | none otherwise |
 
 ## Repository layout
@@ -337,16 +351,15 @@ Insomnia/
       ShellTimeout.swift
       TmuxNudge.swift
     UI/
-      Chip.swift
       DurationInput.swift
+      HoldToEndButton.swift
       HotspotSecretStore.swift
       LiveStatusSource.swift
       MenuBarModel.swift
       Motion.swift
       PillView.swift
-      PresetPopoverView.swift
       ReminderScheduler.swift
-      SessionPopoverView.swift
+      StatusMenu.swift
       SettingsView.swift
       StatusItemController.swift
       StatusRootView.swift
@@ -388,7 +401,9 @@ Then set the hotspot in Settings, pick a freeze list, and start a session.
 
 ## Manual test plan
 
-Run on the real MacBook Pro before calling it done.
+Run under supervision on a ventilated surface using disposable work before
+claiming hardware validation. The checklist below is a test plan, not evidence
+that any case passed; record results in the release validation record.
 
 1. **First launch.** Confirm the status item is visible to the right of the
    notch on first launch.
@@ -397,8 +412,11 @@ Run on the real MacBook Pro before calling it done.
    sleep still disabled until end.
 3. **Restores.** End now → `pmset -g` shows no `SleepDisabled`. Quit → same.
    Timer expiry → same, plus notification.
-4. **Backstop.** Start session, `kill -9` Insomnia, wait for `endsAt` → sleep
-   restored by launchd. Reboot mid-session → restored at login.
+4. **Backstop.** Force-quit a supervised disposable session, then verify
+   deadline recovery and retry after an injected restore failure. Separately
+   test reboot/login with valid, expired, and dirty journals; the polling
+   agent honors a valid future deadline rather than unconditionally ending
+   every session at login. Saved audio requires the app to reopen.
 5. **Freeze.** Slack and WhatsApp on list, close lid, `ps -o stat` shows `T`
    for their whole trees. Open lid → running, reconnected, no relaunch.
 6. **Docker rule.** No containers → paused on close. One container → untouched.
@@ -407,7 +425,7 @@ Run on the real MacBook Pro before calling it done.
    read `document.visibilityState` and measure `setInterval` drift. Repeat with
    both flags. Decide whether feature 5's browser section stays.
 9. **Handoff and Location.** Save a hotspot for the first time and confirm the
-   Location permission prompt appears. After granting, confirm the popover
+   Location permission prompt appears. After granting, confirm the status menu
    shows the SSID. Turn off the router or walk away, watch `handoffs.log`, and
    confirm the hotspot join works within ~10 s and a Claude Code turn in flight
    completes.
@@ -415,8 +433,8 @@ Run on the real MacBook Pro before calling it done.
    "continue", notification posted.
 11. **Floors.** Set `lowPowerFloor` above current charge → Low Power Mode on.
     Plug in charger → off. Set `endFloor` above current charge → session ends.
-12. **Thermal.** Simulate with a CPU burner; `serious` → LPM on, back to
-    `nominal` → off.
+12. **Thermal.** Exercise injected thermal events first; verify responses to
+    `serious`, `critical`, and recovery. Do not intentionally overheat the Mac.
 
 ## Open decisions (defaults chosen, change if you disagree)
 
