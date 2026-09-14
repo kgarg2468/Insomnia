@@ -17,7 +17,7 @@ struct TmuxNudge: Sendable {
     static let candidates = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
 
     /// `display-message -p -F` format the live runner reads before sending.
-    static let paneStateFormat = "#{pane_dead} #{pane_in_mode} #{pane_input_off}"
+    static let paneStateFormat = "#{pane_id} #{pane_dead} #{pane_in_mode} #{pane_input_off}"
 
     typealias Runner = @Sendable (_ target: String) async throws -> Bool
     /// Asked before each target; `false` ends the nudge because the session
@@ -25,7 +25,8 @@ struct TmuxNudge: Sendable {
     typealias Permission = @MainActor @Sendable () -> Bool
 
     enum PaneCheck: Equatable, Sendable {
-        case ready
+        /// `paneId` is the concrete `%N` pane the flags were read from.
+        case ready(paneId: String)
         case skip(reason: String)
     }
 
@@ -63,46 +64,58 @@ struct TmuxNudge: Sendable {
     }
 
     /// Decides from `display-message -p -F paneStateFormat` output whether
-    /// `send-keys` may run. Anything but three clean 0/1 flags is
-    /// unverifiable and skipped: tmux prints blank fields, with exit 0, for
-    /// a target it cannot resolve.
+    /// `send-keys` may run, and to which concrete pane. Anything but a `%N`
+    /// pane id followed by three clean 0/1 flags is unverifiable and
+    /// skipped: tmux prints blank fields, with exit 0, for a target it
+    /// cannot resolve.
     static func check(paneState output: String) -> PaneCheck {
         let fields = output.split(whereSeparator: { $0 == " " || $0.isNewline }).map(String.init)
-        guard fields.count == 3, fields.allSatisfy({ $0 == "0" || $0 == "1" }) else {
-            let shown = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shown = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard fields.count == 4, fields[1...].allSatisfy({ $0 == "0" || $0 == "1" }) else {
             return .skip(reason: "pane state unverifiable (\(shown.isEmpty ? "no such pane" : shown))")
         }
-        if fields[0] == "1" { return .skip(reason: "pane is dead") }
-        if fields[1] == "1" { return .skip(reason: "pane is in copy/choose mode; keys would not reach the program") }
-        if fields[2] == "1" { return .skip(reason: "pane input is disabled") }
-        return .ready
+        let id = fields[0]
+        guard id.hasPrefix("%"), id.count > 1, id.dropFirst().allSatisfy(\.isNumber) else {
+            return .skip(reason: "pane id unverifiable (\(shown))")
+        }
+        if fields[1] == "1" { return .skip(reason: "pane \(id) is dead") }
+        if fields[2] == "1" { return .skip(reason: "pane \(id) is in copy/choose mode; keys would not reach the program") }
+        if fields[3] == "1" { return .skip(reason: "pane \(id) input is disabled") }
+        return .ready(paneId: id)
     }
 
     static let liveRunner: Runner = makeLiveRunner()
 
     /// `socketName` selects a private tmux server (`tmux -L`); nil is the
-    /// user's default server.
-    static func makeLiveRunner(socketName: String? = nil) -> Runner {
+    /// user's default server. `command` runs each tmux invocation.
+    static func makeLiveRunner(socketName: String? = nil, command: CancellableCommand = CancellableCommand()) -> Runner {
         { target in
             guard let tmux = Shell.locate(candidates) else {
                 throw ShellError.launchFailed(exe: "tmux", underlying: "not found in \(candidates.joined(separator: ", "))")
             }
             let server = socketName.map { ["-L", $0] } ?? []
             try Task.checkCancellation()
-            let state = try await Shell.run(tmux, server + ["display-message", "-p", "-t", target, "-F", paneStateFormat], timeout: 5)
+            let state = try await command.run(tmux, server + ["display-message", "-p", "-t", target, "-F", paneStateFormat], timeout: 5)
             guard state.succeeded else {
                 Log.error("tmux display-message -t \(target): \(state.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
                 return false
             }
-            if case let .skip(reason) = check(paneState: state.stdout) {
+            let paneId: String
+            switch check(paneState: state.stdout) {
+            case let .skip(reason):
                 Log.error("tmux nudge to \(target) skipped: \(reason)")
                 return false
+            case let .ready(id):
+                paneId = id
             }
-            // The pane can still change between this check and the send.
+            // Send to the concrete pane whose state was just read, never back
+            // through the alias: a session or window target re-resolves to
+            // whichever pane is active at send time. The pane's own state
+            // can still change in this window.
             try Task.checkCancellation()
-            let r = try await Shell.run(tmux, server + ["send-keys", "-t", target, "continue", "Enter"], timeout: 5)
+            let r = try await command.run(tmux, server + ["send-keys", "-t", paneId, "continue", "Enter"], timeout: 5)
             if !r.succeeded {
-                Log.error("tmux send-keys -t \(target): \(r.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+                Log.error("tmux send-keys -t \(paneId) (\(target)): \(r.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
             }
             return r.succeeded
         }

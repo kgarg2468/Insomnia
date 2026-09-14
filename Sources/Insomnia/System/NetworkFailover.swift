@@ -199,7 +199,7 @@ final class NetworkFailover {
     private let clock: @Sendable () -> Date
 
     private var monitor: NWPathMonitor?
-    private var retryTimer: Timer?
+    private(set) var retryTimer: Timer?
     private var generation = 0
     /// Bumped by `stop()`. Work that started under an older epoch (a
     /// recovery mid-nudge) stops issuing commands as soon as it notices.
@@ -229,8 +229,10 @@ final class NetworkFailover {
 
     func start() async {
         guard monitor == nil else { return }
+        let epoch = self.epoch
         await resolveInterface()
-        guard !Task.isCancelled else { return }
+        // stop() may have run while networksetup was being awaited.
+        guard !Task.isCancelled, self.epoch == epoch else { return }
         let m = NWPathMonitor(requiredInterfaceType: .wifi)
         let id = ObjectIdentifier(m)
         m.pathUpdateHandler = { [weak self] path in
@@ -316,14 +318,24 @@ final class NetworkFailover {
         await apply(outputs)
     }
 
-    private func fireTimer() {
+    /// What the retry timer calls. Internal so tests can exercise the
+    /// driver-owned join/retry task without waiting for a real timer.
+    func fireTimer() {
         retryTimer = nil
         let outputs = machine.timerFired(at: clock())
         track { [weak self] in await self?.apply(outputs) }
     }
 
     private func apply(_ outputs: [FailoverMachine.Output]) async {
+        let epoch = self.epoch
         for o in outputs {
+            // A join or recovery above may have been awaited across stop():
+            // the machine is reset by then, so the remaining outputs (a retry
+            // timer, most importantly) belong to a session that is gone.
+            guard !Task.isCancelled, self.epoch == epoch else {
+                Log.info("network failover: dropping queued outputs after stop")
+                return
+            }
             switch o {
             case let .scheduleRetry(after):
                 schedule(after: after)

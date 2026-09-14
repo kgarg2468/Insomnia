@@ -66,6 +66,19 @@ private final class UnixSocketFixture {
     }
 }
 
+/// Hotspot joiner double that blocks inside `join` until released.
+private final class GatedJoiner: HotspotJoining, @unchecked Sendable {
+    let gate = AsyncGate()
+    private let lock = NSLock()
+    private var _calls = 0
+    var calls: Int { lock.withLock { _calls } }
+    func join(ssid: String, password: String, interfaceName: String) async throws -> Bool {
+        lock.withLock { _calls += 1 }
+        await gate.wait()
+        return true
+    }
+}
+
 // MARK: - NetworkFailover: ending a session must end its nudges
 
 @MainActor
@@ -185,6 +198,58 @@ final class NetworkFailoverCancellationTests: XCTestCase {
         for _ in 0..<20 { await Task.yield() }
         XCTAssertFalse(n.machine.inOutage, "stopped driver entered an outage from a stale path update")
     }
+
+    private func makeJoiningDriver(joiner: GatedJoiner) throws -> NetworkFailover {
+        let keychain = FakeKeychainStore()
+        try keychain.set(service: KeychainStore.service, account: "Phone", value: "secret")
+        var config = Config()
+        config.hotspotSSID = "Phone"
+        let clock = self.clock!
+        return NetworkFailover(paths: home.paths, keychain: keychain, hotspotJoiner: joiner,
+            notifier: notifier, wifiInterface: "en0", clock: { clock.now }) { config }
+    }
+
+    /// A retry tick yields `[.joinHotspot, .scheduleRetry]`. If the session
+    /// ends while the join is in flight, the retry must not be scheduled
+    /// afterwards: that timer would outlive the session it belonged to.
+    func testStopDuringHotspotJoinDoesNotRescheduleRetry() async throws {
+        let joiner = GatedJoiner()
+        let n = try makeJoiningDriver(joiner: joiner)
+        await n.simulate(satisfied: false)
+        clock.advance(FailoverMachine.initialDelay)
+        n.fireTimer()
+        await joiner.gate.waitUntilStarted()
+
+        n.stop()
+        XCTAssertNil(n.retryTimer)
+        await joiner.gate.open()
+        try await Task.sleep(for: .milliseconds(150))
+
+        XCTAssertEqual(joiner.calls, 1)
+        XCTAssertNil(n.retryTimer, "cancelled join re-armed the retry timer after stop()")
+    }
+
+    /// Stop, start a new outage, then let the old join finish: the new
+    /// outage's retry timer must survive untouched.
+    func testOldJoinCannotReplaceNewSessionsRetryTimer() async throws {
+        let joiner = GatedJoiner()
+        let n = try makeJoiningDriver(joiner: joiner)
+        await n.simulate(satisfied: false)
+        clock.advance(FailoverMachine.initialDelay)
+        n.fireTimer()
+        await joiner.gate.waitUntilStarted()
+        n.stop()
+
+        clock.advance(60)
+        await n.simulate(satisfied: false)
+        let fresh = try XCTUnwrap(n.retryTimer, "new outage did not arm a retry")
+        await joiner.gate.open()
+        try await Task.sleep(for: .milliseconds(150))
+
+        XCTAssertTrue(n.retryTimer === fresh, "old session's outputs replaced the new session's retry timer")
+        XCTAssertTrue(n.machine.inOutage)
+        XCTAssertEqual(n.machine.joins, 0, "old session's join leaked into the new outage")
+    }
 }
 
 // MARK: - TmuxNudge loop
@@ -221,15 +286,17 @@ final class TmuxNudgeTests: XCTestCase {
     }
 
     func testPaneStateGate() {
-        // Real `display-message -p -F "#{pane_dead} #{pane_in_mode} #{pane_input_off}"` output.
-        XCTAssertEqual(TmuxNudge.check(paneState: "0 0 0\n"), .ready)
-        for unsafe in ["1 0 0\n", "0 1 0\n", "0 0 1\n"] {
+        // Real `display-message -p -F "#{pane_id} #{pane_dead} #{pane_in_mode} #{pane_input_off}"` output.
+        XCTAssertEqual(TmuxNudge.check(paneState: "%0 0 0 0\n"), .ready(paneId: "%0"))
+        XCTAssertEqual(TmuxNudge.check(paneState: "%12 0 0 0\n"), .ready(paneId: "%12"))
+        for unsafe in ["%0 1 0 0\n", "%0 0 1 0\n", "%0 0 0 1\n"] {
             guard case .skip = TmuxNudge.check(paneState: unsafe) else {
                 return XCTFail("\(unsafe.debugDescription) was not skipped")
             }
         }
-        // tmux prints blank fields (exit 0) for a target it cannot find.
-        for unverifiable in ["  \n", "", "0 0\n", "0 0 0 0\n", "x 0 0\n", "no server running\n"] {
+        // tmux prints blank fields (exit 0) for a target it cannot find. A
+        // missing or malformed pane id fails closed even with clean flags.
+        for unverifiable in ["   \n", "", "0 0 0\n", "%0 0 0\n", "%0 0 0 0 0\n", "0 0 0 0\n", "% 0 0 0\n", "%x 0 0 0\n", "nudge:0.0 0 0 0\n", "no server running\n"] {
             guard case .skip = TmuxNudge.check(paneState: unverifiable) else {
                 return XCTFail("\(unverifiable.debugDescription) was not skipped")
             }
@@ -365,6 +432,104 @@ final class TmuxLiveRunnerTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(200))
         let seen = try await capture()
         XCTAssertFalse(seen.contains("continue"), seen)
+    }
+}
+
+// MARK: - TmuxNudge live runner: target aliases and the check-to-send window
+
+final class TmuxTargetResolutionTests: XCTestCase {
+    private var tmux: String!
+    private var socket: String!
+
+    override func setUpWithError() throws {
+        guard let found = Shell.locate(TmuxNudge.candidates) else {
+            throw XCTSkip("tmux is not installed")
+        }
+        tmux = found
+        socket = "insomnia-test-\(getpid())-\(UInt32.random(in: 0...UInt32.max))"
+    }
+
+    override func tearDown() async throws {
+        if let tmux, let socket {
+            let path = try? await Shell.run(tmux, ["-L", socket, "display-message", "-p", "#{socket_path}"], timeout: 5)
+            _ = try? await Shell.run(tmux, ["-L", socket, "kill-server"], timeout: 5)
+            if let p = path?.stdout.trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty {
+                try? FileManager.default.removeItem(atPath: p)
+            }
+        }
+    }
+
+    private func tmuxRun(_ args: [String]) async throws -> ShellResult {
+        try await Shell.run(tmux, ["-L", socket] + args, timeout: 5)
+    }
+
+    private func continueLines(in pane: String) async throws -> Int {
+        let seen = try await tmuxRun(["capture-pane", "-p", "-t", pane]).stdout
+        return seen.split(whereSeparator: \.isNewline).filter { $0 == "continue" }.count
+    }
+
+    /// Two `cat` panes in one window; the second (`%1`) is active.
+    private func startSplitWindow() async throws {
+        let r = try await tmuxRun(["new-session", "-d", "-s", "nudge", "-x", "80", "-y", "24", "cat"])
+        XCTAssertTrue(r.succeeded, r.stderr)
+        let split = try await tmuxRun(["split-window", "-t", "nudge:0", "cat"])
+        XCTAssertTrue(split.succeeded, split.stderr)
+        let panes = try await tmuxRun(["list-panes", "-t", "nudge:0", "-F", "#{pane_id} #{pane_active}"])
+        XCTAssertEqual(panes.stdout, "%0 0\n%1 1\n")
+    }
+
+    /// A window alias resolves to whichever pane is active *when tmux looks*.
+    /// The active pane is switched between the state read and the send: the
+    /// keys must land in the pane whose state was checked, not the alias.
+    func testKeysGoToTheCheckedPaneWhenActivePaneChanges() async throws {
+        try await startSplitWindow()
+        let tmux = self.tmux!
+        let socket = self.socket!
+        let launches = RunnerLog()
+        let command = CancellableCommand(beforeLaunch: {
+            // Second launch is the send: flip the window's active pane first.
+            if launches.nextCall() == 2 {
+                _ = try? await Shell.run(tmux, ["-L", socket, "select-pane", "-t", "%0"], timeout: 5)
+            }
+        })
+        let run = TmuxNudge.makeLiveRunner(socketName: socket, command: command)
+
+        let accepted = try await run("nudge:0")
+
+        XCTAssertTrue(accepted)
+        var checked = 0
+        for _ in 0..<100 {
+            checked = try await continueLines(in: "%1")
+            if checked >= 2 { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let other = try await continueLines(in: "%0")
+        XCTAssertEqual(checked, 2, "checked pane %1 did not receive continue + Enter")
+        XCTAssertEqual(other, 0, "unchecked pane %0 received the keystrokes")
+    }
+
+    /// Cancellation that lands after the state read but before the send is
+    /// queued must stop the send from ever launching.
+    func testCancellationBetweenCheckAndSendSendsNothing() async throws {
+        let r = try await tmuxRun(["new-session", "-d", "-s", "nudge", "-x", "80", "-y", "24", "cat"])
+        XCTAssertTrue(r.succeeded, r.stderr)
+        let gate = AsyncGate()
+        let launches = RunnerLog()
+        let command = CancellableCommand(beforeLaunch: {
+            if launches.nextCall() == 2 { await gate.wait() }
+        })
+        let run = TmuxNudge.makeLiveRunner(socketName: socket, command: command)
+        let task = Task { try await run("nudge:0.0") }
+        await gate.waitUntilStarted()
+        task.cancel()
+        await gate.open()
+        do {
+            let accepted = try await task.value
+            XCTFail("send launched after cancellation (accepted=\(accepted))")
+        } catch is CancellationError {}
+        try await Task.sleep(for: .milliseconds(300))
+        let lines = try await continueLines(in: "%0")
+        XCTAssertEqual(lines, 0, "keys were sent by a cancelled runner")
     }
 }
 
