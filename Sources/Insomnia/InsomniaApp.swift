@@ -64,13 +64,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Quitting always ends the session (spec 1). Terminate is deferred until
-    /// sleep has been restored.
+    /// the end has run. A second quit while that is pending is refused rather
+    /// than allowed through: `.terminateNow` there would exit mid-cleanup.
+    /// If the end could not run (recovery lock busy, journal unreadable),
+    /// left the journal dirty with no agent to retry, or could not remove
+    /// session.json, the app stays so its own retry can finish the job;
+    /// quitting then would abandon a live session.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !terminating else { return .terminateNow }
+        guard !terminating else { return .terminateCancel }
         terminating = true
         Task {
-            await manager.end(reason: .quit)
-            sender.reply(toApplicationShouldTerminate: true)
+            let outcome = await manager.end(reason: .quit)
+            switch outcome {
+            case .restored, .incomplete(agentArmed: true):
+                sender.reply(toApplicationShouldTerminate: true)
+            case .locked, .incomplete(agentArmed: false), .sessionRetained, .journalUnreadable:
+                Log.error("quit deferred: recovery still pending (\(outcome)); staying to retry")
+                terminating = false
+                sender.reply(toApplicationShouldTerminate: false)
+            }
         }
         return .terminateLater
     }

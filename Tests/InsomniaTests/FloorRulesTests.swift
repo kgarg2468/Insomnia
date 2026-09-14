@@ -98,7 +98,8 @@ final class FloorRuleDriverTests: XCTestCase {
         await m.start(duration: 3600)
         let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
         await driver.run(percent: 35, isCharging: false, thermal: .nominal)
-        XCTAssertEqual(h.guardFake.calls, ["disablesleep 1", "lowpowermode 1"])
+        // The current mode is read before it is taken over.
+        XCTAssertEqual(h.guardFake.calls, ["disablesleep 1", "pmset -g custom", "lowpowermode 1"])
         XCTAssertEqual(try h.store.loadState()?.lowPowerSetByUs, true)
         XCTAssertEqual(h.notifier.posts.last?.title, "Low Power Mode on")
         XCTAssertTrue(h.notifier.posts.last?.body.contains("35%") ?? false)
@@ -160,11 +161,83 @@ final class FloorRuleDriverTests: XCTestCase {
         let floor = Task { await driver.run(percent: 35, isCharging: false, thermal: .nominal) }
         await gate.waitUntilStarted()
 
-        await m.end(reason: .user)
+        // The end queues behind the held Low Power change; release the hold
+        // first, then wait for both. Awaiting the end here would deadlock.
+        let end = Task { await m.end(reason: .user) }
+        await settleQueuedRequests()
         await gate.open()
         await floor.value
+        _ = await end.value
 
         XCTAssertEqual(try h.store.loadState()?.lowPowerSetByUs, false)
+        XCTAssertFalse(h.guardFake.lowPowerOn, "Low Power Mode left on after the session ended")
+        XCTAssertEqual(try h.store.loadState(), RuntimeState.clean)
         XCTAssertFalse(h.notifier.posts.contains { $0.title == "Low Power Mode on" })
+    }
+
+    /// Low Power Mode the user already had on is theirs: Insomnia neither
+    /// journals it as its own nor switches it off when the session ends.
+    func testPreexistingLowPowerModeIsNeverTakenOver() async throws {
+        h.guardFake.lowPowerOn = true
+        let m = h.makeManager()
+        await m.start(duration: 3600)
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal)
+
+        XCTAssertEqual(h.guardFake.calls, ["disablesleep 1", "pmset -g custom"])
+        XCTAssertEqual(try h.store.loadState()?.lowPowerSetByUs, false)
+        XCTAssertFalse(h.notifier.posts.contains { $0.title == "Low Power Mode on" })
+
+        await m.end(reason: .user)
+        XCTAssertTrue(h.guardFake.lowPowerOn, "user's Low Power Mode was switched off at session end")
+        XCTAssertFalse(h.guardFake.calls.contains("lowpowermode 0"))
+    }
+
+    /// If pmset cannot say whether the mode is on, ownership is not taken:
+    /// switching it off later could undo the user's own choice.
+    func testUnreadableLowPowerModeIsLeftAlone() async throws {
+        h.guardFake.throwOn = ["pmset -g custom"]
+        let m = h.makeManager()
+        await m.start(duration: 3600)
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal)
+
+        XCTAssertFalse(h.guardFake.calls.contains("lowpowermode 1"))
+        XCTAssertEqual(try h.store.loadState()?.lowPowerSetByUs, false)
+        XCTAssertFalse(h.notifier.posts.contains { $0.title == "Low Power Mode on" })
+    }
+
+    /// `lowpowermode 1` applied the mode and then failed (a timeout). The
+    /// flag was journaled first, so the failure path switches the mode back
+    /// off and only then drops ownership.
+    func testLowPowerCommandFailingAfterTakingEffectIsSwitchedBackOff() async throws {
+        h.guardFake.throwAfterEffect = ["lowpowermode 1"]
+        let m = h.makeManager()
+        await m.start(duration: 3600)
+        let changed = await m.setLowPower(true)
+
+        XCTAssertFalse(changed)
+        XCTAssertEqual(h.guardFake.calls, ["disablesleep 1", "pmset -g custom", "lowpowermode 1", "lowpowermode 0"])
+        XCTAssertFalse(h.guardFake.lowPowerOn, "Low Power Mode left on after its command failed")
+        XCTAssertEqual(try h.store.loadState()?.lowPowerSetByUs, false)
+    }
+
+    /// Same ambiguous failure, and the undo fails too: ownership stays
+    /// journaled so the session end (or the agent) clears the mode later.
+    func testLowPowerAmbiguousFailureKeepsOwnershipWhenTheUndoFails() async throws {
+        h.guardFake.throwAfterEffect = ["lowpowermode 1"]
+        h.guardFake.throwOn = ["lowpowermode 0"]
+        let m = h.makeManager()
+        await m.start(duration: 3600)
+        let changed = await m.setLowPower(true)
+
+        XCTAssertFalse(changed)
+        XCTAssertTrue(h.guardFake.lowPowerOn)
+        XCTAssertEqual(try h.store.loadState()?.lowPowerSetByUs, true, "ownership dropped while the mode may still be on")
+
+        h.guardFake.throwOn = []
+        await m.end(reason: .user)
+        XCTAssertFalse(h.guardFake.lowPowerOn, "session end did not clear the mode Insomnia may have switched on")
+        XCTAssertEqual(try h.store.loadState(), RuntimeState.clean)
     }
 }

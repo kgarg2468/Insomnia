@@ -20,7 +20,7 @@ final class ReconcileTests: XCTestCase {
         var st = RuntimeState()
         st.sleepDisabledByUs = true
         st.lowPowerSetByUs = true
-        st.frozenPids = [111, 222]
+        st.frozenProcesses = [FrozenProcess(pid: 111, startedAt: 5), FrozenProcess(pid: 222, startedAt: 6)]
         st.dockerFrozen = true
         try h.store.saveState(st)
         h.guardFake.sleepDisabled = true
@@ -37,12 +37,12 @@ final class ReconcileTests: XCTestCase {
         XCTAssertTrue(h.guardFake.calls.contains("lowpowermode 0"))
         XCTAssertFalse(h.guardFake.calls.contains("disablesleep 1"))
         XCTAssertEqual(h.procs.resumed, [[111, 222]])
-        XCTAssertEqual(h.backstop.clears, 1)
-        XCTAssertEqual(h.backstop.scheduled, [])
+        // A clean end needs no launchd work; the agent stays loaded as installed.
+        XCTAssertEqual(h.backstop.arms, 0)
         XCTAssertFalse(h.guardFake.sleepDisabled)
     }
 
-    // (b) valid session -> disablesleep re-applied idempotently, timer rescheduled
+    // (b) valid session -> agent confirmed, disablesleep re-applied idempotently, timer rescheduled
     func testValidSessionIsReappliedAndRearmed() async throws {
         let now = h.clock.now
         let s = Session(startedAt: now.addingTimeInterval(-600), endsAt: now.addingTimeInterval(2 * 3600 + 14 * 60 + 30))
@@ -59,8 +59,7 @@ final class ReconcileTests: XCTestCase {
         XCTAssertTrue(m.isActive)
         XCTAssertEqual(h.guardFake.calls, ["disablesleep 1"])
         XCTAssertEqual(m.scheduledDeadline, s.endsAt)
-        XCTAssertEqual(h.backstop.scheduled, [s.endsAt])
-        XCTAssertEqual(h.backstop.clears, 0)
+        XCTAssertEqual(h.backstop.arms, 1)
         XCTAssertEqual(m.remainingText, "2h 14m")
         XCTAssertEqual(try h.store.loadSession(), s)
         XCTAssertEqual(try h.store.loadState()?.sleepDisabledByUs, true)
@@ -137,8 +136,10 @@ final class ReconcileTests: XCTestCase {
         XCTAssertEqual(m.state, after)
     }
 
-    // Start ordering: journal first, then pmset; on failure nothing remains.
-    func testStartRollsBackJournalWhenPmsetFails() async throws {
+    // Start ordering: journal first, then pmset. A pmset failure is
+    // ambiguous (the setting may have been applied), so the start is undone
+    // from the journal; once the undo is confirmed nothing remains.
+    func testStartUndoesFromJournalWhenPmsetFails() async throws {
         h.guardFake.throwOn = ["disablesleep 1"]
         let m = h.makeManager()
         await m.start(duration: 3600)
@@ -148,16 +149,16 @@ final class ReconcileTests: XCTestCase {
         XCTAssertNil(try h.store.loadSession())
         XCTAssertEqual(try h.store.loadState(), RuntimeState.clean)
         XCTAssertEqual(m.state, RuntimeState.clean)
-        // Backstop was armed before pmset and is cleared again on failure.
-        XCTAssertEqual(h.backstop.scheduled.count, 1)
-        XCTAssertEqual(h.backstop.clears, 1)
+        // The agent was confirmed before pmset; it stays loaded (it is idle
+        // with no session and a clean journal).
+        XCTAssertEqual(h.backstop.arms, 1)
         let err = try XCTUnwrap(m.lastError)
         XCTAssertTrue(err.contains("password is required"), err)
-        XCTAssertEqual(h.guardFake.calls, ["disablesleep 1"])
+        XCTAssertEqual(h.guardFake.calls, ["disablesleep 1", "disablesleep 0"])
     }
 
     func testStartFailsBeforeDisablingSleepWhenBackstopCannotBeArmed() async throws {
-        h.backstop.failSchedule = true
+        h.backstop.failArm = true
         let m = h.makeManager()
         await m.start(duration: 3600)
 
@@ -169,11 +170,11 @@ final class ReconcileTests: XCTestCase {
         XCTAssertTrue(err.contains("backstop"), err)
     }
 
-    func testExtendKeepsOldDeadlineWhenBackstopCannotBeMoved() async throws {
+    func testExtendKeepsOldDeadlineWhenBackstopCannotBeConfirmed() async throws {
         let m = h.makeManager()
         await m.start(duration: 3600)
         let original = try XCTUnwrap(m.session)
-        h.backstop.failSchedule = true
+        h.backstop.failArm = true
         await m.extend(by: 3600)
 
         XCTAssertEqual(m.session, original)
@@ -192,7 +193,7 @@ final class ReconcileTests: XCTestCase {
         XCTAssertEqual(try h.store.loadSession(), s)
         XCTAssertEqual(try h.store.loadState()?.sleepDisabledByUs, true)
         XCTAssertEqual(h.guardFake.calls, ["disablesleep 1"])
-        XCTAssertEqual(h.backstop.scheduled, [s.endsAt])
+        XCTAssertEqual(h.backstop.arms, 1)
         XCTAssertEqual(m.scheduledDeadline, s.endsAt)
         XCTAssertEqual(m.remainingText, "30m")
         XCTAssertNil(m.lastError)
@@ -213,19 +214,20 @@ final class ReconcileTests: XCTestCase {
         XCTAssertEqual(s.endsAt, h.clock.now.addingTimeInterval(6600))
         XCTAssertEqual(s.extensions, [3600])
         XCTAssertEqual(try h.store.loadSession(), s)
-        XCTAssertEqual(h.backstop.scheduled.last, s.endsAt)
+        XCTAssertEqual(h.backstop.arms, 2)
         XCTAssertEqual(m.remainingText, "1h 50m")
     }
 
-    func testEndRestoresFromDiskAndClearsBackstop() async throws {
+    func testEndRestoresFromDiskAndLeavesAgentLoaded() async throws {
         let m = h.makeManager()
         await m.start(duration: 3600)
-        await m.end(reason: .user)
+        let outcome = await m.end(reason: .user)
+        XCTAssertEqual(outcome, .restored)
         XCTAssertNil(m.session)
         XCTAssertNil(try h.store.loadSession())
         XCTAssertEqual(try h.store.loadState(), RuntimeState.clean)
         XCTAssertEqual(h.guardFake.calls, ["disablesleep 1", "disablesleep 0"])
-        XCTAssertEqual(h.backstop.clears, 1)
+        XCTAssertEqual(h.backstop.arms, 1)
         XCTAssertEqual(m.remainingText, "")
         XCTAssertNil(m.scheduledDeadline)
     }
@@ -234,10 +236,13 @@ final class ReconcileTests: XCTestCase {
         let m = h.makeManager()
         await m.start(duration: 3600)
         h.guardFake.throwOn = ["disablesleep 0"]
-        await m.end(reason: .quit)
+        let outcome = await m.end(reason: .quit)
+        XCTAssertEqual(outcome, .incomplete(agentArmed: true))
         XCTAssertNil(try h.store.loadSession())
         XCTAssertEqual(try h.store.loadState()?.sleepDisabledByUs, true)
         XCTAssertNotNil(m.lastError)
+        // The failed end re-confirms the agent so something retries the journal.
+        XCTAssertEqual(h.backstop.arms, 2)
     }
 
     func testCountdownPauseResume() async throws {

@@ -5,15 +5,15 @@ final class FreezerTests: XCTestCase {
     // Slack main (100) with helpers 101, 102 (child of 101), 103; an unrelated
     // process 200 under launchd; Insomnia itself at 300.
     let processes: [ProcessEntry] = [
-        ProcessEntry(pid: 1, ppid: 0),
-        ProcessEntry(pid: 100, ppid: 1),
-        ProcessEntry(pid: 101, ppid: 100),
-        ProcessEntry(pid: 102, ppid: 101),
-        ProcessEntry(pid: 103, ppid: 100),
-        ProcessEntry(pid: 200, ppid: 1),
-        ProcessEntry(pid: 300, ppid: 1),
-        ProcessEntry(pid: 400, ppid: 1),
-        ProcessEntry(pid: 401, ppid: 400),
+        ProcessEntry(pid: 1, ppid: 0, startedAt: 1),
+        ProcessEntry(pid: 100, ppid: 1, startedAt: 1000),
+        ProcessEntry(pid: 101, ppid: 100, startedAt: 1001),
+        ProcessEntry(pid: 102, ppid: 101, startedAt: 1002),
+        ProcessEntry(pid: 103, ppid: 100, startedAt: 1003),
+        ProcessEntry(pid: 200, ppid: 1, startedAt: 2000),
+        ProcessEntry(pid: 300, ppid: 1, startedAt: 3000),
+        ProcessEntry(pid: 400, ppid: 1, startedAt: 4000),
+        ProcessEntry(pid: 401, ppid: 400, startedAt: 4001),
     ]
     let apps: [RunningApp] = [
         RunningApp(pid: 100, bundleId: "com.tinyspeck.slackmacgap", name: "Slack"),
@@ -84,7 +84,7 @@ final class FreezerTests: XCTestCase {
 
     func testDuplicateBundleIdsAndInstancesAreMergedOnce() {
         let two = apps + [RunningApp(pid: 500, bundleId: "com.tinyspeck.slackmacgap", name: "Slack")]
-        let procs = processes + [ProcessEntry(pid: 500, ppid: 1), ProcessEntry(pid: 501, ppid: 500)]
+        let procs = processes + [ProcessEntry(pid: 500, ppid: 1, startedAt: 5000), ProcessEntry(pid: 501, ppid: 500, startedAt: 5001)]
         let groups = FreezePlanner.groups(bundleIds: ["com.tinyspeck.slackmacgap", "com.tinyspeck.slackmacgap"], apps: two, processes: procs, config: Config())
         XCTAssertEqual(groups.count, 1)
         XCTAssertEqual(Set(groups[0].pids), [100, 101, 102, 103, 500, 501])
@@ -93,32 +93,44 @@ final class FreezerTests: XCTestCase {
     func testSuspendAndResumeSignalsGoToProcessControl() {
         let control = FakeProcessControl()
         let f = FakeFreezer(apps: apps, processes: processes, control: control)
-        f.suspend(pids: [100, 101], expectedParents: [100: 1, 101: 100])
-        f.resume(pids: [100, 101])
+        let frozen = [FrozenProcess(pid: 100, startedAt: 1000), FrozenProcess(pid: 101, startedAt: 1001)]
+        _ = f.suspend(frozen, expectedParents: [100: 1, 101: 100])
+        _ = f.resume(frozen)
         XCTAssertEqual(control.suspended, [[100, 101]])
         XCTAssertEqual(control.resumed, [[100, 101]])
     }
 
     func testSignalFiltersUseCurrentParentAndStoppedState() {
         let states: [Int32: ProcessSignalState] = [
-            100: ProcessSignalState(ppid: 1, stopped: false),
-            101: ProcessSignalState(ppid: 999, stopped: true),
-            102: ProcessSignalState(ppid: 100, stopped: true),
-            103: ProcessSignalState(ppid: 100, stopped: false),
+            100: ProcessSignalState(ppid: 1, stopped: false, startedAt: 1000),
+            101: ProcessSignalState(ppid: 999, stopped: true, startedAt: 1001),
+            102: ProcessSignalState(ppid: 100, stopped: true, startedAt: 1002),
+            103: ProcessSignalState(ppid: 100, stopped: false, startedAt: 1003),
         ]
-        let lookup: SignalProcessControl.StateLookup = { states[$0] }
+        let lookup: SignalProcessControl.StateLookup = { states[$0].map(ProcessLookup.present) ?? .absent }
+        let frozen = [
+            FrozenProcess(pid: 100, startedAt: 1000),
+            FrozenProcess(pid: 101, startedAt: 1001),
+            FrozenProcess(pid: 103, startedAt: 1003),
+            FrozenProcess(pid: 404, startedAt: 4040),
+        ]
 
+        // 100 and 103 run under the expected parent; 101 is reparented and
+        // 404 is gone. 102 is already stopped, so it is not a candidate.
         XCTAssertEqual(
             SignalProcessControl.suspendable(
-                pids: [100, 101, 102, 404],
-                expectedParents: [100: 1, 101: 100, 102: 100, 404: 100],
+                frozen,
+                expectedParents: [100: 1, 101: 100, 103: 100, 404: 100],
                 stateLookup: lookup
             ),
-            [100, 102]
+            [100, 103]
         )
-        XCTAssertEqual(
-            SignalProcessControl.resumable(pids: [101, 102, 103, 404], stateLookup: lookup),
-            [101, 102]
+        let plan = SignalProcessControl.resumePlan(
+            [FrozenProcess(pid: 101, startedAt: 1001), FrozenProcess(pid: 102, startedAt: 1002),
+             FrozenProcess(pid: 103, startedAt: 1003), FrozenProcess(pid: 404, startedAt: 4040)],
+            stateLookup: lookup
         )
+        XCTAssertEqual(plan.signal, [101, 102])
+        XCTAssertEqual(plan.gone, [103, 404])
     }
 }

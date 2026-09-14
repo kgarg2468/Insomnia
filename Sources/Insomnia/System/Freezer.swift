@@ -2,10 +2,22 @@ import AppKit
 import Darwin
 import Foundation
 
-/// One process as seen by the kernel: enough to rebuild parent/child trees.
+/// One process as seen by the kernel: enough to rebuild parent/child trees
+/// and to recognise the same process again later.
 struct ProcessEntry: Sendable, Equatable, Hashable {
     let pid: Int32
     let ppid: Int32
+    let identity: ProcessIdentity
+    /// Already stopped when the snapshot was taken (by a debugger, by the
+    /// user, by an earlier crash). Never ours to freeze or resume.
+    let stopped: Bool
+
+    init(pid: Int32, ppid: Int32, identity: ProcessIdentity, stopped: Bool) {
+        self.pid = pid
+        self.ppid = ppid
+        self.identity = identity
+        self.stopped = stopped
+    }
 }
 
 /// One running GUI app as seen by NSWorkspace.
@@ -23,12 +35,16 @@ struct FreezeGroup: Sendable, Equatable {
     let pids: [Int32]
     /// Kernel parent captured with the process tree, checked again at SIGSTOP.
     let expectedParents: [Int32: Int32]
+    /// Start identity per pid, journaled before SIGSTOP and checked again at
+    /// SIGSTOP and at SIGCONT.
+    let identities: [Int32: ProcessIdentity]
 
-    init(bundleId: String, name: String, pids: [Int32], expectedParents: [Int32: Int32] = [:]) {
+    init(bundleId: String, name: String, pids: [Int32], expectedParents: [Int32: Int32] = [:], identities: [Int32: ProcessIdentity] = [:]) {
         self.bundleId = bundleId
         self.name = name
         self.pids = pids
         self.expectedParents = expectedParents
+        self.identities = identities
     }
 }
 
@@ -68,7 +84,9 @@ enum FreezePlanner {
     }
 
     /// One group per requested bundle id that is running and not denied.
-    /// Several running instances of one bundle id become one group.
+    /// Several running instances of one bundle id become one group. A
+    /// process that is already stopped is left out: Insomnia did not stop it
+    /// and must never resume it.
     static func groups(
         bundleIds: [String],
         apps: [RunningApp],
@@ -79,6 +97,7 @@ enum FreezePlanner {
     ) -> [FreezeGroup] {
         var out: [FreezeGroup] = []
         var done: Set<String> = []
+        let byPid = Dictionary(processes.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
         for id in bundleIds where !done.contains(id) {
             done.insert(id)
             if applyDenylist, isDenied(id, config: config, selfBundleId: selfBundleId) {
@@ -90,14 +109,20 @@ enum FreezePlanner {
             var pids: [Int32] = []
             for app in instances {
                 for pid in tree(root: app.pid, in: processes) where !pids.contains(pid) {
+                    if byPid[pid]?.stopped == true {
+                        Log.info("freeze: pid \(pid) of \(instances[0].name) is already stopped, not ours; skipped")
+                        continue
+                    }
                     pids.append(pid)
                 }
             }
             var expectedParents: [Int32: Int32] = [:]
+            var identities: [Int32: ProcessIdentity] = [:]
             for process in processes where pids.contains(process.pid) {
                 expectedParents[process.pid] = process.ppid
+                identities[process.pid] = process.identity
             }
-            out.append(FreezeGroup(bundleId: id, name: instances[0].name, pids: pids, expectedParents: expectedParents))
+            out.append(FreezeGroup(bundleId: id, name: instances[0].name, pids: pids, expectedParents: expectedParents, identities: identities))
         }
         return out
     }
@@ -107,8 +132,8 @@ enum FreezePlanner {
 protocol Freezing: Sendable {
     /// Groups for the given bundle ids that are running right now.
     func plan(bundleIds: [String], config: Config, applyDenylist: Bool) -> [FreezeGroup]
-    func suspend(pids: [Int32], expectedParents: [Int32: Int32])
-    func resume(pids: [Int32])
+    func suspend(_ processes: [FrozenProcess], expectedParents: [Int32: Int32]) -> SuspendReport
+    func resume(_ processes: [FrozenProcess]) -> ResumeReport
 }
 
 extension Freezing {
@@ -138,10 +163,10 @@ struct Freezer: Freezing {
         )
     }
 
-    func suspend(pids: [Int32], expectedParents: [Int32: Int32]) {
-        control.suspend(pids: pids, expectedParents: expectedParents)
+    func suspend(_ processes: [FrozenProcess], expectedParents: [Int32: Int32]) -> SuspendReport {
+        control.suspend(processes, expectedParents: expectedParents)
     }
-    func resume(pids: [Int32]) { control.resume(pids: pids) }
+    func resume(_ processes: [FrozenProcess]) -> ResumeReport { control.resume(processes) }
 
     static func runningApps() -> [RunningApp] {
         NSWorkspace.shared.runningApplications.map {
@@ -149,7 +174,8 @@ struct Freezer: Freezing {
         }
     }
 
-    /// Every process on the system as (pid, ppid), via sysctl KERN_PROC_ALL.
+    /// Every process on the system with parent, start identity and stopped
+    /// state, via sysctl KERN_PROC_ALL.
     static func processSnapshot() -> [ProcessEntry] {
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
         var size = 0
@@ -171,9 +197,20 @@ struct Freezer: Freezing {
         let count = size / stride
         var out: [ProcessEntry] = []
         out.reserveCapacity(count)
+        let boot = SignalProcessControl.bootSession
         for i in 0..<count {
             let p = buffer[i]
-            out.append(ProcessEntry(pid: p.kp_proc.p_pid, ppid: p.kp_eproc.e_ppid))
+            let started = p.kp_proc.p_starttime
+            out.append(ProcessEntry(
+                pid: p.kp_proc.p_pid,
+                ppid: p.kp_eproc.e_ppid,
+                identity: ProcessIdentity(
+                    startedAt: Int64(started.tv_sec),
+                    startedAtMicros: Int32(truncatingIfNeeded: started.tv_usec),
+                    bootSession: boot
+                ),
+                stopped: p.kp_proc.p_stat == UInt8(SSTOP)
+            ))
         }
         return out
     }

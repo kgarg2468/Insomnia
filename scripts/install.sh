@@ -4,6 +4,18 @@
 # once (for /etc/sudoers.d/insomnia).
 set -euo pipefail
 
+# Installation always uses the standard per-user layout. A relocated
+# INSOMNIA_HOME would make the backstop run here act on one tree while the
+# app is installed against another, so refuse rather than guess.
+if [[ -n "${INSOMNIA_HOME:-}" ]]; then
+  echo "INSOMNIA_HOME is set ($INSOMNIA_HOME). install.sh only supports the standard layout under ~/Library;" >&2
+  echo "unset INSOMNIA_HOME and rerun. Nothing was changed." >&2
+  exit 1
+fi
+
+# How long to wait for the app to exit after asking it to quit.
+QUIT_WAIT_SECONDS=15
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$HOME/Applications"
 APP="$APP_DIR/Insomnia.app"
@@ -26,10 +38,21 @@ BIN="$(swift build -c release --show-bin-path)/Insomnia"
 
 # 2. Bundle ------------------------------------------------------------------
 step "Assembling $APP"
+# Ask the app to quit and wait until it has actually exited. It refuses to
+# quit while it has unresolved recovery work; that refusal stands (no pkill),
+# and nothing of the old install is overwritten while it is still running.
 if pgrep -x Insomnia >/dev/null 2>&1; then
   echo "Insomnia is running; quitting it first (this ends any session)."
-  osascript -e 'tell application id "com.kgarg.insomnia" to quit' >/dev/null 2>&1 || pkill -x Insomnia || true
-  sleep 2
+  osascript -e 'tell application id "com.kgarg.insomnia" to quit' >/dev/null 2>&1 || true
+  for (( i = 0; i < QUIT_WAIT_SECONDS; i++ )); do
+    pgrep -x Insomnia >/dev/null 2>&1 || break
+    sleep 1
+  done
+  if pgrep -x Insomnia >/dev/null 2>&1; then
+    echo "Insomnia is still running after ${QUIT_WAIT_SECONDS}s (it may be refusing to quit until its own recovery finishes)." >&2
+    echo "Let it finish or quit it from its menu, then rerun. Nothing was changed." >&2
+    exit 1
+  fi
 fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
@@ -62,20 +85,26 @@ else
   echo "sudoers file failed validation; not installed" >&2
   exit 1
 fi
-if sudo -n /usr/bin/pmset -a disablesleep 0 >/dev/null 2>&1; then
+# `sudo -l <command>` checks the rule without running pmset (nothing on the
+# machine changes). The backstop cannot undo anything without it, so stop here.
+if sudo -n -l /usr/bin/pmset -a disablesleep 0 >/dev/null 2>&1; then
   echo "sudoers rule verified"
 else
-  echo "warning: 'sudo -n pmset' still fails; check $SUDOERS" >&2
+  echo "'sudo -n pmset' is still not permitted; check $SUDOERS. Not installing the agent." >&2
+  exit 1
 fi
 
-# 5. End any stale session before the agent (and its calendar trigger) is
-#    replaced. sudoers is in place now, so pmset works without a prompt.
-if [[ -f "$APP_SUPPORT/session.json" ]]; then
-  step "A previous session is on disk; ending it"
-  /bin/bash "$APP_SUPPORT/backstop.sh" --force
-fi
+# 5. Undo anything a previous install left journaled, with the backstop just
+#    installed. sudoers is in place now, so pmset works without a prompt.
+#    A failure is reported after the agent is in place (so it keeps retrying)
+#    rather than ignored.
+step "Ending any stale session and checking the recovery journal"
+recovery_rc=0
+/bin/bash "$APP_SUPPORT/backstop.sh" --force || recovery_rc=$?
 
-# 6. LaunchAgent (RunAtLoad only; the app adds the calendar trigger) ---------
+# 6. LaunchAgent: runs the backstop at load and every 60 s. The backstop
+#    enforces the saved deadline itself and is a no-op while the session on
+#    disk is valid. The app writes the same plist (LaunchdBackstop.swift).
 step "Installing LaunchAgent $LABEL"
 launchctl bootout "gui/$UID_NUM" "$PLIST" >/dev/null 2>&1 || true
 cat > "$PLIST" <<PLIST
@@ -92,11 +121,25 @@ cat > "$PLIST" <<PLIST
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
+	<key>StartInterval</key>
+	<integer>60</integer>
 </dict>
 </plist>
 PLIST
 plutil -lint "$PLIST" >/dev/null
 launchctl bootstrap "gui/$UID_NUM" "$PLIST"
+
+if (( recovery_rc != 0 )); then
+  cat >&2 <<FAIL
+
+Install stopped: the backstop could not fully undo a previous session
+(exit status $recovery_rc). The app, backstop, sudoers rule, and LaunchAgent
+are installed, and the agent retries every minute. Check
+$LOG_DIR/insomnia.log, resolve what it reports (saved audio needs the app:
+open "$APP"), then rerun this script.
+FAIL
+  exit 1
+fi
 
 # 7. Done --------------------------------------------------------------------
 step "Installed"

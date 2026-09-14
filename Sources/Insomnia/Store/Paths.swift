@@ -61,6 +61,9 @@ struct Paths: Sendable, Equatable {
     var configFile: URL { appSupport.appendingPathComponent("config.json") }
     /// Installed copy of scripts/backstop.sh, placed there by install.sh.
     var backstopScript: URL { appSupport.appendingPathComponent("backstop.sh") }
+    /// flock(2) file shared with backstop.sh (`lockf -k` on the same path).
+    /// Created once, never unlinked, so both sides lock the same inode.
+    var recoveryLock: URL { appSupport.appendingPathComponent(".recovery.lock") }
 
     var logFile: URL { logs.appendingPathComponent("insomnia.log") }
     var handoffsLog: URL { logs.appendingPathComponent("handoffs.log") }

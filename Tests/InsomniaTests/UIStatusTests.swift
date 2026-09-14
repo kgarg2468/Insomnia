@@ -83,7 +83,7 @@ final class UIStatusTests: XCTestCase {
     func testSleepHeldLine() {
         XCTAssertEqual(
             SleepHeldLine.line(sessionActive: true, sleepHeld: true),
-            SleepHeldLine.Line(text: "Sleep held \u{2014} safe to close the lid", isWarning: false)
+            SleepHeldLine.Line(text: "Sleep held per journal \u{2014} not verified live", isWarning: false)
         )
         XCTAssertEqual(
             SleepHeldLine.line(sessionActive: true, sleepHeld: false),
@@ -152,7 +152,7 @@ final class UIStatusTests: XCTestCase {
             error: nil
         )
         XCTAssertEqual(items, [
-            StatusMenu.Item(title: "Sleep held \u{2014} safe to close the lid", kind: .info),
+            StatusMenu.Item(title: "Sleep held per journal \u{2014} not verified live", kind: .info),
             StatusMenu.Item(title: "Lid: closed \u{00B7} 82%", kind: .info),
             StatusMenu.Item(title: "3 apps frozen", kind: .info),
             StatusMenu.Item(title: "\u{26A0} Chrome is throttled", kind: .warning),

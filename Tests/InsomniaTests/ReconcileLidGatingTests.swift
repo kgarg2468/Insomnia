@@ -16,7 +16,7 @@ final class ReconcileLidGatingTests: XCTestCase {
         try h.store.saveSession(s)
         var st = RuntimeState()
         st.sleepDisabledByUs = true
-        st.frozenPids = [111, 222]
+        st.frozenProcesses = [FrozenProcess(pid: 111, startedAt: 5), FrozenProcess(pid: 222, startedAt: 6)]
         st.dockerFrozen = true
         st.savedOutputVolume = 0.4
         st.savedMuted = false
@@ -35,6 +35,7 @@ final class ReconcileLidGatingTests: XCTestCase {
         XCTAssertEqual(h.audio.applied.count, 0)
         let after = try XCTUnwrap(try h.store.loadState())
         XCTAssertEqual(after.frozenPids, [111, 222])
+        XCTAssertEqual(after.frozenProcesses.map { $0.identity?.startedAt }, [5, 6], "identity lost across reconcile")
         XCTAssertTrue(after.dockerFrozen)
         XCTAssertEqual(after.savedOutputVolume, 0.4)
         XCTAssertEqual(m.state, after)
@@ -74,7 +75,7 @@ final class ReconcileLidGatingTests: XCTestCase {
         try h.store.saveSession(Session(startedAt: now.addingTimeInterval(-7200), endsAt: now.addingTimeInterval(-1)))
         var st = RuntimeState()
         st.sleepDisabledByUs = true
-        st.frozenPids = [111]
+        st.frozenProcesses = [FrozenProcess(pid: 111, startedAt: 5)]
         try h.store.saveState(st)
         h.clamshell.closed = true
         let m = h.makeManager()
