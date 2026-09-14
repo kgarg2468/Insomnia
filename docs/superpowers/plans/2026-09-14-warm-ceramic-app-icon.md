@@ -155,3 +155,22 @@ Expected: 178 tests pass with 0 failures.
 git add Resources/Info.plist scripts/install.sh README.md
 git commit -m "feat: bundle the Insomnia app icon"
 ```
+
+### Task 3: Add automated packaging regression coverage
+
+**Files:**
+- Create: `scripts/assemble-app.sh`
+- Create: `Tests/InsomniaTests/PackagingTests.swift`
+- Modify: `scripts/install.sh`
+
+**Interfaces:**
+- Consumes: a destination ending in `Insomnia.app` and an executable binary path
+- Produces: a signed app bundle whose declared icon exists at `Contents/Resources/AppIcon.icns`
+
+- [x] **Step 1: Add a packaging test and verify it fails without the assembler**
+
+- [x] **Step 2: Extract app assembly into `scripts/assemble-app.sh` and call it from the installer**
+
+- [x] **Step 3: Run the packaging test and complete suite**
+
+- [x] **Step 4: Commit and push the review fix**
