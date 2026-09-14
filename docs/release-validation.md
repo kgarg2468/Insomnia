@@ -31,7 +31,7 @@ reported no detected secrets across 175 locally available commits.
   launch, retaining the checked tmux pane across an active-pane change, and
   stopping during a suspended hotspot join. This is not a live Docker-freeze
   or hotspot validation.
-- Recovery/lifecycle remediation: an independent snapshot of the final source,
+- Recovery/lifecycle remediation before PR review: an independent snapshot of the source,
   test, and script tree passed 315 tests with zero failures, zero skips, and no
   compiler warnings. Release compilation and ShellCheck passed. A redacted
   source secret scan detected no findings. Tests exercise injected power/audio
@@ -39,6 +39,17 @@ reported no detected secrets across 175 locally available commits.
   recovery/install/uninstall fixtures; they do not mutate live power settings or
   install/remove the working app. Hosted CI and automated review must also be
   checked on the resulting PR's latest head.
+- PR #4 review reproduced two further failure paths: unconfirmed process
+  ownership after a failed journal save, and installer loss of the previous
+  recovery agent. Follow-up tests cover provisional non-resumable freeze
+  entries, preserving the trusted plist on bootstrap failure, and holding the
+  shared recovery lock throughout installer recovery and agent replacement.
+  The hosted lock-test fixture now uses an explicit release signal instead of
+  assuming its simulated command stays alive for a fixed number of seconds.
+  Independent verification of the combined follow-up source/tests/scripts
+  passed 329 tests with zero failures, zero skips, and no compiler warnings;
+  release compilation and ShellCheck also passed. Hosted checks remain a
+  separate gate on the PR's latest commit.
 
 Check each PR's latest commit and check results; this record does not make an
 earlier green run evidence for subsequent changes.
@@ -69,8 +80,10 @@ machine to validate thermal handling; exercise injected thermal events first.
 
 Launchd sequencing tests use a fake command runner. Actual bootstrap of the
 private candidate plist, login loading, and crash recovery must still be
-checked on the supported macOS release. Installer quit refusal is checked in
-source; its full build/install path has not been exercised on a working Mac.
+checked on the supported macOS release. Installer tests redirect every app,
+LaunchAgent, sudoers, and command target into a temporary fixture. Real build,
+signing, privileged installation, and quit refusal by a running app have not
+been exercised as an end-to-end installation on a working Mac.
 
 ## Distribution boundary
 

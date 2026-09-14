@@ -802,8 +802,8 @@ final class RecoveryScriptTests: XCTestCase {
         let blocked = try fx.run(fx.backstop)
         XCTAssertEqual(blocked.status, 75, "no new transaction while the command lives: \(blocked.stderr)")
         XCTAssertEqual(fx.calls(), [], "no mutation outside the lock")
-        for _ in 0..<80 where try !fx.lockIsFree() { Thread.sleep(forTimeInterval: 0.1) }
-        XCTAssertTrue(try fx.lockIsFree(), "the lock is released only when the command exits")
+        fx.releaseCommand()
+        XCTAssertTrue(try fx.waitUntilLockIsFree(), "the lock is released only when the command exits")
         let after = try fx.run(fx.backstop)
         XCTAssertEqual(after.status, 0, after.stderr + fx.log())
         XCTAssertEqual(try fx.stateJSON()["sleepDisabledByUs"] as? Bool, false)
@@ -831,8 +831,8 @@ final class RecoveryScriptTests: XCTestCase {
         let log = fx.log()
         XCTAssertTrue(log.contains("keeps the recovery lock"), log)
         XCTAssertFalse(log.contains("lowpowermode"), "the second undo was never attempted: \(log)")
-        for _ in 0..<80 where try !fx.lockIsFree() { Thread.sleep(forTimeInterval: 0.1) }
-        XCTAssertTrue(try fx.lockIsFree())
+        fx.releaseCommand()
+        XCTAssertTrue(try fx.waitUntilLockIsFree(), "the lock is released only when the command exits")
         fx.setMode("sudo", "ok")
         fx.clearCalls()
         let after = try fx.run(fx.backstop)
@@ -886,8 +886,8 @@ final class RecoveryScriptTests: XCTestCase {
         XCTAssertEqual(blocked.status, 75, "no new transaction while the command lives: \(blocked.stderr)")
         XCTAssertEqual(fx.calls(), [], "no mutation outside the lock")
         XCTAssertTrue(fx.log().contains("keeps the recovery lock"), fx.log())
-        for _ in 0..<80 where try !fx.lockIsFree() { Thread.sleep(forTimeInterval: 0.1) }
-        XCTAssertTrue(try fx.lockIsFree(), "the lock is released when the command exits")
+        fx.releaseCommand()
+        XCTAssertTrue(try fx.waitUntilLockIsFree(), "the lock is released when the command exits")
         let after = try fx.run(fx.backstop)
         XCTAssertEqual(after.status, 0, after.stderr + fx.log())
         XCTAssertEqual(try fx.stateJSON()["sleepDisabledByUs"] as? Bool, false)
@@ -909,6 +909,227 @@ final class RecoveryScriptTests: XCTestCase {
         XCTAssertTrue(fx.exists(fx.installedBackstop))
         XCTAssertTrue(fx.exists(fx.config))
         XCTAssertTrue(r.stderr.contains("cannot tell"), r.stderr)
+    }
+
+    // MARK: - install.sh (fully redirected: fake build, signing, sudo, launchctl)
+
+    func testInstallKeepsTheTrustedAgentWhenRecoveryIsUnresolved() throws {
+        try fx.prepareInstall()
+        try "trusted".write(to: fx.plist, atomically: true, encoding: .utf8)
+        try fx.writeState(#"{"sleepDisabledByUs":true,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false}"#)
+        fx.setMode("sudo", "fail")          // pmset undo fails; `sudo -n -l` still passes
+        fx.setMode("launchctl", "loaded")   // an older agent is loaded
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertEqual(r.status, 1, r.stderr + r.stdout)
+        let calls = fx.calls()
+        XCTAssertFalse(calls.contains { $0.hasPrefix("launchctl bootout") }, "the loaded agent is left alone: \(calls)")
+        XCTAssertFalse(calls.contains { $0.hasPrefix("launchctl bootstrap") }, "\(calls)")
+        XCTAssertTrue(calls.contains("launchctl print gui/\(fx.uid)/com.insomnia.backstop"), "the claim about the agent is checked: \(calls)")
+        XCTAssertEqual(try String(contentsOf: fx.plist, encoding: .utf8), "trusted", "the trusted plist is untouched")
+        XCTAssertEqual(try fx.stateJSON()["sleepDisabledByUs"] as? Bool, true, "ownership retained")
+        XCTAssertTrue(r.stderr.contains("left as it was"), r.stderr)
+        XCTAssertTrue(r.stderr.contains("not verified"), "no schedule claim from print alone: \(r.stderr)")
+        XCTAssertFalse(r.stderr.contains("every minute"), r.stderr)
+        XCTAssertTrue(r.stderr.contains("backstop.sh\" --force"), "manual step named: \(r.stderr)")
+        XCTAssertTrue(r.stderr.contains("not replaced"), r.stderr)
+        XCTAssertTrue(try fx.lockIsFree(), "the transaction ends with the script")
+    }
+
+    func testInstallDoesNotClaimAnAgentRetriesWhenNoneIsLoaded() throws {
+        try fx.prepareInstall()
+        try fx.writeState(#"{"sleepDisabledByUs":true,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false}"#)
+        fx.setMode("sudo", "fail")
+        // launchctl mode ok: `print` exits 113, nothing is loaded
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertEqual(r.status, 1, r.stderr + r.stdout)
+        XCTAssertFalse(fx.calls().contains { $0.hasPrefix("launchctl bootstrap") || $0.hasPrefix("launchctl bootout") }, "\(fx.calls())")
+        XCTAssertFalse(fx.exists(fx.plist), "no agent file is written while recovery is unresolved")
+        XCTAssertTrue(r.stderr.contains("No LaunchAgent"), r.stderr)
+        XCTAssertTrue(r.stderr.contains("nothing retries"), r.stderr)
+        XCTAssertFalse(r.stderr.contains("every minute"), "no retry is promised: \(r.stderr)")
+    }
+
+    func testInstallRestoresThePreviousAgentWhenBootstrapFails() throws {
+        try fx.prepareInstall()
+        try "trusted".write(to: fx.plist, atomically: true, encoding: .utf8)
+        try fx.writeState(#"{"sleepDisabledByUs":false,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false}"#)
+        fx.setMode("launchctl", "loaded-bootstrap-fails-once")
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertEqual(r.status, 1, r.stderr + r.stdout)
+        let bootstraps = fx.calls().filter { $0.hasPrefix("launchctl bootstrap") }
+        XCTAssertEqual(bootstraps.count, 2, "candidate, then the previous plist again: \(fx.calls())")
+        XCTAssertTrue(bootstraps[0].contains("candidate-") && !bootstraps[0].hasSuffix(".plist"), "loaded through a private candidate: \(bootstraps)")
+        XCTAssertEqual(bootstraps[1], "launchctl bootstrap gui/\(fx.uid) \(fx.plist.path)")
+        XCTAssertEqual(try String(contentsOf: fx.plist, encoding: .utf8), "trusted", "the trusted plist was never modified")
+        XCTAssertTrue(r.stderr.contains("loaded again"), r.stderr)
+        XCTAssertTrue(r.stderr.contains("not verified"), "reload success is not a schedule claim: \(r.stderr)")
+        XCTAssertFalse(r.stderr.contains("every minute"), r.stderr)
+        XCTAssertTrue(fx.exists(fx.sudoers))
+        XCTAssertTrue(fx.exists(fx.app.appendingPathComponent("Contents/MacOS/Insomnia")))
+        XCTAssertEqual(try fx.contents(of: fx.plist.deletingLastPathComponent()), ["com.insomnia.backstop.plist"], "no staged leftovers")
+    }
+
+    func testInstallReplacesTheAgentAfterCleanRecovery() throws {
+        try fx.prepareInstall()
+        try "trusted".write(to: fx.plist, atomically: true, encoding: .utf8)
+        try Data().write(to: fx.lock)
+        let lockInode = try fx.inode(fx.lock)
+        try fx.writeState(#"{"sleepDisabledByUs":true,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false}"#)
+        fx.setMode("launchctl", "loaded")
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertEqual(r.status, 0, r.stderr + r.stdout)
+        let calls = fx.calls()
+        XCTAssertTrue(calls.contains("sudo -n \(fx.fakePmset) -a disablesleep 0"), "recovery ran with the new backstop: \(calls)")
+        XCTAssertTrue(calls.contains { $0.hasPrefix("launchctl bootout gui/\(fx.uid) ") }, "\(calls)")
+        let bootstraps = calls.filter { $0.hasPrefix("launchctl bootstrap") }
+        XCTAssertEqual(bootstraps.count, 1, "\(calls)")
+        XCTAssertTrue(bootstraps.first?.contains("candidate-") == true, "loaded through a private candidate: \(calls)")
+        XCTAssertTrue(calls.contains("launchctl LOCK-HELD during bootstrap"), "recovery check and replacement are one lock transaction: \(calls)")
+        XCTAssertFalse(calls.contains("launchctl LOCK-FREE during bootstrap"), "\(calls)")
+        XCTAssertEqual(try fx.inode(fx.lock), lockInode, "the lock inode is preserved")
+        XCTAssertTrue(try fx.lockIsFree())
+        XCTAssertTrue(r.stdout.contains("launchctl print confirms"), r.stdout)
+        let plist = try String(contentsOf: fx.plist, encoding: .utf8)
+        XCTAssertTrue(plist.contains("<integer>60</integer>"), plist)
+        XCTAssertTrue(plist.contains(fx.installedBackstop.path), plist)
+        XCTAssertEqual(try fx.stateJSON()["sleepDisabledByUs"] as? Bool, false)
+        XCTAssertTrue(fx.exists(fx.installedBackstop))
+        XCTAssertTrue(fx.exists(fx.sudoers))
+        XCTAssertTrue(fx.exists(fx.app.appendingPathComponent("Contents/Info.plist")))
+        XCTAssertTrue(r.stdout.contains("Installed"), r.stdout)
+        XCTAssertEqual(try fx.contents(of: fx.plist.deletingLastPathComponent()), ["com.insomnia.backstop.plist"])
+    }
+
+    func testInstallLeavesTrustedPlistWhenBootstrapAndReloadBothFail() throws {
+        try fx.prepareInstall()
+        try "trusted".write(to: fx.plist, atomically: true, encoding: .utf8)
+        try fx.writeState(#"{"sleepDisabledByUs":false,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false}"#)
+        fx.setMode("launchctl", "loaded-then-lost")
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertEqual(r.status, 1, r.stderr + r.stdout)
+        XCTAssertEqual(fx.calls().filter { $0.hasPrefix("launchctl bootstrap") }.count, 2, "\(fx.calls())")
+        XCTAssertEqual(try String(contentsOf: fx.plist, encoding: .utf8), "trusted", "byte-for-byte untouched")
+        XCTAssertEqual(try fx.contents(of: fx.plist.deletingLastPathComponent()), ["com.insomnia.backstop.plist"], "no candidate left behind")
+        XCTAssertTrue(r.stderr.contains("could not be loaded again"), r.stderr)
+        XCTAssertTrue(r.stderr.contains("launchctl bootstrap gui/\(fx.uid)"), "manual command named: \(r.stderr)")
+        XCTAssertFalse(r.stderr.contains("every minute"), r.stderr)
+    }
+
+    func testInstallDoesNotReloadOrClaimAbsenceOnAmbiguousLaunchctl() throws {
+        try fx.prepareInstall()
+        try "trusted".write(to: fx.plist, atomically: true, encoding: .utf8)
+        try fx.writeState(#"{"sleepDisabledByUs":false,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false}"#)
+        fx.setMode("launchctl", "ambiguous")   // print and bootout fail with errors; bootstrap fails
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertEqual(r.status, 1, r.stderr + r.stdout)
+        XCTAssertEqual(fx.calls().filter { $0.hasPrefix("launchctl bootstrap") }.count, 1, "no reload attempt when the prior state is unknown: \(fx.calls())")
+        XCTAssertEqual(try String(contentsOf: fx.plist, encoding: .utf8), "trusted")
+        XCTAssertTrue(r.stderr.contains("unknown"), r.stderr)
+        XCTAssertFalse(r.stderr.contains("No LaunchAgent"), "ambiguous is not absent: \(r.stderr)")
+        XCTAssertFalse(r.stderr.contains("every minute"), r.stderr)
+    }
+
+    func testInstallReportsUnknownNotAbsentWhenTheLaterPrintFails() throws {
+        // Nothing loaded before, bootstrap fails, then `print` itself errors:
+        // the current state is unknown and must not be reported as absent.
+        try fx.prepareInstall()
+        try "trusted".write(to: fx.plist, atomically: true, encoding: .utf8)
+        try fx.writeState(#"{"sleepDisabledByUs":false,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false}"#)
+        fx.setMode("launchctl", "no-then-error")
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertEqual(r.status, 1, r.stderr + r.stdout)
+        XCTAssertEqual(fx.calls().filter { $0.hasPrefix("launchctl bootstrap") }.count, 1, "no reload when nothing was loaded before: \(fx.calls())")
+        XCTAssertEqual(try String(contentsOf: fx.plist, encoding: .utf8), "trusted")
+        XCTAssertTrue(r.stderr.contains("unknown"), r.stderr)
+        XCTAssertTrue(r.stderr.contains("not confirmed"), r.stderr)
+        XCTAssertFalse(r.stderr.contains("none is loaded now"), "unknown is not absent: \(r.stderr)")
+        XCTAssertFalse(r.stderr.contains("No LaunchAgent"), r.stderr)
+    }
+
+    func testInstallDoesNotAttributeAnExistingJobToAFailedReload() throws {
+        // A job was loaded before; the candidate bootstrap fails and so does
+        // the reload of the previous plist, while `print` keeps listing a job.
+        // That job's source is unknown; it must not be called "loaded again
+        // from the previous plist".
+        try fx.prepareInstall()
+        try "trusted".write(to: fx.plist, atomically: true, encoding: .utf8)
+        try fx.writeState(#"{"sleepDisabledByUs":false,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false}"#)
+        fx.setMode("launchctl", "loaded-bootstrap-always-fails")
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertEqual(r.status, 1, r.stderr + r.stdout)
+        XCTAssertEqual(fx.calls().filter { $0.hasPrefix("launchctl bootstrap") }.count, 2, "\(fx.calls())")
+        XCTAssertEqual(try String(contentsOf: fx.plist, encoding: .utf8), "trusted")
+        XCTAssertTrue(r.stderr.contains("reload"), r.stderr)
+        XCTAssertTrue(r.stderr.contains("not confirmed"), r.stderr)
+        XCTAssertTrue(r.stderr.contains("unknown"), "source of the existing job is unknown: \(r.stderr)")
+        XCTAssertFalse(r.stderr.contains("loaded again from the previous plist"), r.stderr)
+        XCTAssertFalse(r.stderr.contains("every minute"), r.stderr)
+    }
+
+    func testInstallDoesNotPublishWhenLoadedStatusIsNotConfirmed() throws {
+        // Mode ok: bootstrap reports success but `print` never lists the job.
+        try fx.prepareInstall()
+        try "trusted".write(to: fx.plist, atomically: true, encoding: .utf8)
+        try fx.writeState(#"{"sleepDisabledByUs":false,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false}"#)
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertEqual(r.status, 1, r.stderr + r.stdout)
+        XCTAssertEqual(try String(contentsOf: fx.plist, encoding: .utf8), "trusted", "nothing is published without a confirmed load")
+        XCTAssertEqual(try fx.contents(of: fx.plist.deletingLastPathComponent()), ["com.insomnia.backstop.plist"])
+        XCTAssertTrue(r.stderr.contains("not confirmed"), r.stderr)
+        XCTAssertFalse(r.stdout.contains("Installed"), r.stdout)
+    }
+
+    func testInstallRefusesWhileRecoveryLockIsHeld() throws {
+        try fx.prepareInstall()
+        try "trusted".write(to: fx.plist, atomically: true, encoding: .utf8)
+        try fx.writeState(#"{"sleepDisabledByUs":true,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false}"#)
+        let holder = try fx.holdLock()
+        defer { holder.terminate(); holder.waitUntilExit() }
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertEqual(r.status, 75, r.stderr + r.stdout)
+        let calls = fx.calls()
+        XCTAssertFalse(calls.contains { $0.hasPrefix("sudo -n \(fx.fakePmset)") }, "no recovery outside the lock: \(calls)")
+        XCTAssertFalse(calls.contains { $0.hasPrefix("launchctl") }, "\(calls)")
+        XCTAssertEqual(try String(contentsOf: fx.plist, encoding: .utf8), "trusted")
+        XCTAssertEqual(try fx.stateJSON()["sleepDisabledByUs"] as? Bool, true)
+        XCTAssertTrue(r.stderr.contains("recovery lock"), r.stderr)
+    }
+
+    func testInstallStopsWhenAppStartsAgainUnderTheLock() throws {
+        try fx.prepareInstall()
+        try "trusted".write(to: fx.plist, atomically: true, encoding: .utf8)
+        try fx.writeState(#"{"sleepDisabledByUs":true,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false}"#)
+        fx.setMode("pgrep", "1\n0\n")   // not running at the quit step, running again under the lock
+        fx.setMode("launchctl", "loaded")
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertEqual(r.status, 1, r.stderr + r.stdout)
+        let calls = fx.calls()
+        XCTAssertFalse(calls.contains { $0.hasPrefix("sudo -n \(fx.fakePmset)") }, "no recovery beside a running app: \(calls)")
+        XCTAssertFalse(calls.contains { $0.hasPrefix("launchctl") }, "\(calls)")
+        XCTAssertEqual(try String(contentsOf: fx.plist, encoding: .utf8), "trusted")
+        XCTAssertTrue(r.stderr.contains("started again"), r.stderr)
     }
 
     func testInstallRefusesRelocatedHomeBeforeDoingAnything() throws {
@@ -955,6 +1176,7 @@ private final class ScriptFixture {
     var backstop: URL { repoScripts.appendingPathComponent("backstop.sh") }
     var uninstall: URL { repoScripts.appendingPathComponent("uninstall.sh") }
     var install: URL { repoScripts.appendingPathComponent("install.sh") }
+    var installRedirected: URL { repoScripts.appendingPathComponent("install.redirected.sh") }
     var session: URL { home.appendingPathComponent("session.json") }
     var state: URL { home.appendingPathComponent("state.json") }
     var config: URL { home.appendingPathComponent("config.json") }
@@ -984,7 +1206,41 @@ private final class ScriptFixture {
     }
 
     func destroy() {
+        releaseCommand()
         try? fm.removeItem(at: root)
+    }
+
+    /// Lets a fake command in mode "ignore-term" / "closes-fd9" finish.
+    func releaseCommand() {
+        fm.createFile(atPath: root.appendingPathComponent("release").path, contents: nil)
+    }
+
+    /// Polls until the recovery lock is free; false after `seconds`.
+    func waitUntilLockIsFree(_ seconds: Double = 15) throws -> Bool {
+        let deadline = Date(timeIntervalSinceNow: seconds)
+        while Date() < deadline {
+            if try lockIsFree() { return true }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return try lockIsFree()
+    }
+
+    /// What install.sh's build and bundle steps need from the "repo":
+    /// Resources/Info.plist and a binary at the fake swift's bin path.
+    func prepareInstall() throws {
+        let resources = repoScripts.deletingLastPathComponent().appendingPathComponent("Resources", isDirectory: true)
+        try fm.createDirectory(at: resources, withIntermediateDirectories: true)
+        try """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.kgarg.insomnia</string></dict></plist>
+        """.write(to: resources.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
+        let binroot = root.appendingPathComponent("binroot", isDirectory: true)
+        try fm.createDirectory(at: binroot, withIntermediateDirectories: true)
+        let binary = binroot.appendingPathComponent("Insomnia")
+        try "#!/bin/bash\nexit 0\n".write(to: binary, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+        try fm.createDirectory(at: plist.deletingLastPathComponent(), withIntermediateDirectories: true)
     }
 
     func exists(_ url: URL) -> Bool { fm.fileExists(atPath: url.path) }
@@ -1028,9 +1284,30 @@ private final class ScriptFixture {
             "QUIT_WAIT_SECONDS": "1",
         ]).write(to: uninstall, atomically: true, encoding: .utf8)
 
-        // install.sh is only ever run for its early refusal (before any build,
-        // quit, or install step); it needs no patching for that.
-        try fm.copyItem(at: src.appendingPathComponent("install.sh"), to: install)
+        // install.sh: every $HOME-derived path and every tool is redirected
+        // into the fixture (build, signing, sudo, launchctl included).
+        let installText = try String(contentsOf: src.appendingPathComponent("install.sh"), encoding: .utf8)
+        let patchedInstall = try Self.patch(installText, [
+            "QUIT_WAIT_SECONDS": "1",
+            "APP_DIR": appsDir.path,
+            "APP_SUPPORT": home.path,
+            "LOG_DIR": home.appendingPathComponent("Logs").path,
+            "LAUNCH_AGENTS": home.appendingPathComponent("LaunchAgents").path,
+            "SUDOERS": sudoers.path,
+            "PGREP": bin.appendingPathComponent("pgrep").path,
+            "OSASCRIPT": bin.appendingPathComponent("osascript").path,
+            "LAUNCHCTL": bin.appendingPathComponent("launchctl").path,
+            "SUDO": bin.appendingPathComponent("sudo").path,
+            "CODESIGN": bin.appendingPathComponent("codesign").path,
+            "SWIFT": bin.appendingPathComponent("swift").path,
+            "LOCK_TIMEOUT_SECONDS": "1",
+        ])
+        try patchedInstall.write(to: install, atomically: true, encoding: .utf8)
+        // The redirected copy runs past the INSOMNIA_HOME refusal: that
+        // variable is what makes the backstop copy it installs act on the
+        // fixture instead of ~/Library. The plain copy keeps the refusal.
+        try Self.replaceOnce(patchedInstall, #"if [[ -n "${INSOMNIA_HOME:-}" ]]; then"#, with: "if false; then")
+            .write(to: installRedirected, atomically: true, encoding: .utf8)
     }
 
     /// Rewrites `NAME=...` constant lines. Every name must match exactly one
@@ -1047,6 +1324,14 @@ private final class ScriptFixture {
             lines[hits[0]] = "\(name)='\(value)'"
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Replaces one exact line; fails loudly if the script no longer has it.
+    static func replaceOnce(_ text: String, _ exact: String, with replacement: String) throws -> String {
+        guard text.components(separatedBy: exact).count == 2 else {
+            throw FixtureError("expected exactly one occurrence of '\(exact)'")
+        }
+        return text.replacingOccurrences(of: exact, with: replacement)
     }
 
     // MARK: Fakes
@@ -1067,14 +1352,29 @@ private final class ScriptFixture {
         try writeFake("sudo", """
         printf 'sudo %s\\n' "$*" >> "\(calls)"
         mode="$(cat "\(r)/sudo.mode" 2>/dev/null || echo ok)"
+        # "ignore-term" and "closes-fd9" behave like a pmset that ignores
+        # SIGTERM: they live until the test creates the release file (or the
+        # fixture is destroyed, or a 60 s watchdog), so a test decides when
+        # the command ends instead of racing a wall-clock sleep.
         case "${1:-}" in
-          -n) case "$mode" in
+          -n) if [[ "${2:-}" == -l ]]; then exit 0; fi
+              case "$mode" in
                 ok) exit 0 ;;
                 hang) exec /bin/sleep 60 ;;
-                ignore-term) trap '' TERM; exec /bin/sleep 5 ;;
-                closes-fd9) exec 9<&-; trap '' TERM; /bin/sleep 4; exit 0 ;;
+                ignore-term) trap '' TERM; i=0
+                  while [[ ! -e "\(r)/release" && -d "\(r)" && "$i" -lt 600 ]]; do /bin/sleep 0.1; i=$((i + 1)); done
+                  exit 0 ;;
+                closes-fd9) exec 9<&-; trap '' TERM; i=0
+                  while [[ ! -e "\(r)/release" && -d "\(r)" && "$i" -lt 600 ]]; do /bin/sleep 0.1; i=$((i + 1)); done
+                  exit 0 ;;
                 *) exit 1 ;;
               esac ;;
+          visudo) exit 0 ;;
+          install)
+            src=""; dst=""
+            for a in "$@"; do src="$dst"; dst="$a"; done
+            case "$dst" in "\(r)"/*) mkdir -p "$(dirname "$dst")"; cp "$src" "$dst"; exit 0 ;; esac
+            printf 'sudo REFUSED %s\\n' "$*" >> "\(calls)"; exit 1 ;;
           rm|test)
             for a in "$@"; do
               case "$a" in "\(r)"/*) exec "$@" ;; esac
@@ -1086,6 +1386,17 @@ private final class ScriptFixture {
         try writeFake("pmset", """
         printf 'pmset DIRECT %s\\n' "$*" >> "\(calls)"
         exit 99
+        """)
+        // swift / codesign: install.sh's build and signing steps, redirected
+        // to a fake binary inside the fixture.
+        try writeFake("swift", """
+        printf 'swift %s\\n' "$*" >> "\(calls)"
+        for a in "$@"; do [[ "$a" == --show-bin-path ]] && { echo "\(r)/binroot"; exit 0; }; done
+        exit 0
+        """)
+        try writeFake("codesign", """
+        printf 'codesign %s\\n' "$*" >> "\(calls)"
+        exit 0
         """)
         // ps: answers from ps.table. Modes: "fail" (exit 2 with an error
         // line, like a broken ps) and "garbage" (exit 0 with nonsense).
@@ -1126,15 +1437,46 @@ private final class ScriptFixture {
             exit 0
             """)
         }
-        // launchctl: bootout succeeds and `print` reports "not loaded" (113)
-        // by default. Mode "bootout-fails-still-loaded" makes bootout exit 5
-        // and leaves the job listed by `print`.
+        // launchctl: bootout/bootstrap succeed and `print` reports "not
+        // loaded" (113) by default. "loaded": print reports the job loaded.
+        // "loaded-bootstrap-fails-once": as "loaded", but the first bootstrap
+        // fails. "bootout-fails-still-loaded": bootout exits 5 and the job
+        // stays listed. "ambiguous": bootout and print fail with errors.
+        // Every bootstrap also records whether the recovery lock was held at
+        // that moment (LOCK-HELD / LOCK-FREE), to prove the installer keeps
+        // its transaction open across the agent replacement.
+        // "loaded-then-lost": print says loaded once, then not loaded;
+        // bootstrap always fails. "no-then-error": print says not loaded
+        // once, then fails with an error; bootstrap fails.
+        // "loaded-bootstrap-always-fails": print always says loaded (a job
+        // already exists) and every bootstrap fails, reload included.
         try writeFake("launchctl", """
         printf 'launchctl %s\\n' "$*" >> "\(calls)"
         mode="$(cat "\(r)/launchctl.mode" 2>/dev/null || echo ok)"
+        if [[ "${1:-}" == bootstrap ]]; then
+          if /usr/bin/lockf -k -s -t 0 "\(r)/home/.recovery.lock" /usr/bin/true 2>/dev/null; then
+            echo 'launchctl LOCK-FREE during bootstrap' >> "\(calls)"
+          else
+            echo 'launchctl LOCK-HELD during bootstrap' >> "\(calls)"
+          fi
+        fi
+        prints=0
+        if [[ "${1:-}" == print ]]; then
+          prints=$(( $(cat "\(r)/print.count" 2>/dev/null || echo 0) + 1 )); echo "$prints" > "\(r)/print.count"
+        fi
         case "${1:-}:$mode" in
-          bootout:ok) exit 0 ;;
+          bootout:ok|bootout:loaded|bootout:loaded-bootstrap-fails-once|bootout:loaded-then-lost|bootout:no-then-error|bootout:loaded-bootstrap-always-fails) exit 0 ;;
+          bootstrap:ok|bootstrap:loaded) exit 0 ;;
+          bootstrap:loaded-then-lost|bootstrap:no-then-error) echo "Bootstrap failed: 5: Input/output error" >&2; exit 5 ;;
+          bootstrap:loaded-bootstrap-always-fails) echo "Bootstrap failed: 37: Operation already in progress" >&2; exit 37 ;;
+          print:loaded-then-lost) if (( prints == 1 )); then exit 0; fi; exit 113 ;;
+          print:no-then-error) if (( prints == 1 )); then exit 113; fi; echo "Could not print domain: 1: Operation not permitted" >&2; exit 1 ;;
+          print:loaded-bootstrap-always-fails) exit 0 ;;
+          bootstrap:loaded-bootstrap-fails-once)
+            if [[ -e "\(r)/bootstrap.failed" ]]; then exit 0; fi
+            : > "\(r)/bootstrap.failed"; echo "Bootstrap failed: 5: Input/output error" >&2; exit 5 ;;
           print:ok) exit 113 ;;
+          print:loaded|print:loaded-bootstrap-fails-once) exit 0 ;;
           bootout:ambiguous) echo "Boot-out failed: 1: Operation not permitted" >&2; exit 1 ;;
           print:ambiguous) echo "Could not print domain: 1: Operation not permitted" >&2; exit 1 ;;
           bootout:*) exit 5 ;;
