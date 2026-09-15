@@ -395,7 +395,7 @@ final class StatusItemController: NSObject {
         endNow()
     }
 
-    /// Clicking the cup or the countdown while a session runs: reopen the
+    /// Clicking the mark or the countdown while a session runs: reopen the
     /// pills, this time to extend. Ignored while a start is still in flight.
     private func customExtend() {
         guard manager.isActive else { return }

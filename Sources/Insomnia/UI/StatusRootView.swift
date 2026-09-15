@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Everything drawn inside the status item: the cup, the three pills while
+/// Everything drawn inside the status item: the mark, the three pills while
 /// entering, or the countdown while running. The pills and the countdown
 /// share a matched-geometry id so one morphs into the other.
 struct StatusRootView: View {
@@ -48,11 +48,11 @@ struct StatusRootView: View {
         }
     }
 
-    /// Outline cup while idle; filled and tinted while sleep is held, so the
-    /// app visibly does something even when Low Power Mode is not showing.
+    /// Neutral eye and moon while idle; the moon turns blue-grey while sleep is
+    /// held, so the app visibly does something even when Low Power Mode is
+    /// not showing.
     private var icon: some View {
-        CupMarkView(isRunning: isRunning, reduceMotion: reduceMotion)
-            .tint(.accentColor)
+        EyeMoonMarkView(isRunning: isRunning, reduceMotion: reduceMotion)
             .frame(width: 20, height: 20)
             .contentShape(Rectangle())
             .phaseAnimator([CGFloat(1), reduceMotion ? 1 : 0.86, 1], trigger: model.iconBounce) { content, scale in

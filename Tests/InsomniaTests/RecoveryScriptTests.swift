@@ -1010,6 +1010,7 @@ final class RecoveryScriptTests: XCTestCase {
         XCTAssertTrue(fx.exists(fx.installedBackstop))
         XCTAssertTrue(fx.exists(fx.sudoers))
         XCTAssertTrue(fx.exists(fx.app.appendingPathComponent("Contents/Info.plist")))
+        XCTAssertTrue(fx.exists(fx.app.appendingPathComponent("Contents/Resources/AppIcon.icns")), "the app icon is bundled")
         XCTAssertTrue(r.stdout.contains("Installed"), r.stdout)
         XCTAssertEqual(try fx.contents(of: fx.plist.deletingLastPathComponent()), ["com.insomnia.backstop.plist"])
     }
@@ -1239,7 +1240,8 @@ private final class ScriptFixture {
     }
 
     /// What install.sh's build and bundle steps need from the "repo":
-    /// Resources/Info.plist and a binary at the fake swift's bin path.
+    /// Resources/Info.plist, Resources/AppIcon.icns and a binary at the fake
+    /// swift's bin path.
     func prepareInstall() throws {
         let resources = repoScripts.deletingLastPathComponent().appendingPathComponent("Resources", isDirectory: true)
         try fm.createDirectory(at: resources, withIntermediateDirectories: true)
@@ -1248,6 +1250,7 @@ private final class ScriptFixture {
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         <plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.kgarg.insomnia</string></dict></plist>
         """.write(to: resources.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
+        try "icns".write(to: resources.appendingPathComponent("AppIcon.icns"), atomically: true, encoding: .utf8)
         let binroot = root.appendingPathComponent("binroot", isDirectory: true)
         try fm.createDirectory(at: binroot, withIntermediateDirectories: true)
         let binary = binroot.appendingPathComponent("Insomnia")

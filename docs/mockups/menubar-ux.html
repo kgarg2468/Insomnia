@@ -2,10 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Insomnia — menu bar only</title>
+<title>Insomnia — menu bar mockup (simulation, not the app)</title>
 <style>
   :root {
-    --accent: #3b82f6;
+    --accent: #A6BBC3;
+    --midnight: #242628;
+    --charcoal: #1E1F21;
+    --moon: #E6E3DD;
     --bar-h: 37px;
     --font: -apple-system, "SF Pro Text", "SF Pro Rounded", system-ui, sans-serif;
     --spring: cubic-bezier(.34, 1.45, .64, 1);
@@ -13,21 +16,15 @@
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; min-height: 100vh; background: #0b0d12; color: #e7e9ee; font-family: var(--font);
+    margin: 0; min-height: 100vh; background: var(--midnight); color: var(--moon); font-family: var(--font);
     -webkit-font-smoothing: antialiased;
   }
-  .desk {
-    min-height: 100vh;
-    background:
-      radial-gradient(1200px 600px at 20% -10%, #2a2f6b 0%, transparent 60%),
-      radial-gradient(900px 500px at 90% 10%, #5b2a6b 0%, transparent 60%),
-      linear-gradient(180deg, #1a1d2e 0%, #0b0d12 70%);
-  }
+  .desk { min-height: 100vh; background: var(--midnight); }
 
   /* ---------- menu bar ---------- */
   .bar {
     height: var(--bar-h); display: flex; align-items: center; justify-content: space-between;
-    padding: 0 16px 0 18px; background: rgba(20,20,24,.72); backdrop-filter: blur(30px) saturate(1.4);
+    padding: 0 16px 0 18px; background: rgba(30,31,33,.92);
     border-bottom: 1px solid rgba(255,255,255,.06); font-size: 13px; font-weight: 600; user-select: none;
   }
   .bar .left { display: flex; gap: 20px; align-items: center; color: #fff; }
@@ -37,33 +34,44 @@
   .sys { display: inline-flex; align-items: center; gap: 6px; opacity: .9; }
   .sys svg { width: 16px; height: 16px; fill: none; stroke: #fff; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
+  /* ---------- simulation banner ---------- */
+  .sim {
+    display: flex; align-items: center; gap: 10px; padding: 8px 18px; font-size: 13px;
+    background: rgba(166,187,195,.14); border-bottom: 1px solid rgba(166,187,195,.35); color: var(--moon);
+  }
+  .sim .tag { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; padding: 2px 7px; border-radius: 4px; background: var(--accent); color: var(--midnight); }
+
   /* ---------- status item ---------- */
   .item {
     position: relative; display: inline-flex; align-items: center; gap: 7px; height: var(--bar-h);
     padding: 0 6px; border-radius: 6px; cursor: default;
   }
   .item.open { background: rgba(255,255,255,.10); }
-  .cup {
+  .mark {
     width: 20px; height: 20px; display: grid; place-items: center; cursor: pointer;
     transition: transform 360ms var(--snappy);
   }
-  .cup svg { width: 17px; height: 17px; fill: none; stroke: #fff; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; transition: stroke 300ms, fill 300ms; }
-  .item.running .cup svg { stroke: var(--accent); fill: var(--accent); }
-  .cup.bounce { animation: bounce 360ms var(--snappy); }
+  /* EyeMoonGeometry on its 24-unit grid: eye outline stroked, crescent filled.
+     The outline never changes; only the moon turns blue-grey while running. */
+  .mark svg { width: 17px; height: 17px; }
+  .mark .eye { fill: none; stroke: #fff; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .mark .moon { fill: #fff; transition: fill 350ms; }
+  .item.running .mark .moon { fill: var(--accent); }
+  .mark.bounce { animation: bounce 360ms var(--snappy); }
   @keyframes bounce { 0% { transform: scale(1);} 35% { transform: scale(.86);} 100% { transform: scale(1);} }
 
   /* pills */
   .pills { display: flex; gap: 6px; align-items: center; }
   .pill {
     height: 19px; min-width: 28px; padding: 0 8px; border-radius: 7px; display: grid; place-items: center;
-    background: rgba(22,22,26,.92); border: .5px solid rgba(255,255,255,.10);
+    background: rgba(23,25,27,.92); border: .5px solid rgba(255,255,255,.10);
     font-size: 12px; font-weight: 400; color: rgba(255,255,255,.42); font-variant-numeric: tabular-nums;
     transform: scale(.6) translateY(4px); opacity: 0; cursor: pointer;
     transition: transform 420ms var(--spring), opacity 180ms ease, box-shadow 260ms ease, color 200ms, padding 200ms var(--snappy);
   }
   .pill.in { transform: none; opacity: 1; }
   .pill.filled { color: #fff; font-weight: 600; padding: 0 10px; }
-  .pill.focus { box-shadow: 0 0 0 1.5px var(--accent), 0 0 8px 1px rgba(59,130,246,.55); }
+  .pill.focus { box-shadow: 0 0 0 1.5px var(--accent); }
   .pill.reject { animation: shake 320ms var(--snappy); }
   @keyframes shake { 0%{transform:translateX(0)} 30%{transform:translateX(-3px)} 60%{transform:translateX(3px)} 100%{transform:translateX(0)} }
   .item.entering .pill:nth-child(1) { transition-delay: 0ms; }
@@ -93,47 +101,50 @@
 
   /* right-click menu */
   .ctx {
-    position: absolute; top: calc(var(--bar-h) + 4px); right: 0; min-width: 190px; padding: 5px;
-    background: rgba(40,40,46,.85); backdrop-filter: blur(30px); border-radius: 10px;
+    position: absolute; top: calc(var(--bar-h) + 4px); right: 0; min-width: 230px; padding: 5px;
+    background: rgba(56,59,63,.96); border-radius: 10px;
     border: .5px solid rgba(255,255,255,.12); box-shadow: 0 10px 30px rgba(0,0,0,.5);
     font-size: 13px; font-weight: 400; color: #fff; z-index: 10;
     transform-origin: top right; transform: scale(.92); opacity: 0; pointer-events: none;
     transition: transform 260ms var(--spring), opacity 140ms;
   }
   .ctx.show { transform: none; opacity: 1; pointer-events: auto; }
-  .ctx div { padding: 4px 10px; border-radius: 6px; }
-  .ctx div:hover { background: var(--accent); }
+  .ctx div { padding: 4px 10px; border-radius: 6px; white-space: nowrap; }
+  .ctx div:hover { background: var(--accent); color: var(--midnight); }
+  .ctx .line { font-size: 11px; color: rgba(255,255,255,.55); pointer-events: none; }
+  .ctx .line.warn { color: #F2A854; }
+  .ctx .line[hidden] { display: none; }
   .ctx hr { border: 0; border-top: .5px solid rgba(255,255,255,.15); margin: 4px 0; }
 
   /* ---------- page body: frames + notes ---------- */
   .content { max-width: 980px; margin: 0 auto; padding: 48px 28px 80px; }
   h1 { font-size: 22px; font-weight: 700; margin: 0 0 6px; }
-  .lede { color: rgba(255,255,255,.6); margin: 0 0 36px; font-size: 14px; }
+  .lede { color: rgba(230,227,221,.65); margin: 0 0 36px; font-size: 14px; }
   .lede kbd { font-family: var(--font); background: rgba(255,255,255,.1); border-radius: 4px; padding: 1px 6px; font-size: 12px; }
-  h2 { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: rgba(255,255,255,.45); margin: 34px 0 12px; }
+  h2 { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: rgba(230,227,221,.5); margin: 34px 0 12px; }
   .frames { display: grid; grid-template-columns: 1fr; gap: 14px; }
   .frame { display: grid; grid-template-columns: 220px 1fr; align-items: center; gap: 18px; }
-  .frame .label { font-size: 13px; color: rgba(255,255,255,.75); }
-  .frame .label small { display: block; color: rgba(255,255,255,.4); margin-top: 2px; font-size: 12px; }
+  .frame .label { font-size: 13px; color: rgba(230,227,221,.8); }
+  .frame .label small { display: block; color: rgba(230,227,221,.45); margin-top: 2px; font-size: 12px; }
   .strip { height: var(--bar-h); display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 0 12px;
-    background: rgba(20,20,24,.9); border-radius: 8px; border: 1px solid rgba(255,255,255,.06); font-size: 13px; font-weight: 500; }
+    background: rgba(30,31,33,.92); border-radius: 8px; border: 1px solid rgba(255,255,255,.06); font-size: 13px; font-weight: 500; }
   .strip .item .pill.in { transition: none; }
-  .keys { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 28px; font-size: 13px; color: rgba(255,255,255,.75); }
+  .keys { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 28px; font-size: 13px; color: rgba(230,227,221,.8); }
   .keys div { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: .5px solid rgba(255,255,255,.08); }
   .keys kbd { font-family: var(--font); background: rgba(255,255,255,.1); border-radius: 4px; padding: 1px 7px; font-size: 12px; min-width: 40px; text-align: center; }
-  .note { font-size: 13px; color: rgba(255,255,255,.7); line-height: 1.55; max-width: 720px; }
+  .note { font-size: 13px; color: rgba(230,227,221,.75); line-height: 1.55; max-width: 720px; }
   .note b { color: #fff; }
 </style>
 </head>
 <body>
 <div class="desk">
-  <!-- ===== live, interactive menu bar ===== -->
+  <!-- ===== simulated, interactive menu bar ===== -->
   <div class="bar">
     <div class="left"><span></span><span class="app">Finder</span><span>File</span><span>Edit</span><span>View</span><span>Go</span><span>Window</span><span>Help</span></div>
     <div class="right">
       <div class="item" id="live">
-        <div class="cup" id="cup" title="Click: start / Right-click: menu">
-          <svg viewBox="0 0 24 24"><path d="M4 8h12v6a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5V8z"/><path d="M16 9h2a2.5 2.5 0 0 1 0 5h-2"/><path d="M3 21h15"/></svg>
+        <div class="mark" id="mark" title="Click: start / Right-click: menu">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/></svg>
         </div>
         <div class="pills" id="pills"></div>
         <div class="count" id="count"></div>
@@ -141,45 +152,46 @@
           <svg class="ring" viewBox="0 0 18 18"><circle class="track" cx="9" cy="9" r="8"/><circle class="prog" cx="9" cy="9" r="8"/></svg>
           <svg class="x" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg>
         </div>
-        <div class="ctx" id="ctx"><div>Settings…</div><hr><div>Quit Insomnia</div></div>
+        <div class="ctx" id="ctx"><div class="line" id="held" hidden>Sleep held per journal — not verified live</div><div class="line">Lid: open · 87%</div><hr><div>Settings…</div><div>Quit Insomnia</div></div>
       </div>
       <span class="sys"><svg viewBox="0 0 24 24"><path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/></svg></span>
       <span class="sys"><svg viewBox="0 0 24 24"><rect x="2" y="7" width="17" height="10" rx="2.5"/><path d="M22 11v2"/><rect x="4" y="9" width="12" height="6" rx="1" fill="#fff" stroke="none"/></svg></span>
       <span id="clock">Wed 3 Sep  1:37 PM</span>
     </div>
   </div>
+  <div class="sim"><span class="tag">Simulation</span><span>This page imitates the Insomnia status item in a browser. It does not run Insomnia, hold sleep, or change anything on this Mac.</span></div>
 
   <div class="content">
     <h1>Insomnia — menu bar only. No popover.</h1>
-    <p class="lede">The bar above is live. <b>Click the cup</b>, type <kbd>4</kbd>, hit <kbd>Enter</kbd>. Then <b>press and hold ✕</b> to end. <b>Right-click the cup</b> for Settings and Quit.</p>
+    <p class="lede">The bar above is a simulation. <b>Click the eye</b>, type <kbd>4</kbd>, hit <kbd>Enter</kbd>. Then <b>press and hold ✕</b> to end. <b>Right-click the eye</b> for the status lines, Settings and Quit.</p>
 
     <h2>The four states</h2>
     <div class="frames">
       <div class="frame">
-        <div class="label">Idle<small>Outline cup. Nothing else.</small></div>
-        <div class="strip"><div class="item"><div class="cup"><svg viewBox="0 0 24 24"><path d="M4 8h12v6a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5V8z"/><path d="M16 9h2a2.5 2.5 0 0 1 0 5h-2"/><path d="M3 21h15"/></svg></div></div><span class="sys">1:37 PM</span></div>
+        <div class="label">Idle<small>Outline eye and moon. Nothing else.</small></div>
+        <div class="strip"><div class="item"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/></svg></div></div><span class="sys">1:37 PM</span></div>
       </div>
       <div class="frame">
-        <div class="label">Entering<small>Click cup → pills spring in, Hours focused. Type digits. No “?” badges.</small></div>
-        <div class="strip"><div class="item open entering"><div class="cup"><svg viewBox="0 0 24 24"><path d="M4 8h12v6a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5V8z"/><path d="M16 9h2a2.5 2.5 0 0 1 0 5h-2"/><path d="M3 21h15"/></svg></div>
+        <div class="label">Entering<small>Click the eye → pills spring in, Hours focused. Type digits. No “?” badges.</small></div>
+        <div class="strip"><div class="item open entering"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/></svg></div>
           <div class="pills"><div class="pill in">Days</div><div class="pill in filled focus">4</div><div class="pill in">Minutes</div></div></div><span class="sys">1:37 PM</span></div>
       </div>
       <div class="frame">
-        <div class="label">Running<small>Pills morph into the countdown. Cup fills blue. ✕ appears.</small></div>
-        <div class="strip"><div class="item running"><div class="cup"><svg viewBox="0 0 24 24"><path d="M4 8h12v6a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5V8z"/><path d="M16 9h2a2.5 2.5 0 0 1 0 5h-2"/><path d="M3 21h15"/></svg></div>
+        <div class="label">Running<small>Pills morph into the countdown. The moon turns blue-grey. ✕ appears.</small></div>
+        <div class="strip"><div class="item running"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/></svg></div>
           <div class="count in">3:59:41</div>
           <div class="end in"><svg class="ring" viewBox="0 0 18 18"><circle class="track" cx="9" cy="9" r="8"/></svg><svg class="x" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg></div></div><span class="sys">1:38 PM</span></div>
       </div>
       <div class="frame">
         <div class="label">Holding ✕<small>Ring draws over 0.6 s. Let go early and it springs back. Complete it and the session ends.</small></div>
-        <div class="strip"><div class="item running"><div class="cup"><svg viewBox="0 0 24 24"><path d="M4 8h12v6a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5V8z"/><path d="M16 9h2a2.5 2.5 0 0 1 0 5h-2"/><path d="M3 21h15"/></svg></div>
+        <div class="strip"><div class="item running"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/></svg></div>
           <div class="count in">3:59:40</div>
           <div class="end in" style="transform:scale(1.12)"><svg class="ring" viewBox="0 0 18 18"><circle class="track" cx="9" cy="9" r="8"/><circle class="prog" cx="9" cy="9" r="8" style="stroke-dashoffset:17"/></svg><svg class="x" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg></div></div><span class="sys">1:38 PM</span></div>
       </div>
       <div class="frame">
-        <div class="label">Right-click<small>Standard macOS menu. Settings… and Quit live here, and only here.</small></div>
-        <div class="strip" style="position:relative; overflow:visible"><div class="item"><div class="cup"><svg viewBox="0 0 24 24"><path d="M4 8h12v6a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5V8z"/><path d="M16 9h2a2.5 2.5 0 0 1 0 5h-2"/><path d="M3 21h15"/></svg></div>
-          <div class="ctx show" style="position:static; margin-left:8px"><div>Settings…</div><hr><div>Quit Insomnia</div></div></div><span class="sys">1:37 PM</span></div>
+        <div class="label">Right-click<small>Standard macOS menu: read-only status lines, then Settings… and Quit. They live here, and only here.</small></div>
+        <div class="strip" style="position:relative; overflow:visible"><div class="item"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/></svg></div>
+          <div class="ctx show" style="position:static; margin-left:8px"><div class="line">Lid: open · 87%</div><hr><div>Settings…</div><div>Quit Insomnia</div></div></div><span class="sys">1:37 PM</span></div>
       </div>
     </div>
 
@@ -191,7 +203,7 @@
       <div><span>Cancel</span><kbd>Esc</kbd></div>
       <div><span>Jump to a pill</span><kbd>D  H  M</kbd></div>
       <div><span>Delete last digit</span><kbd>⌫</kbd></div>
-      <div><span>Start (mouse)</span><kbd>click cup</kbd></div>
+      <div><span>Start (mouse)</span><kbd>click eye</kbd></div>
       <div><span>End (mouse)</span><kbd>hold ✕</kbd></div>
     </div>
 
@@ -201,16 +213,19 @@
       Presets are gone too: typing <b>4 Enter</b> is two keystrokes, faster than aiming at a chip.
       Settings and Quit move to a right-click menu, which is a native <b>NSMenu</b> and cannot be dismissed by its own clicks.
     </p>
+    <p class="note">
+      This mockup only imitates the look and the interactions. Sleep, lid actions and recovery are not simulated here; see the README for what the real app does and what it cannot guarantee.
+    </p>
   </div>
 </div>
 
 <script>
 (() => {
-  const item = document.getElementById('live'), cup = document.getElementById('cup');
+  const item = document.getElementById('live'), mark = document.getElementById('mark');
   const pillsEl = document.getElementById('pills'), countEl = document.getElementById('count');
-  const endEl = document.getElementById('end'), ctx = document.getElementById('ctx');
+  const endEl = document.getElementById('end'), ctx = document.getElementById('ctx'), heldEl = document.getElementById('held');
   const FIELDS = [{k:'d',ph:'Days',max:30},{k:'h',ph:'Hours',max:23},{k:'m',ph:'Minutes',max:59}];
-  let phase = 'idle', vals = [null,null,null], focus = 1, endsAt = 0, tick = null, holdT = null;
+  let phase = 'idle', vals = [null,null,null], focus = 1, endsAt = 0, shape = 'hours', tick = null, holdT = null;
 
   FIELDS.forEach((f,i) => { const p = document.createElement('div'); p.className='pill'; p.textContent=f.ph;
     p.addEventListener('click', e => { e.stopPropagation(); focus = i; render(); }); pillsEl.appendChild(p); });
@@ -219,6 +234,7 @@
   function render() {
     item.classList.toggle('open', phase==='entering'); item.classList.toggle('entering', phase==='entering');
     item.classList.toggle('running', phase==='running');
+    heldEl.hidden = phase!=='running';
     pills.forEach((p,i) => { const v = vals[i]; p.textContent = v==null ? FIELDS[i].ph : v;
       p.classList.toggle('filled', v!=null); p.classList.toggle('focus', phase==='entering' && i===focus);
       p.classList.toggle('in', phase==='entering'); p.style.display = phase==='entering' ? '' : (p.classList.contains('in') ? '' : 'none'); });
@@ -226,19 +242,26 @@
     countEl.classList.toggle('in', phase==='running'); endEl.classList.toggle('in', phase==='running');
     endEl.style.pointerEvents = phase==='running' ? 'auto' : 'none';
   }
-  function bounce() { cup.classList.remove('bounce'); void cup.offsetWidth; cup.classList.add('bounce'); }
+  function bounce() { mark.classList.remove('bounce'); void mark.offsetWidth; mark.classList.add('bounce'); }
   function total() { const [d,h,m] = vals; if (d==null&&h==null&&m==null) return 0; return ((d||0)*24*3600 + (h||0)*3600 + (m||0)*60); }
-  function fmt(s) { s = Math.max(0, Math.round(s)); const d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60), x=s%60;
-    const pad = n => String(n).padStart(2,'0'); return (d? d+'d '+h : h) + ':' + pad(m) + ':' + pad(x); }
+  // Same shapes as SessionMath.formatCountdown: chosen from the initial
+  // duration and held for the session. Days: "1d 3:00:00" then "H:MM:SS";
+  // hours: "H:MM:SS"; minutes: "MM:SS". Partial seconds round up.
+  function fmt(s) { s = Math.max(0, Math.ceil(s)); const d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60), x=s%60;
+    const pad = n => String(n).padStart(2,'0');
+    if (shape==='minutes') return pad(Math.floor(s/60)) + ':' + pad(x);
+    const clock = hh => hh + ':' + pad(m) + ':' + pad(x);
+    return (shape==='days' && d>0) ? d + 'd ' + clock(h) : clock(Math.floor(s/3600)); }
   function expand() { phase='entering'; vals=[null,null,null]; focus=1; render(); }
   function collapse() { phase = endsAt ? 'running' : 'idle'; render(); }
-  function start() { const t = total(); if (!t) { collapse(); return; } endsAt = Date.now() + t*1000; phase='running'; render();
+  function start() { const t = total(); if (!t) { collapse(); return; } shape = t >= 86400 ? 'days' : t >= 3600 ? 'hours' : 'minutes';
+    endsAt = Date.now() + t*1000; phase='running'; render();
     countEl.textContent = fmt(t); clearInterval(tick); tick = setInterval(() => { const r=(endsAt-Date.now())/1000; countEl.textContent = fmt(r); if (r<=0) end(); }, 1000); }
   function end() { clearInterval(tick); endsAt = 0; phase='idle'; render(); bounce(); }
 
-  cup.addEventListener('click', e => { e.stopPropagation(); bounce(); ctx.classList.remove('show');
+  mark.addEventListener('click', e => { e.stopPropagation(); bounce(); ctx.classList.remove('show');
     if (phase==='idle') expand(); else if (phase==='entering') { total() ? start() : collapse(); } });
-  cup.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); ctx.classList.toggle('show'); });
+  mark.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); ctx.classList.toggle('show'); });
   document.addEventListener('click', () => { ctx.classList.remove('show'); if (phase==='entering') collapse(); });
   ctx.addEventListener('click', e => e.stopPropagation());
 
