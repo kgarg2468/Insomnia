@@ -32,6 +32,11 @@ final class StatusItemController: NSObject {
     private var previousApp: NSRunningApplication?
     /// Invalidates in-flight stagger steps when expand/collapse interleave.
     private var stageGeneration = 0
+    /// Identifies the run whose completion is allowed to touch the UI. The
+    /// manager answers in order, so an older completion can land while a
+    /// newer run is still pending (extend, then extend again through the
+    /// countdown); it must not clear what the newer one is showing.
+    private var startGeneration = 0
     private var lastWidth: CGFloat = 0
 
     /// Autosave name so macOS remembers where the user drags the item.
@@ -149,7 +154,7 @@ final class StatusItemController: NSObject {
                 model.pendingCountdown = nil
                 model.phase = next
             }
-        case .entering:
+        case .entering, .starting:
             // Only the mode of the open pills changes, so nothing to animate.
             model.phase = next
         }
@@ -159,7 +164,10 @@ final class StatusItemController: NSObject {
     /// alone. Pure so the transitions can be checked without a status item.
     static func phase(forActive active: Bool, phase: MenuBarModel.Phase) -> MenuBarModel.Phase? {
         switch (active, phase) {
-        case (true, .idle):
+        case (true, .idle), (true, .starting):
+            // A pending start is confirmed the moment the session lands. A
+            // start that stays inactive is the controller's to report: the
+            // manager does not change under a refusal.
             .running
         case (false, .running):
             .idle
@@ -177,7 +185,7 @@ final class StatusItemController: NSObject {
 
     // MARK: Clicks
 
-    private func iconTapped() {
+    func iconTapped() {
         model.iconBounce += 1
         switch model.phase {
         case .idle:
@@ -188,6 +196,9 @@ final class StatusItemController: NSObject {
             } else {
                 collapse()
             }
+        case .starting:
+            // Nothing to act on until the manager answers.
+            break
         case .running:
             customExtend()
         }
@@ -203,6 +214,7 @@ final class StatusItemController: NSObject {
         model.focused = .hours
         model.focusVisible = false
         model.pendingCountdown = nil
+        model.startError = nil
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
             model.phase = .entering(mode)
         }
@@ -216,6 +228,7 @@ final class StatusItemController: NSObject {
         removeMonitors()
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
             model.focusVisible = false
+            model.startError = nil
         }
         stagePills(to: 0) { [weak self] in
             guard let self else { return }
@@ -338,20 +351,27 @@ final class StatusItemController: NSObject {
     private func run(mode: MenuBarModel.Mode, duration: TimeInterval) {
         removeMonitors()
         stageGeneration += 1
-        // Morph now; the manager catches up (pmset takes a moment). Project
-        // the session so the placeholder already has the final shape.
+        startGeneration += 1
+        let generation = startGeneration
+        model.startError = nil
         let now = Date()
-        let projected: Session
         if mode == .extend, let s = manager.session {
-            projected = SessionMath.extended(s, by: duration, now: now, maxDuration: manager.config.maxDuration)
+            // The session is live, so the countdown stays up. Morph now; the
+            // manager catches up (pmset takes a moment). Project the session
+            // so the placeholder already has the final shape.
+            let projected = SessionMath.extended(s, by: duration, now: now, maxDuration: manager.config.maxDuration)
+            model.pendingCountdown = SessionMath.formatCountdown(remaining: projected.remaining(at: now), shape: projected.countdownShape)
         } else {
-            projected = SessionMath.newSession(now: now, duration: duration, maxDuration: manager.config.maxDuration)
+            // No session yet: the manager has to arm the recovery agent and
+            // disable sleep first, and either can take seconds or refuse. Show
+            // an honest pending state rather than a countdown and an end ring
+            // for a session that may never exist.
+            model.pendingCountdown = nil
         }
-        model.pendingCountdown = SessionMath.formatCountdown(remaining: projected.remaining(at: now), shape: projected.countdownShape)
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
             model.focusVisible = false
             model.visiblePills = 0
-            model.phase = .running
+            model.phase = mode == .extend && manager.isActive ? .running : .starting
         }
         restorePreviousApp()
 
@@ -360,23 +380,40 @@ final class StatusItemController: NSObject {
             case .start: await manager.start(duration: duration)
             case .extend: await manager.extend(by: duration)
             }
+            guard generation == startGeneration else { return }
             model.pendingCountdown = nil
-            if !manager.isActive {
-                // Start failed: bring the pills back with the value intact.
-                // The error itself shows up in the right-click menu.
+            if manager.isActive {
+                // Normally `managerChanged` has already done this; a session
+                // that was live before the start (extend, or a start refused
+                // as "already active") never changes and never fires it.
+                if model.phase == .starting {
+                    withAnimation(Motion.base(reduceMotion: reduceMotion)) {
+                        model.phase = .running
+                    }
+                }
+            } else if model.phase == .starting {
+                // Start refused: bring the pills back with the value intact
+                // and say so. The full reason is in the right-click menu.
                 reopenAfterFailure(mode: .start)
             }
         }
     }
 
+    /// Put the pills straight back, all at once. No stagger: the refusal can
+    /// arrive within the same frame the pills were retracting in, and
+    /// replaying the open sequence on top of that half-finished morph is the
+    /// churn the user sees as flicker. One animated retarget instead.
     private func reopenAfterFailure(mode: MenuBarModel.Mode) {
         let keep = model.input
         previousApp = NSWorkspace.shared.frontmostApplication
+        stageGeneration += 1
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
             model.phase = .entering(mode)
             model.input = keep
+            model.visiblePills = DurationInput.Field.allCases.count
+            model.focusVisible = true
+            model.startError = MenuBarModel.startFailedText
         }
-        stagePills(to: DurationInput.Field.allCases.count)
         installMonitors()
     }
 
@@ -390,14 +427,14 @@ final class StatusItemController: NSObject {
 
     /// The status item's hold-to-end ring completed. Ignored while a start is
     /// still in flight.
-    private func holdToEnd() {
+    func holdToEnd() {
         guard manager.isActive else { return }
         endNow()
     }
 
     /// Clicking the mark or the countdown while a session runs: reopen the
     /// pills, this time to extend. Ignored while a start is still in flight.
-    private func customExtend() {
+    func customExtend() {
         guard manager.isActive else { return }
         expand(mode: .extend)
     }
