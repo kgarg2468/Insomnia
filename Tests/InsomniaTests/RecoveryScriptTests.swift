@@ -970,7 +970,7 @@ final class RecoveryScriptTests: XCTestCase {
         XCTAssertEqual(r.status, 1, r.stderr + r.stdout)
         let bootstraps = fx.calls().filter { $0.hasPrefix("launchctl bootstrap") }
         XCTAssertEqual(bootstraps.count, 2, "candidate, then the previous plist again: \(fx.calls())")
-        XCTAssertTrue(bootstraps[0].contains("candidate-") && !bootstraps[0].hasSuffix(".plist"), "loaded through a private candidate: \(bootstraps)")
+        XCTAssertTrue(bootstraps[0].contains("candidate-") && bootstraps[0].hasSuffix(".plist"), "loaded through a private candidate launchctl accepts: \(bootstraps)")
         XCTAssertEqual(bootstraps[1], "launchctl bootstrap gui/\(fx.uid) \(fx.plist.path)")
         XCTAssertEqual(try String(contentsOf: fx.plist, encoding: .utf8), "trusted", "the trusted plist was never modified")
         XCTAssertTrue(r.stderr.contains("loaded again"), r.stderr)
@@ -994,7 +994,7 @@ final class RecoveryScriptTests: XCTestCase {
         XCTAssertEqual(r.status, 0, r.stderr + r.stdout)
         let calls = fx.calls()
         XCTAssertTrue(calls.contains("sudo -n \(fx.fakePmset) -a disablesleep 0"), "recovery ran with the new backstop: \(calls)")
-        XCTAssertTrue(calls.contains { $0.hasPrefix("launchctl bootout gui/\(fx.uid) ") }, "\(calls)")
+        XCTAssertTrue(calls.contains("launchctl bootout gui/\(fx.uid)/com.insomnia.backstop"), "\(calls)")
         let bootstraps = calls.filter { $0.hasPrefix("launchctl bootstrap") }
         XCTAssertEqual(bootstraps.count, 1, "\(calls)")
         XCTAssertTrue(bootstraps.first?.contains("candidate-") == true, "loaded through a private candidate: \(calls)")
@@ -1149,6 +1149,158 @@ final class RecoveryScriptTests: XCTestCase {
         XCTAssertTrue(r.stderr.contains("Nothing was changed"), r.stderr)
         XCTAssertEqual(fx.calls(), [])
         XCTAssertFalse(r.stdout.contains("==>"), "no step ran: \(r.stdout)")
+    }
+
+    /// Same regression as LaunchdBackstopTests: launchctl refuses a path
+    /// without a `.plist` suffix (EIO) for bootstrap and bootout alike, and
+    /// login's directory-level load ignores subdirectories. The installer's
+    /// candidate must be a `.plist` one level below the trusted plist, and
+    /// the old job is booted out by label.
+    func testInstallCandidateIsALaunchdLoadablePlistThatLoginCannotPickUp() throws {
+        try fx.prepareInstall()
+        try "trusted".write(to: fx.plist, atomically: true, encoding: .utf8)
+        try fx.writeState(#"{"sleepDisabledByUs":false,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false}"#)
+        fx.setMode("launchctl", "loaded")
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertEqual(r.status, 0, r.stderr + r.stdout)
+        let calls = fx.calls()
+        XCTAssertTrue(calls.contains("launchctl bootout gui/\(fx.uid)/com.insomnia.backstop"), "boot out by service target: \(calls)")
+        let bootstrap = try XCTUnwrap(calls.first { $0.hasPrefix("launchctl bootstrap") })
+        let candidate = URL(fileURLWithPath: String(bootstrap.dropFirst("launchctl bootstrap gui/\(fx.uid) ".count)))
+        XCTAssertTrue(candidate.lastPathComponent.hasSuffix(".plist"), "launchctl refuses to bootstrap \(candidate.lastPathComponent)")
+        let launchAgents = fx.plist.deletingLastPathComponent()
+        XCTAssertNotEqual(candidate.deletingLastPathComponent().path, launchAgents.path, "a *.plist directly in LaunchAgents is loaded at login as a second copy")
+        XCTAssertEqual(candidate.deletingLastPathComponent().deletingLastPathComponent().path, launchAgents.path, "one level below the trusted plist, same filesystem")
+        XCTAssertTrue(try String(contentsOf: fx.plist, encoding: .utf8).contains("<integer>60</integer>"))
+        XCTAssertEqual(try fx.contents(of: launchAgents), ["com.insomnia.backstop.plist"], "staging directory not removed")
+    }
+
+    /// The password prompt (visudo + install of the sudoers rule) comes
+    /// before the running app is asked to quit and before the bundle, the
+    /// installed backstop.sh or the LaunchAgent are touched: a failed or
+    /// refused authentication leaves the previous install exactly as it was
+    /// and the app running.
+    func testInstallStopsBeforeQuittingOrReplacingAnythingWhenSudoAuthFails() throws {
+        try fx.prepareInstall()
+        try fx.installMachinery()
+        try "old helper".write(to: fx.installedBackstop, atomically: true, encoding: .utf8)
+        fx.setMode("pgrep", "0\n")          // the app is running the whole time
+        fx.setMode("sudo", "auth-fail")     // wrong password / no sudo rights
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertNotEqual(r.status, 0, r.stdout)
+        let calls = fx.calls()
+        XCTAssertFalse(calls.contains { $0.hasPrefix("osascript") }, "the app was asked to quit before authentication: \(calls)")
+        XCTAssertFalse(calls.contains { $0.hasPrefix("launchctl") }, "\(calls)")
+        XCTAssertFalse(calls.contains { $0.hasPrefix("sudo install") }, "\(calls)")
+        XCTAssertEqual(try String(contentsOf: fx.app.appendingPathComponent("Contents/MacOS/Insomnia"), encoding: .utf8), "binary", "old bundle replaced")
+        XCTAssertEqual(try String(contentsOf: fx.installedBackstop, encoding: .utf8), "old helper", "installed backstop.sh replaced")
+        XCTAssertEqual(try String(contentsOf: fx.plist, encoding: .utf8), "plist", "trusted plist touched")
+        XCTAssertEqual(try String(contentsOf: fx.sudoers, encoding: .utf8), "rule", "sudoers rule replaced")
+        XCTAssertTrue(r.stderr.contains("Nothing was changed"), r.stderr)
+    }
+
+    /// Authentication passes but the rule it installed does not grant the
+    /// pmset commands: still nothing of the previous install is replaced.
+    func testInstallStopsBeforeReplacingAnythingWhenSudoersRuleIsNotEffective() throws {
+        try fx.prepareInstall()
+        try fx.installMachinery()
+        try "old helper".write(to: fx.installedBackstop, atomically: true, encoding: .utf8)
+        fx.setMode("pgrep", "0\n")
+        fx.setMode("sudo", "rule-not-effective")
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertNotEqual(r.status, 0, r.stdout)
+        let calls = fx.calls()
+        XCTAssertFalse(calls.contains { $0.hasPrefix("osascript") }, "\(calls)")
+        XCTAssertFalse(calls.contains { $0.hasPrefix("launchctl") }, "\(calls)")
+        XCTAssertEqual(try String(contentsOf: fx.app.appendingPathComponent("Contents/MacOS/Insomnia"), encoding: .utf8), "binary")
+        XCTAssertEqual(try String(contentsOf: fx.installedBackstop, encoding: .utf8), "old helper")
+        XCTAssertEqual(try String(contentsOf: fx.plist, encoding: .utf8), "plist")
+        XCTAssertTrue(r.stderr.contains("still not permitted"), r.stderr)
+    }
+
+    /// With no app running there is nothing to wait for: an installer that
+    /// assembled the bundle and copied backstop.sh before asking for the
+    /// password would reach the overwrite path here. Authentication must
+    /// still be the first thing attempted, and its failure must leave the
+    /// old bundle, helper and plist byte for byte as they were.
+    func testInstallWithNoAppRunningStopsBeforeReplacingAnythingWhenSudoAuthFails() throws {
+        try fx.prepareInstall()
+        try fx.installMachinery()
+        try "old helper".write(to: fx.installedBackstop, atomically: true, encoding: .utf8)
+        // pgrep default: not running at any check
+        fx.setMode("sudo", "auth-fail")
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertNotEqual(r.status, 0, r.stdout)
+        let calls = fx.calls()
+        XCTAssertTrue(calls.contains { $0.hasPrefix("sudo visudo") }, "authentication was attempted: \(calls)")
+        XCTAssertFalse(calls.contains { $0.hasPrefix("sudo install") }, "\(calls)")
+        XCTAssertFalse(calls.contains { $0.hasPrefix("osascript") }, "nothing to quit: \(calls)")
+        XCTAssertFalse(calls.contains { $0.hasPrefix("launchctl") }, "\(calls)")
+        XCTAssertEqual(try String(contentsOf: fx.app.appendingPathComponent("Contents/MacOS/Insomnia"), encoding: .utf8), "binary", "old bundle replaced")
+        XCTAssertEqual(try String(contentsOf: fx.installedBackstop, encoding: .utf8), "old helper", "installed backstop.sh replaced")
+        XCTAssertEqual(try String(contentsOf: fx.plist, encoding: .utf8), "plist", "trusted plist touched")
+        XCTAssertEqual(try String(contentsOf: fx.sudoers, encoding: .utf8), "rule", "sudoers rule replaced")
+        XCTAssertTrue(r.stderr.contains("Nothing was changed"), r.stderr)
+    }
+
+    /// Same with the app not running: authentication passes and the rule is
+    /// installed, but it does not grant pmset. The bundle, helper and plist
+    /// are still untouched.
+    func testInstallWithNoAppRunningStopsBeforeReplacingAnythingWhenSudoersRuleIsNotEffective() throws {
+        try fx.prepareInstall()
+        try fx.installMachinery()
+        try "old helper".write(to: fx.installedBackstop, atomically: true, encoding: .utf8)
+        // pgrep default: not running at any check
+        fx.setMode("sudo", "rule-not-effective")
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertNotEqual(r.status, 0, r.stdout)
+        let calls = fx.calls()
+        XCTAssertTrue(calls.contains { $0.hasPrefix("sudo visudo") }, "authentication was attempted: \(calls)")
+        XCTAssertTrue(calls.contains { $0.hasPrefix("sudo install") }, "the rule was installed before being checked: \(calls)")
+        XCTAssertFalse(calls.contains { $0.hasPrefix("osascript") }, "nothing to quit: \(calls)")
+        XCTAssertFalse(calls.contains { $0.hasPrefix("launchctl") }, "\(calls)")
+        XCTAssertEqual(try String(contentsOf: fx.app.appendingPathComponent("Contents/MacOS/Insomnia"), encoding: .utf8), "binary", "old bundle replaced")
+        XCTAssertEqual(try String(contentsOf: fx.installedBackstop, encoding: .utf8), "old helper", "installed backstop.sh replaced")
+        XCTAssertEqual(try String(contentsOf: fx.plist, encoding: .utf8), "plist", "trusted plist touched")
+        XCTAssertTrue(try String(contentsOf: fx.sudoers, encoding: .utf8).contains("NOPASSWD: /usr/bin/pmset"), "the new rule is what was installed")
+        XCTAssertTrue(r.stderr.contains("still not permitted"), r.stderr)
+    }
+
+    /// The sudoers rule is installed before the app is asked to quit. When
+    /// the app then keeps running, the refusal must say so: the rule is in
+    /// place, and only the bundle, backstop.sh and LaunchAgent are untouched.
+    func testInstallRefusalWhenAppKeepsRunningReportsSudoersInstalled() throws {
+        try fx.prepareInstall()
+        try fx.installMachinery()
+        try "old helper".write(to: fx.installedBackstop, atomically: true, encoding: .utf8)
+        fx.setMode("pgrep", "0\n")          // running, and it stays running
+
+        let r = try fx.run(fx.installRedirected, extraEnvironment: ["USER": "tester"])
+
+        XCTAssertEqual(r.status, 1, r.stderr + r.stdout)
+        let calls = fx.calls()
+        XCTAssertTrue(calls.contains { $0.hasPrefix("sudo install") }, "\(calls)")
+        XCTAssertTrue(calls.contains { $0.hasPrefix("osascript") }, "the app was asked to quit: \(calls)")
+        XCTAssertFalse(calls.contains { $0.hasPrefix("pkill") }, "a refused quit stands: \(calls)")
+        XCTAssertFalse(calls.contains { $0.hasPrefix("launchctl") }, "\(calls)")
+        XCTAssertTrue(try String(contentsOf: fx.sudoers, encoding: .utf8).contains("NOPASSWD: /usr/bin/pmset"), "the rule was installed")
+        XCTAssertEqual(try String(contentsOf: fx.app.appendingPathComponent("Contents/MacOS/Insomnia"), encoding: .utf8), "binary")
+        XCTAssertEqual(try String(contentsOf: fx.installedBackstop, encoding: .utf8), "old helper")
+        XCTAssertEqual(try String(contentsOf: fx.plist, encoding: .utf8), "plist")
+        XCTAssertFalse(r.stderr.contains("Nothing was changed"), "the sudoers rule was changed: \(r.stderr)")
+        XCTAssertTrue(r.stderr.contains(fx.sudoers.path), "says what was installed: \(r.stderr)")
+        XCTAssertTrue(r.stderr.contains("not touched"), "says what was not: \(r.stderr)")
+        XCTAssertTrue(r.stderr.contains("still running"), r.stderr)
     }
 }
 
@@ -1365,6 +1517,13 @@ private final class ScriptFixture {
         // without running anything. `rm`/`test` run unprivileged, and only
         // on a path inside the fixture.
         // Mode "hang" behaves like a pmset that never returns.
+        // Mode "auth-fail": every form that would prompt (visudo, install)
+        // fails like a wrong password, and `-n` forms fail as unpermitted.
+        // Mode "rule-not-effective": authentication passes and the rule is
+        // installed, but `sudo -n -l <pmset ...>` still says no.
+        // visudo checks the candidate file exists, is non-empty and grants
+        // pmset, so an installer that validated the wrong path or an empty
+        // heredoc cannot pass here.
         try writeFake("sudo", """
         printf 'sudo %s\\n' "$*" >> "\(calls)"
         mode="$(cat "\(r)/sudo.mode" 2>/dev/null || echo ok)"
@@ -1375,7 +1534,9 @@ private final class ScriptFixture {
         # write command.ended = released | watchdog, so a test can tell a
         # command that is still alive (no file) from one that ended, and why.
         case "${1:-}" in
-          -n) if [[ "${2:-}" == -l ]]; then exit 0; fi
+          -n) if [[ "${2:-}" == -l ]]; then
+                case "$mode" in auth-fail|rule-not-effective) exit 1 ;; *) exit 0 ;; esac
+              fi
               case "$mode" in
                 ok) exit 0 ;;
                 hang) exec /bin/sleep 60 ;;
@@ -1391,8 +1552,13 @@ private final class ScriptFixture {
                   exit 0 ;;
                 *) exit 1 ;;
               esac ;;
-          visudo) exit 0 ;;
+          visudo)
+            if [[ "$mode" == auth-fail ]]; then echo "sudo: 3 incorrect password attempts" >&2; exit 1; fi
+            f=""; for a in "$@"; do f="$a"; done
+            [[ -s "$f" ]] && grep -q 'NOPASSWD: /usr/bin/pmset' "$f" || { printf 'sudo VISUDO-REJECTED %s\\n' "$*" >> "\(calls)"; exit 1; }
+            exit 0 ;;
           install)
+            if [[ "$mode" == auth-fail ]]; then echo "sudo: 3 incorrect password attempts" >&2; exit 1; fi
             src=""; dst=""
             for a in "$@"; do src="$dst"; dst="$a"; done
             case "$dst" in "\(r)"/*) mkdir -p "$(dirname "$dst")"; cp "$src" "$dst"; exit 0 ;; esac
@@ -1461,6 +1627,10 @@ private final class ScriptFixture {
         }
         // launchctl: bootout/bootstrap succeed and `print` reports "not
         // loaded" (113) by default. "loaded": print reports the job loaded.
+        // Whatever the mode, a path argument is only accepted when it ends
+        // in `.plist` and exists (real launchctl fails with EIO otherwise,
+        // for bootstrap and bootout alike); bootout also takes a service
+        // target `gui/<uid>/<label>` with no path.
         // "loaded-bootstrap-fails-once": as "loaded", but the first bootstrap
         // fails. "bootout-fails-still-loaded": bootout exits 5 and the job
         // stays listed. "ambiguous": bootout and print fail with errors.
@@ -1475,6 +1645,13 @@ private final class ScriptFixture {
         try writeFake("launchctl", """
         printf 'launchctl %s\\n' "$*" >> "\(calls)"
         mode="$(cat "\(r)/launchctl.mode" 2>/dev/null || echo ok)"
+        if [[ "${1:-}" == bootstrap ]]; then
+          [[ "${3:-}" == *.plist && -f "${3:-}" ]] || { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }
+        elif [[ "${1:-}" == bootout && $# -ge 3 ]]; then
+          [[ "${3:-}" == *.plist && -f "${3:-}" ]] || { echo "Boot-out failed: 5: Input/output error" >&2; exit 5; }
+        elif [[ "${1:-}" == bootout ]]; then
+          [[ "${2:-}" == gui/\(uid)/com.insomnia.backstop ]] || { echo "Boot-out failed: 5: Input/output error" >&2; exit 5; }
+        fi
         if [[ "${1:-}" == bootstrap ]]; then
           if /usr/bin/lockf -k -s -t 0 "\(r)/home/.recovery.lock" /usr/bin/true 2>/dev/null; then
             echo 'launchctl LOCK-FREE during bootstrap' >> "\(calls)"

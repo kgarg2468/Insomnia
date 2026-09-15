@@ -1,7 +1,9 @@
 #!/bin/bash
 # Build Insomnia, assemble ~/Applications/Insomnia.app, install the backstop
 # script + LaunchAgent, and write the sudoers rule. Idempotent; asks for sudo
-# once (for /etc/sudoers.d/insomnia).
+# once (for /etc/sudoers.d/insomnia), before anything of a previous install
+# is touched. Not atomic: a failure after the sudoers step says exactly what
+# was replaced so far.
 set -euo pipefail
 
 # Installation always uses the standard per-user layout. A relocated
@@ -48,41 +50,10 @@ cd "$ROOT"
 BIN="$("$SWIFT" build -c release --show-bin-path)/Insomnia"
 [[ -x "$BIN" ]] || { echo "binary not found at $BIN" >&2; exit 1; }
 
-# 2. Bundle ------------------------------------------------------------------
-step "Assembling $APP"
-# Ask the app to quit and wait until it has actually exited. It refuses to
-# quit while it has unresolved recovery work; that refusal stands (no pkill),
-# and nothing of the old install is overwritten while it is still running.
-if "$PGREP" -x Insomnia >/dev/null 2>&1; then
-  echo "Insomnia is running; quitting it first (this ends any session)."
-  "$OSASCRIPT" -e 'tell application id "com.kgarg.insomnia" to quit' >/dev/null 2>&1 || true
-  for (( i = 0; i < QUIT_WAIT_SECONDS; i++ )); do
-    "$PGREP" -x Insomnia >/dev/null 2>&1 || break
-    sleep 1
-  done
-  if "$PGREP" -x Insomnia >/dev/null 2>&1; then
-    echo "Insomnia is still running after ${QUIT_WAIT_SECONDS}s (it may be refusing to quit until its own recovery finishes)." >&2
-    echo "Let it finish or quit it from its menu, then rerun. Nothing was changed." >&2
-    exit 1
-  fi
-fi
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
-cp "$BIN" "$APP/Contents/MacOS/Insomnia"
-cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
-mkdir -p "$APP/Contents/Resources"
-cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
-"$PLUTIL" -lint "$APP/Contents/Info.plist" >/dev/null
-"$CODESIGN" --force --sign - --deep "$APP"
-echo "signed $("$CODESIGN" -dv "$APP" 2>&1 | grep -i identifier || true)"
-
-# 3. Backstop script + dirs --------------------------------------------------
-step "Installing backstop.sh to $APP_SUPPORT"
-mkdir -p "$APP_SUPPORT" "$LOG_DIR" "$LAUNCH_AGENTS"
-cp "$ROOT/scripts/backstop.sh" "$APP_SUPPORT/backstop.sh"
-chmod +x "$APP_SUPPORT/backstop.sh"
-
-# 4. sudoers -----------------------------------------------------------------
+# 2. sudoers -----------------------------------------------------------------
+#    The password prompt comes first: until the rule is installed and proven
+#    effective, the running app is not asked to quit and neither the bundle,
+#    the installed backstop.sh nor the LaunchAgent are touched.
 step "Writing $SUDOERS (requires your password once)"
 TMP_SUDOERS="$(mktemp)"
 trap 'rm -f "$TMP_SUDOERS"' EXIT
@@ -96,7 +67,7 @@ SUDO
 if "$SUDO" visudo -cf "$TMP_SUDOERS" >/dev/null; then
   "$SUDO" install -m 0440 -o root -g wheel "$TMP_SUDOERS" "$SUDOERS"
 else
-  echo "sudoers file failed validation; not installed" >&2
+  echo "sudoers file failed validation (or sudo did not authenticate); not installed. Nothing was changed." >&2
   exit 1
 fi
 # `sudo -l <command>` checks the rule without running pmset (nothing on the
@@ -104,9 +75,43 @@ fi
 if "$SUDO" -n -l /usr/bin/pmset -a disablesleep 0 >/dev/null 2>&1; then
   echo "sudoers rule verified"
 else
-  echo "'sudo -n pmset' is still not permitted; check $SUDOERS. Not installing the agent." >&2
+  echo "'sudo -n pmset' is still not permitted; check $SUDOERS. The app, backstop.sh and LaunchAgent were not touched." >&2
   exit 1
 fi
+
+# 3. Bundle ------------------------------------------------------------------
+step "Assembling $APP"
+# Ask the app to quit and wait until it has actually exited. It refuses to
+# quit while it has unresolved recovery work; that refusal stands (no pkill),
+# and nothing of the old install is overwritten while it is still running.
+if "$PGREP" -x Insomnia >/dev/null 2>&1; then
+  echo "Insomnia is running; quitting it first (this ends any session)."
+  "$OSASCRIPT" -e 'tell application id "com.kgarg.insomnia" to quit' >/dev/null 2>&1 || true
+  for (( i = 0; i < QUIT_WAIT_SECONDS; i++ )); do
+    "$PGREP" -x Insomnia >/dev/null 2>&1 || break
+    sleep 1
+  done
+  if "$PGREP" -x Insomnia >/dev/null 2>&1; then
+    echo "Insomnia is still running after ${QUIT_WAIT_SECONDS}s (it may be refusing to quit until its own recovery finishes)." >&2
+    echo "Let it finish or quit it from its menu, then rerun. $SUDOERS is installed; the app, backstop.sh and LaunchAgent were not touched." >&2
+    exit 1
+  fi
+fi
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS"
+cp "$BIN" "$APP/Contents/MacOS/Insomnia"
+cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources"
+cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+"$PLUTIL" -lint "$APP/Contents/Info.plist" >/dev/null
+"$CODESIGN" --force --sign - --deep "$APP"
+echo "signed $("$CODESIGN" -dv "$APP" 2>&1 | grep -i identifier || true)"
+
+# 4. Backstop script + dirs --------------------------------------------------
+step "Installing backstop.sh to $APP_SUPPORT"
+mkdir -p "$APP_SUPPORT" "$LOG_DIR" "$LAUNCH_AGENTS"
+cp "$ROOT/scripts/backstop.sh" "$APP_SUPPORT/backstop.sh"
+chmod +x "$APP_SUPPORT/backstop.sh"
 
 # 5. Recovery and LaunchAgent replacement are one transaction under the
 #    recovery lock (the same flock(2) file the app and backstop use), so a
@@ -137,15 +142,22 @@ recovery_rc=0
 #    enforces the saved deadline itself and is a no-op while the session on
 #    disk is valid. Same pattern as the app (LaunchdBackstop.swift): the
 #    trusted plist at $PLIST is only ever a plist launchd actually loaded.
-#    The new one is written to a private candidate next to it (no .plist
-#    suffix, so launchd never picks it up at login), loaded from there, and
-#    published with one rename after `launchctl print` confirms the job is
+#    The new one is written to a private candidate one directory below it:
+#    launchctl refuses any path without a `.plist` suffix (EIO), and
+#    launchd's login-time load of $LAUNCH_AGENTS does not descend into
+#    subdirectories, so a leftover candidate is never picked up as a second
+#    copy of the label. It is loaded from there and published with one
+#    rename (same filesystem) after `launchctl print` confirms the job is
 #    loaded. Any failure leaves $PLIST byte for byte as it was. While
 #    recovery is unresolved the previous job is not unloaded or replaced.
 step "Installing LaunchAgent $LABEL"
-CANDIDATE="$LAUNCH_AGENTS/$LABEL.candidate-$$"
-trap 'rm -f "$TMP_SUDOERS" "$CANDIDATE"' EXIT
-rm -f "$LAUNCH_AGENTS/$LABEL.candidate-"*
+CANDIDATE_DIR="$LAUNCH_AGENTS/.$LABEL.staging"
+CANDIDATE="$CANDIDATE_DIR/$LABEL.candidate-$$.plist"
+trap 'rm -f "$TMP_SUDOERS" "$CANDIDATE"; rmdir "$CANDIDATE_DIR" 2>/dev/null || true' EXIT
+mkdir -p "$CANDIDATE_DIR"
+# Leftovers of earlier attempts, including an older build's candidates in
+# $LAUNCH_AGENTS itself (those make launchd's login load report an error).
+rm -f "$CANDIDATE_DIR/$LABEL.candidate-"* "$LAUNCH_AGENTS/$LABEL.candidate-"*
 
 # `launchctl print` exits 0 when a job with the label is loaded and 113 when
 # none is. Anything else is unknown, not absent. Being loaded says nothing
@@ -203,9 +215,10 @@ cat > "$CANDIDATE" <<PLIST
 PLIST
 "$PLUTIL" -lint "$CANDIDATE" >/dev/null
 
-# bootout (ignored if nothing is loaded) then bootstrap, both from the
-# candidate: launchctl takes the label from the file it is given.
-"$LAUNCHCTL" bootout "gui/$UID_NUM" "$CANDIDATE" >/dev/null 2>&1 || true
+# bootout by service target (ignored if nothing is loaded; a path launchctl
+# cannot read fails with EIO instead of unloading anything), then bootstrap
+# from the candidate.
+"$LAUNCHCTL" bootout "gui/$UID_NUM/$LABEL" >/dev/null 2>&1 || true
 bootstrap_rc=0
 "$LAUNCHCTL" bootstrap "gui/$UID_NUM" "$CANDIDATE" || bootstrap_rc=$?
 after="$(loaded_state)"
