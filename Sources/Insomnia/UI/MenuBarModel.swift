@@ -33,15 +33,33 @@ final class MenuBarModel {
     enum Phase: Equatable, Sendable {
         case idle
         case entering(Mode)
+        /// Enter was pressed on the start pills and the manager has not yet
+        /// confirmed a session (the recovery agent can take seconds to
+        /// answer, or refuse). Shows `startingText` and nothing that acts on
+        /// a session.
+        case starting
         case running
 
         var isEntering: Bool {
             if case .entering = self { return true }
             return false
         }
+
+        /// The countdown and the hold-to-end ring belong to a confirmed
+        /// session only; a pending start must not draw them.
+        var showsRunningControls: Bool { self == .running }
     }
 
+    /// What the item reads while a start is pending.
+    static let startingText = "Starting\u{2026}"
+    /// What the item reads next to the pills after the manager refused a
+    /// start. Short on purpose: the full reason is in the right-click menu.
+    static let startFailedText = "Couldn\u{2019}t start"
+
     var phase: Phase = .idle
+    /// Concise start failure shown beside the pills; cleared on the next
+    /// commit, open or collapse.
+    var startError: String?
     var input = DurationInput()
     var focused: DurationInput.Field = .hours
     /// How many pills are laid out right now (0...3); stepped for the stagger.

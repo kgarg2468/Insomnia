@@ -30,7 +30,15 @@ struct StatusRootView: View {
             icon
             if isEntering {
                 pills
-            } else if model.phase == .running {
+                if let error = model.startError {
+                    startError(error)
+                }
+            } else if model.phase == .starting {
+                starting
+            } else if model.phase.showsRunningControls && isRunning {
+                // Both, not either: the phase can lag the manager by a hop
+                // when a session ends, and that window must not offer an end
+                // ring and a countdown for a session that is already gone.
                 countdown
                 HoldToEndButton(reduceMotion: reduceMotion, action: onHoldEnd)
                     .transition(reduceMotion ? .opacity : .scale(scale: 0.5).combined(with: .opacity))
@@ -94,6 +102,33 @@ struct StatusRootView: View {
             .transition(reduceMotion ? .opacity : .scale(scale: 0.7, anchor: .leading).combined(with: .opacity))
             .contentShape(Rectangle())
             .onTapGesture(perform: onTapCountdown)
+    }
+
+    /// Enter was pressed and the manager is still arming the recovery agent
+    /// and disabling sleep. Deliberately not a countdown and not part of the
+    /// pill/countdown morph: it stands in for nothing that exists yet, and
+    /// it must stay legible even if the pills' geometry is mid-retract when
+    /// the start is refused a frame later.
+    private var starting: some View {
+        Text(MenuBarModel.startingText)
+            .font(.system(size: 13, weight: .medium, design: .rounded))
+            .foregroundStyle(.secondary)
+            .padding(.trailing, 1)
+            .transition(.opacity)
+            .accessibilityLabel("Starting session")
+    }
+
+    /// The manager refused the start: say so next to the pills the value is
+    /// still in. The full reason lives in the right-click menu.
+    private func startError(_ text: String) -> some View {
+        Label(text, systemImage: "exclamationmark.triangle.fill")
+            .font(.system(size: 11, weight: .medium, design: .rounded))
+            .labelStyle(.titleAndIcon)
+            .foregroundStyle(Color(brand: BrandPalette.violet))
+            .lineLimit(1)
+            .fixedSize()
+            .transition(.opacity)
+            .accessibilityLabel("Start failed")
     }
 }
 
