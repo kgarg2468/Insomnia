@@ -48,7 +48,7 @@ struct StatusRootView: View {
         }
     }
 
-    /// Neutral eye and moon while idle; the moon turns violet while sleep is
+    /// Neutral eye and moon while idle; the moon turns blue-grey while sleep is
     /// held, so the app visibly does something even when Low Power Mode is
     /// not showing.
     private var icon: some View {

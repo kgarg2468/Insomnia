@@ -3,31 +3,31 @@
   <desc id="rf-desc">Every recoverable change is written to a recovery journal before it is made, and the app and the launchd backstop share one recovery lock. An illustrated example of the right-click menu shows what pending cleanup looks like: a warning line reading Sleep still held with no session, a machine status line, then Settings and Quit Insomnia; the warning is read from the journal. Two paths read the journal. The Insomnia app attempts cleanup right away when a session ends and again when it reopens. The launchd backstop runs every 60 seconds, leaves a valid unexpired session alone, and attempts recovery when the deadline is due, the session file is missing or invalid, or a run is forced. Both restore only what can be verified; failed or unreadable evidence stays on disk instead of being treated as clean. Two things may need your attention: saved audio is restored only by reopening the app, and an unconfirmed freeze means you should inspect the process yourself. The backstop undoes journaled changes only. It is not battery or thermal monitoring and cannot restore audio.</desc>
   <style>
     svg { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Helvetica, Arial, sans-serif; }
-    .bg { fill: #F4F3FA; }
-    .panel { fill: #FFFFFF; stroke: #D3D1E4; stroke-width: 1.5; }
-    .chip { fill: #ECEAF6; stroke: #D3D1E4; stroke-width: 1.5; }
-    .menu { fill: #F7F7FA; stroke: #C9C8D8; stroke-width: 1.5; }
-    .sep { stroke: #D3D1E4; stroke-width: 1.5; }
-    .t { fill: #11151F; }
-    .m { fill: #4F5368; }
-    .a { fill: #6257A5; }
-    .ln { fill: none; stroke: #6257A5; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
-    .ic { fill: none; stroke: #11151F; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-    .hdr-moon { fill: #11151F; }
+    .bg { fill: #F3F2EF; }
+    .panel { fill: #FAF9F6; stroke: #DBD9D4; stroke-width: 1.5; }
+    .chip { fill: #ECEAE6; stroke: #DBD9D4; stroke-width: 1.5; }
+    .menu { fill: #F7F6F3; stroke: #CFCDC8; stroke-width: 1.5; }
+    .sep { stroke: #DBD9D4; stroke-width: 1.5; }
+    .t { fill: #292D30; }
+    .m { fill: #5F6467; }
+    .a { fill: #536D78; }
+    .ln { fill: none; stroke: #536D78; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+    .ic { fill: none; stroke: #292D30; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .hdr-moon { fill: #292D30; }
     .warn { fill: #A85A00; }
     .warn-ic { fill: none; stroke: #A85A00; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
     @media (prefers-color-scheme: dark) {
-      .bg { fill: #06012C; }
-      .panel { fill: #11151F; stroke: #2E3346; }
-      .chip { fill: #1B2030; stroke: #363C52; }
-      .menu { fill: #2A2D3A; stroke: #464A5E; }
-      .sep { stroke: #464A5E; }
-      .t { fill: #EEF0F7; }
-      .m { fill: #B4B8CC; }
-      .a { fill: #9691D9; }
-      .ln { stroke: #9691D9; }
-      .ic { stroke: #EEF0F7; }
-      .hdr-moon { fill: #EEF0F7; }
+      .bg { fill: #242628; }
+      .panel { fill: #303336; stroke: #3E4145; }
+      .chip { fill: #383B3F; stroke: #474A4E; }
+      .menu { fill: #383B3F; stroke: #4A4D51; }
+      .sep { stroke: #4A4D51; }
+      .t { fill: #E6E3DD; }
+      .m { fill: #B5B7B8; }
+      .a { fill: #A6BBC3; }
+      .ln { stroke: #A6BBC3; }
+      .ic { stroke: #E6E3DD; }
+      .hdr-moon { fill: #E6E3DD; }
       .warn { fill: #F2A854; }
       .warn-ic { stroke: #F2A854; }
     }

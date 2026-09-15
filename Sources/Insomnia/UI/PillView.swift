@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// One of the Days / Hours / Minutes fields in the menu bar. Flat dark
-/// rounded rectangle, unit name as placeholder, a crisp violet ring when
+/// rounded rectangle, unit name as placeholder, a crisp blue-grey ring when
 /// focused, snappy bounce on focus and on a rejected key.
 ///
 /// Nothing here blurs or uses a material: every frame of this view is

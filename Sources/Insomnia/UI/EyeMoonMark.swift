@@ -21,7 +21,7 @@ extension Color {
 }
 
 /// The mark as it appears in the status item: a neutral eye and moon while
-/// idle; the moon turns violet while sleep is held, cross-fading between
+/// idle; the moon turns blue-grey while sleep is held, cross-fading between
 /// the two. The eye's interior is never filled, so the outline reads the
 /// same in both states and in light and dark menu bars.
 struct EyeMoonMarkView: View {

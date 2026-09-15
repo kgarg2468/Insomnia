@@ -80,21 +80,21 @@ final class PackagingTests: XCTestCase {
         for (x, y) in [(2, 2), (1021, 2), (2, 1021), (1021, 1021)] {
             XCTAssertEqual(px.alpha(x, y), 0, "corner (\(x), \(y)) must be transparent")
         }
-        // Along the horizontal centre line: the tile edge is dark and opaque,
-        // and somewhere inside it the mark is light.
+        // Along the horizontal centre line: the charcoal tile edge is dark
+        // and opaque, and somewhere inside it the mark is light.
         let mid = 512
         var dark = 0
         var light = 0
         for x in stride(from: 0, to: 1024, by: 2) {
             guard px.alpha(x, mid) > 0.99 else { continue }
             let l = px.luminance(x, mid)
-            if l < 0.15 { dark += 1 }
+            if l < 0.3 { dark += 1 }
             if l > 0.75 { light += 1 }
         }
-        XCTAssertGreaterThan(dark, 200, "midnight tile should dominate the centre line")
+        XCTAssertGreaterThan(dark, 200, "charcoal tile should dominate the centre line")
         XCTAssertGreaterThan(light, 4, "the eye/moon should cross the centre line")
         XCTAssertGreaterThan(px.alpha(160, mid), 0.99, "the tile should start well inside the canvas")
-        XCTAssertLessThan(px.luminance(160, mid), 0.15, "the tile edge is midnight, not white")
+        XCTAssertLessThan(px.luminance(160, mid), 0.3, "the tile edge is charcoal, not white")
         XCTAssertEqual(px.alpha(20, mid), 0, "a margin is left around the tile")
     }
 

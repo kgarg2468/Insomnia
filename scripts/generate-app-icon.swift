@@ -70,7 +70,7 @@ struct GenerateAppIcon {
         }
     }
 
-    /// The whole icon at `pixels` square: midnight tile, moon-white mark.
+    /// The whole icon at `pixels` square: charcoal tile, moon-white mark.
     static func render(pixels: Int) throws -> CGImage {
         guard let ctx = CGContext(
             data: nil,

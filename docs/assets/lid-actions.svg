@@ -3,35 +3,35 @@
   <desc id="la-desc">An illustrated excerpt of the Lid-close actions section in Settings, with the defaults, connected by arrows to what happens when the lid closes and opens during a session. The Freeze while the lid is closed list contains Slack, WhatsApp and Discord. Pause Docker Desktop when no containers are running is on. Mute audio on lid close is off. When the lid closes, the listed apps are frozen with SIGSTOP after a journal entry is written; Docker Desktop is paused only if an idle check finds no containers running, and a container that is still starting can race that check; if muting is on, the volume is saved and audio is muted. When the lid opens, Insomnia attempts to undo the lid actions: it resumes only the freezes it can verify it made, resumes Docker if the rule paused it, and restores the saved audio. The session continues; the timer never stopped, only its on-screen redraw paused. This repeats every time the lid closes and opens. Without an active session the lid does nothing.</desc>
   <style>
     svg { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Helvetica, Arial, sans-serif; }
-    .bg { fill: #F4F3FA; }
-    .panel { fill: #FFFFFF; stroke: #D3D1E4; stroke-width: 1.5; }
-    .chip { fill: #ECEAF6; stroke: #D3D1E4; stroke-width: 1.5; }
-    .sep { stroke: #D3D1E4; stroke-width: 1.5; }
-    .t { fill: #11151F; }
-    .m { fill: #4F5368; }
-    .a { fill: #6257A5; }
-    .ln { fill: none; stroke: #6257A5; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
-    .ic { fill: none; stroke: #11151F; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-    .hdr-moon { fill: #11151F; }
+    .bg { fill: #F3F2EF; }
+    .panel { fill: #FAF9F6; stroke: #DBD9D4; stroke-width: 1.5; }
+    .chip { fill: #ECEAE6; stroke: #DBD9D4; stroke-width: 1.5; }
+    .sep { stroke: #DBD9D4; stroke-width: 1.5; }
+    .t { fill: #292D30; }
+    .m { fill: #5F6467; }
+    .a { fill: #536D78; }
+    .ln { fill: none; stroke: #536D78; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+    .ic { fill: none; stroke: #292D30; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .hdr-moon { fill: #292D30; }
     .knob { fill: #FFFFFF; }
-    .on { fill: #6257A5; }
-    .off { fill: #C4C2D6; }
-    .remove { fill: #9A9DB2; }
+    .on { fill: #536D78; }
+    .off { fill: #C9C8C3; }
+    .remove { fill: #9A9C9E; }
     .minus { fill: none; stroke: #FFFFFF; stroke-width: 2.4; stroke-linecap: round; }
     @media (prefers-color-scheme: dark) {
-      .bg { fill: #06012C; }
-      .panel { fill: #11151F; stroke: #2E3346; }
-      .chip { fill: #1B2030; stroke: #363C52; }
-      .sep { stroke: #2E3346; }
-      .t { fill: #EEF0F7; }
-      .m { fill: #B4B8CC; }
-      .a { fill: #9691D9; }
-      .ln { stroke: #9691D9; }
-      .ic { stroke: #EEF0F7; }
-      .hdr-moon { fill: #EEF0F7; }
-      .on { fill: #9691D9; }
-      .off { fill: #3A4058; }
-      .remove { fill: #6E7288; }
+      .bg { fill: #242628; }
+      .panel { fill: #303336; stroke: #3E4145; }
+      .chip { fill: #383B3F; stroke: #474A4E; }
+      .sep { stroke: #3E4145; }
+      .t { fill: #E6E3DD; }
+      .m { fill: #B5B7B8; }
+      .a { fill: #A6BBC3; }
+      .ln { stroke: #A6BBC3; }
+      .ic { stroke: #E6E3DD; }
+      .hdr-moon { fill: #E6E3DD; }
+      .on { fill: #A6BBC3; }
+      .off { fill: #45494D; }
+      .remove { fill: #7A7D80; }
     }
   </style>
   <defs>

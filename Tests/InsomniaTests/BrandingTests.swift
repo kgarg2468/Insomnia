@@ -6,7 +6,7 @@ import XCTest
 /// The eye/moon mark, checked on rendered geometry: the crescent's spine is
 /// on the left with its opening and tips to the right, it stays clear of the
 /// eye outline, the eye interior is never flooded, and the running state is
-/// a violet moon rather than a tinted blob.
+/// a blue-grey moon rather than a tinted blob.
 final class BrandingTests: XCTestCase {
     private let grid = CGRect(x: 0, y: 0, width: EyeMoonGeometry.designSize, height: EyeMoonGeometry.designSize)
 
@@ -87,7 +87,7 @@ final class BrandingTests: XCTestCase {
     }
 
     @MainActor
-    func testRunningStateTurnsOnlyTheMoonVioletAndKeepsTheEyeInteriorClear() throws {
+    func testRunningStateTurnsOnlyTheMoonBlueGreyAndKeepsTheEyeInteriorClear() throws {
         let probes = Probes(size: 17, scale: 2)
         let idle = try Raster.render(EyeMoonMarkView(isRunning: false, reduceMotion: true), scheme: .light, scale: 2)
         let active = try Raster.render(EyeMoonMarkView(isRunning: true, reduceMotion: true), scheme: .light, scale: 2)
@@ -96,10 +96,16 @@ final class BrandingTests: XCTestCase {
         XCTAssertLessThan(idleMoon.saturation, 0.1, "idle moon is neutral: \(idleMoon)")
         let activeMoon = active.rgb(probes.moon)
         XCTAssertGreaterThan(active.alpha(probes.moon), 0.9)
-        XCTAssertGreaterThan(activeMoon.saturation, 0.2, "active moon is tinted: \(activeMoon)")
-        XCTAssertGreaterThan(activeMoon.blue, activeMoon.green, "active moon leans violet, not warm: \(activeMoon)")
-        XCTAssertGreaterThan(activeMoon.blue, activeMoon.red, "active moon leans violet, not warm: \(activeMoon)")
-        XCTAssertGreaterThan(activeMoon.luminance, 0.3, "restrained violet, not a dark fill: \(activeMoon)")
+        // The running moon is visibly tinted next to the neutral idle moon,
+        // but stays a muted blue-grey rather than a saturated colour.
+        XCTAssertGreaterThan(activeMoon.saturation, idleMoon.saturation + 0.05, "active moon is tinted: \(activeMoon)")
+        XCTAssertLessThan(activeMoon.saturation, 0.4, "active moon is muted, not vivid: \(activeMoon)")
+        // Cool, not warm: red is the weakest channel and blue the strongest.
+        XCTAssertGreaterThan(activeMoon.green, activeMoon.red, "active moon leans cool, not warm: \(activeMoon)")
+        XCTAssertGreaterThan(activeMoon.blue, activeMoon.red, "active moon leans cool, not warm: \(activeMoon)")
+        XCTAssertGreaterThanOrEqual(activeMoon.blue, activeMoon.green, "active moon is blue-grey, not green: \(activeMoon)")
+        XCTAssertGreaterThan(activeMoon.luminance, 0.3, "restrained blue-grey, not a dark fill: \(activeMoon)")
+        XCTAssertLessThan(activeMoon.luminance, 0.9, "the running moon is distinguishable from white: \(activeMoon)")
 
         XCTAssertLessThan(idle.alpha(probes.interior), 0.05, "eye interior stays clear while idle")
         XCTAssertLessThan(active.alpha(probes.interior), 0.05, "eye interior stays clear while running")

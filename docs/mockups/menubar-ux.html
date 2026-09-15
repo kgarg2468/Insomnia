@@ -5,10 +5,10 @@
 <title>Insomnia — menu bar mockup (simulation, not the app)</title>
 <style>
   :root {
-    --accent: #9691D9;
-    --midnight: #06012C;
-    --charcoal: #11151F;
-    --moon: #EEF0F7;
+    --accent: #A6BBC3;
+    --midnight: #242628;
+    --charcoal: #1E1F21;
+    --moon: #E6E3DD;
     --bar-h: 37px;
     --font: -apple-system, "SF Pro Text", "SF Pro Rounded", system-ui, sans-serif;
     --spring: cubic-bezier(.34, 1.45, .64, 1);
@@ -24,7 +24,7 @@
   /* ---------- menu bar ---------- */
   .bar {
     height: var(--bar-h); display: flex; align-items: center; justify-content: space-between;
-    padding: 0 16px 0 18px; background: rgba(17,21,31,.92);
+    padding: 0 16px 0 18px; background: rgba(30,31,33,.92);
     border-bottom: 1px solid rgba(255,255,255,.06); font-size: 13px; font-weight: 600; user-select: none;
   }
   .bar .left { display: flex; gap: 20px; align-items: center; color: #fff; }
@@ -37,7 +37,7 @@
   /* ---------- simulation banner ---------- */
   .sim {
     display: flex; align-items: center; gap: 10px; padding: 8px 18px; font-size: 13px;
-    background: rgba(150,145,217,.14); border-bottom: 1px solid rgba(150,145,217,.35); color: var(--moon);
+    background: rgba(166,187,195,.14); border-bottom: 1px solid rgba(166,187,195,.35); color: var(--moon);
   }
   .sim .tag { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; padding: 2px 7px; border-radius: 4px; background: var(--accent); color: var(--midnight); }
 
@@ -52,7 +52,7 @@
     transition: transform 360ms var(--snappy);
   }
   /* EyeMoonGeometry on its 24-unit grid: eye outline stroked, crescent filled.
-     The outline never changes; only the moon turns violet while running. */
+     The outline never changes; only the moon turns blue-grey while running. */
   .mark svg { width: 17px; height: 17px; }
   .mark .eye { fill: none; stroke: #fff; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
   .mark .moon { fill: #fff; transition: fill 350ms; }
@@ -64,7 +64,7 @@
   .pills { display: flex; gap: 6px; align-items: center; }
   .pill {
     height: 19px; min-width: 28px; padding: 0 8px; border-radius: 7px; display: grid; place-items: center;
-    background: rgba(17,21,31,.92); border: .5px solid rgba(255,255,255,.10);
+    background: rgba(23,25,27,.92); border: .5px solid rgba(255,255,255,.10);
     font-size: 12px; font-weight: 400; color: rgba(255,255,255,.42); font-variant-numeric: tabular-nums;
     transform: scale(.6) translateY(4px); opacity: 0; cursor: pointer;
     transition: transform 420ms var(--spring), opacity 180ms ease, box-shadow 260ms ease, color 200ms, padding 200ms var(--snappy);
@@ -102,7 +102,7 @@
   /* right-click menu */
   .ctx {
     position: absolute; top: calc(var(--bar-h) + 4px); right: 0; min-width: 230px; padding: 5px;
-    background: rgba(42,45,58,.96); border-radius: 10px;
+    background: rgba(56,59,63,.96); border-radius: 10px;
     border: .5px solid rgba(255,255,255,.12); box-shadow: 0 10px 30px rgba(0,0,0,.5);
     font-size: 13px; font-weight: 400; color: #fff; z-index: 10;
     transform-origin: top right; transform: scale(.92); opacity: 0; pointer-events: none;
@@ -119,20 +119,20 @@
   /* ---------- page body: frames + notes ---------- */
   .content { max-width: 980px; margin: 0 auto; padding: 48px 28px 80px; }
   h1 { font-size: 22px; font-weight: 700; margin: 0 0 6px; }
-  .lede { color: rgba(238,240,247,.65); margin: 0 0 36px; font-size: 14px; }
+  .lede { color: rgba(230,227,221,.65); margin: 0 0 36px; font-size: 14px; }
   .lede kbd { font-family: var(--font); background: rgba(255,255,255,.1); border-radius: 4px; padding: 1px 6px; font-size: 12px; }
-  h2 { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: rgba(238,240,247,.5); margin: 34px 0 12px; }
+  h2 { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: rgba(230,227,221,.5); margin: 34px 0 12px; }
   .frames { display: grid; grid-template-columns: 1fr; gap: 14px; }
   .frame { display: grid; grid-template-columns: 220px 1fr; align-items: center; gap: 18px; }
-  .frame .label { font-size: 13px; color: rgba(238,240,247,.8); }
-  .frame .label small { display: block; color: rgba(238,240,247,.45); margin-top: 2px; font-size: 12px; }
+  .frame .label { font-size: 13px; color: rgba(230,227,221,.8); }
+  .frame .label small { display: block; color: rgba(230,227,221,.45); margin-top: 2px; font-size: 12px; }
   .strip { height: var(--bar-h); display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 0 12px;
-    background: rgba(17,21,31,.92); border-radius: 8px; border: 1px solid rgba(255,255,255,.06); font-size: 13px; font-weight: 500; }
+    background: rgba(30,31,33,.92); border-radius: 8px; border: 1px solid rgba(255,255,255,.06); font-size: 13px; font-weight: 500; }
   .strip .item .pill.in { transition: none; }
-  .keys { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 28px; font-size: 13px; color: rgba(238,240,247,.8); }
+  .keys { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 28px; font-size: 13px; color: rgba(230,227,221,.8); }
   .keys div { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: .5px solid rgba(255,255,255,.08); }
   .keys kbd { font-family: var(--font); background: rgba(255,255,255,.1); border-radius: 4px; padding: 1px 7px; font-size: 12px; min-width: 40px; text-align: center; }
-  .note { font-size: 13px; color: rgba(238,240,247,.75); line-height: 1.55; max-width: 720px; }
+  .note { font-size: 13px; color: rgba(230,227,221,.75); line-height: 1.55; max-width: 720px; }
   .note b { color: #fff; }
 </style>
 </head>
@@ -177,7 +177,7 @@
           <div class="pills"><div class="pill in">Days</div><div class="pill in filled focus">4</div><div class="pill in">Minutes</div></div></div><span class="sys">1:37 PM</span></div>
       </div>
       <div class="frame">
-        <div class="label">Running<small>Pills morph into the countdown. The moon turns violet. ✕ appears.</small></div>
+        <div class="label">Running<small>Pills morph into the countdown. The moon turns blue-grey. ✕ appears.</small></div>
         <div class="strip"><div class="item running"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/></svg></div>
           <div class="count in">3:59:41</div>
           <div class="end in"><svg class="ring" viewBox="0 0 18 18"><circle class="track" cx="9" cy="9" r="8"/></svg><svg class="x" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg></div></div><span class="sys">1:38 PM</span></div>
