@@ -82,18 +82,24 @@ struct LaunchdBackstop: BackstopScheduling {
         return NSDictionary(dictionary: obj).isEqual(to: desired)
     }
 
-    /// Candidates sit next to the trusted plist so publishing is a rename
-    /// within one directory. Their name has no `.plist` suffix: launchd only
-    /// loads `*.plist` at login, so a candidate left behind by a crash or an
-    /// unwritable volume can never be picked up as a second copy of the label.
+    /// Candidates are `*.plist` files in a private subdirectory of the
+    /// LaunchAgents directory. launchctl refuses to bootstrap (or boot out)
+    /// any path without a `.plist` suffix with EIO, so the name must end in
+    /// `.plist`; launchd's login-time load of the LaunchAgents directory does
+    /// not descend into subdirectories, so a candidate left behind by a
+    /// crash or an unwritable volume can never be picked up as a second copy
+    /// of the label; and one level below the trusted plist is still the same
+    /// filesystem, so publishing stays a single rename.
+    private var stagingDirectory: URL {
+        plistURL.deletingLastPathComponent().appendingPathComponent(".\(label).staging", isDirectory: true)
+    }
     private var candidatePrefix: String { "\(label).candidate-" }
 
     private func writeCandidate(_ desired: [String: Any]) throws -> URL {
         let data = try PropertyListSerialization.data(fromPropertyList: desired, format: .xml, options: 0)
-        let dir = plistURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        sweepCandidates(in: dir)
-        let url = dir.appendingPathComponent(candidatePrefix + UUID().uuidString)
+        try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+        sweepCandidates()
+        let url = stagingDirectory.appendingPathComponent(candidatePrefix + UUID().uuidString + ".plist")
         try data.write(to: url)
         return url
     }
@@ -109,21 +115,30 @@ struct LaunchdBackstop: BackstopScheduling {
         }
     }
 
-    /// Best effort; after a successful publish the candidate is already gone.
+    /// Best effort; after a successful publish the candidate is already gone
+    /// and only the (then empty) staging directory is left to remove.
     private func discard(_ candidate: URL) {
-        guard FileManager.default.fileExists(atPath: candidate.path) else { return }
-        do {
-            try FileManager.default.removeItem(at: candidate)
-        } catch {
-            // Harmless to launchd (see candidatePrefix); swept by the next arm().
-            Log.error("could not remove backstop candidate plist \(candidate.lastPathComponent): \(error.localizedDescription)")
+        if FileManager.default.fileExists(atPath: candidate.path) {
+            do {
+                try FileManager.default.removeItem(at: candidate)
+            } catch {
+                // Harmless to launchd (see stagingDirectory); swept by the next arm().
+                Log.error("could not remove backstop candidate plist \(candidate.lastPathComponent): \(error.localizedDescription)")
+            }
         }
+        // Fails while a candidate is still inside; that is fine.
+        _ = rmdir(stagingDirectory.path)
     }
 
-    private func sweepCandidates(in dir: URL) {
+    private func sweepCandidates() {
         let fm = FileManager.default
-        for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where name.hasPrefix(candidatePrefix) {
-            try? fm.removeItem(at: dir.appendingPathComponent(name))
+        // The LaunchAgents directory itself too: an older build staged its
+        // candidates there, and a leftover makes launchd's directory load
+        // report an error at every login.
+        for dir in [stagingDirectory, plistURL.deletingLastPathComponent()] {
+            for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where name.hasPrefix(candidatePrefix) {
+                try? fm.removeItem(at: dir.appendingPathComponent(name))
+            }
         }
     }
 
@@ -134,17 +149,17 @@ struct LaunchdBackstop: BackstopScheduling {
         return r.succeeded
     }
 
-    /// bootout (ignored if not loaded) then bootstrap, both from the
-    /// candidate: launchctl takes the label from the file it is given, and
-    /// the trusted path may not exist yet. RunAtLoad means the script runs
-    /// immediately; it is a no-op while the session on disk is valid and the
-    /// journal is clean.
+    /// bootout by service target (ignored if not loaded: the trusted path may
+    /// not exist yet, and a path launchctl cannot read fails with EIO rather
+    /// than unloading anything), then bootstrap from the candidate. RunAtLoad
+    /// means the script runs immediately; it is a no-op while the session on
+    /// disk is valid and the journal is clean.
     ///
     /// Throws when the agent cannot be loaded: a session must never hold
     /// sleep without an agent that will release it.
     private func reload(from candidate: URL) async throws {
         let domain = "gui/\(uid)"
-        _ = try await run(Self.launchctl, ["bootout", domain, candidate.path])
+        _ = try await run(Self.launchctl, ["bootout", "\(domain)/\(label)"])
         let r = try await run(Self.launchctl, ["bootstrap", domain, candidate.path])
         if !r.succeeded {
             throw BackstopError(message: "launchctl bootstrap failed (\(r.status)): \(r.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")

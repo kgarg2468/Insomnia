@@ -42,6 +42,17 @@ final class LaunchdBackstopTests: XCTestCase {
         let calls = calls, loaded = loaded, bootstrapFails = bootstrapFails, bootoutFails = bootoutFails
         let onBootout = onBootout, onBootstrapped = onBootstrapped, trustedPlistAtBootstrap = trustedPlistAtBootstrap
         let trusted = home.paths.backstopPlist
+        let label = "com.insomnia.backstop"
+        // What launchd itself enforces on a path argument (proven against a
+        // disposable label, see the class comment on the regression test):
+        // it must end in `.plist` and hold a readable plist with the label.
+        // Anything else fails with EIO, for bootstrap and bootout alike.
+        let launchdAccepts: @Sendable (String) -> Bool = { path in
+            guard path.hasSuffix(".plist"), let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+                  let obj = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+            else { return false }
+            return obj["Label"] as? String == label
+        }
         return LaunchdBackstop(paths: home.paths, uid: 501) { exe, args in
             calls.value.append([exe] + args)
             switch args.first {
@@ -49,6 +60,9 @@ final class LaunchdBackstopTests: XCTestCase {
                 return ShellResult(status: loaded.value ? 0 : 113, stdout: "", stderr: loaded.value ? "" : "Could not find service")
             case "bootstrap":
                 trustedPlistAtBootstrap.value.append(try? Data(contentsOf: trusted))
+                guard args.count == 3, launchdAccepts(args[2]) else {
+                    return ShellResult(status: 5, stdout: "", stderr: "Bootstrap failed: 5: Input/output error")
+                }
                 if bootstrapFails.value { return ShellResult(status: 5, stdout: "", stderr: "Input/output error") }
                 // launchd refuses to bootstrap a label that is still loaded.
                 if loaded.value { return ShellResult(status: 37, stdout: "", stderr: "Bootstrap failed: 37: Operation already in progress") }
@@ -57,7 +71,15 @@ final class LaunchdBackstopTests: XCTestCase {
                 return ShellResult(status: 0, stdout: "", stderr: "")
             case "bootout":
                 if let hook = onBootout.value { onBootout.value = nil; hook() }
+                // Either a service target (`gui/501/<label>`) or a domain plus
+                // a plist path launchd can read the label from.
+                let byTarget = args.count == 2 && args[1] == "gui/501/\(label)"
+                let byPath = args.count == 3 && launchdAccepts(args[2])
+                guard byTarget || byPath else {
+                    return ShellResult(status: 5, stdout: "", stderr: "Boot-out failed: 5: Input/output error")
+                }
                 if bootoutFails.value { return ShellResult(status: 36, stdout: "", stderr: "Boot-out failed: 36: Operation now in progress") }
+                if !loaded.value { return ShellResult(status: 3, stdout: "", stderr: "Boot-out failed: 3: No such process") }
                 loaded.value = false
                 return ShellResult(status: 0, stdout: "", stderr: "")
             default:
@@ -112,7 +134,7 @@ final class LaunchdBackstopTests: XCTestCase {
         try await b.arm()
         // No plist on disk yet, so launchctl is not even asked: write and load.
         XCTAssertEqual(calls.value.map { Array($0[0...2]) }, [
-            ["/bin/launchctl", "bootout", "gui/501"],
+            ["/bin/launchctl", "bootout", "gui/501/com.insomnia.backstop"],
             ["/bin/launchctl", "bootstrap", "gui/501"],
         ])
         let plist = try plistOnDisk()
@@ -130,15 +152,41 @@ final class LaunchdBackstopTests: XCTestCase {
         try writeStalePlist()
         let stale = try Data(contentsOf: home.paths.backstopPlist)
         try await b.arm()
-        let bootout = try XCTUnwrap(calls.value.first { $0[1] == "bootout" })
         let bootstrap = try XCTUnwrap(calls.value.first { $0[1] == "bootstrap" })
         XCTAssertNotEqual(bootstrap[3], home.paths.backstopPlist.path, "bootstrapped from the trusted path: it was rewritten before launchd loaded it")
-        XCTAssertEqual(bootout[3], bootstrap[3], "bootout must read the label from the same candidate")
-        XCTAssertEqual(URL(fileURLWithPath: bootstrap[3]).deletingLastPathComponent().path, home.paths.launchAgents.path, "candidate must share the trusted plist's directory so publishing is one rename")
-        XCTAssertFalse(bootstrap[3].hasSuffix(".plist"), "a leftover candidate named *.plist would be loaded at login as a second copy of the label")
         XCTAssertEqual(trustedPlistAtBootstrap.value, [stale], "trusted plist changed before bootstrap succeeded")
         XCTAssertEqual(try plistOnDisk()["StartInterval"] as? Int, 60)
         XCTAssertEqual(try launchAgentsEntries(), ["com.insomnia.backstop.plist"])
+    }
+
+    /// Regression for the blank timer after Enter: every arm() failed with
+    /// "launchctl bootstrap failed (5): Input/output error" and the stale
+    /// RunAtLoad-only agent stayed loaded. Measured against a disposable
+    /// label on this machine (launchctl 2026-09-15): bootstrap and bootout
+    /// both refuse a path without a `.plist` suffix with EIO; a `.plist` in
+    /// a subdirectory loads fine; a directory-level load (what login does
+    /// to ~/Library/LaunchAgents) ignores subdirectories; and bootout by
+    /// service target works whatever is on disk. So the candidate must be
+    /// a `.plist` in a private subdirectory of the LaunchAgents directory
+    /// (same filesystem, so publishing stays one rename), and the old job
+    /// is booted out by label, not by a candidate path.
+    func testCandidateIsALaunchdLoadablePlistThatLoginCannotPickUp() async throws {
+        let b = try makeBackstop()
+        try writeStalePlist()
+        loaded.value = true
+        try await b.arm()
+        XCTAssertEqual(calls.value.map { $0[1] }, ["bootout", "bootstrap"])
+        let bootout = try XCTUnwrap(calls.value.first { $0[1] == "bootout" })
+        XCTAssertEqual(Array(bootout.dropFirst()), ["bootout", "gui/501/com.insomnia.backstop"], "boot out by service target: a candidate path is refused when it has no .plist suffix and is pointless once it does")
+        let bootstrap = try XCTUnwrap(calls.value.first { $0[1] == "bootstrap" })
+        let candidate = URL(fileURLWithPath: bootstrap[3])
+        XCTAssertTrue(candidate.lastPathComponent.hasSuffix(".plist"), "launchctl refuses to bootstrap \(candidate.lastPathComponent) (EIO)")
+        let stagingDir = candidate.deletingLastPathComponent()
+        XCTAssertNotEqual(stagingDir.path, home.paths.launchAgents.path, "a *.plist candidate directly in LaunchAgents is loaded at login as a second copy of the label")
+        XCTAssertEqual(stagingDir.deletingLastPathComponent().path, home.paths.launchAgents.path, "the candidate must live one level below the trusted plist so publishing is a rename on the same filesystem")
+        XCTAssertEqual(try plistOnDisk()["StartInterval"] as? Int, 60)
+        XCTAssertTrue(loaded.value)
+        XCTAssertEqual(try launchAgentsEntries(), ["com.insomnia.backstop.plist"], "staging directory not removed after publishing")
     }
 
     func testArmIsANoopWhenLoadedWithCurrentPlist() async throws {
