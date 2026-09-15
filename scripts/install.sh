@@ -93,7 +93,7 @@ if "$PGREP" -x Insomnia >/dev/null 2>&1; then
   done
   if "$PGREP" -x Insomnia >/dev/null 2>&1; then
     echo "Insomnia is still running after ${QUIT_WAIT_SECONDS}s (it may be refusing to quit until its own recovery finishes)." >&2
-    echo "Let it finish or quit it from its menu, then rerun. Nothing was changed." >&2
+    echo "Let it finish or quit it from its menu, then rerun. $SUDOERS is installed; the app, backstop.sh and LaunchAgent were not touched." >&2
     exit 1
   fi
 fi
