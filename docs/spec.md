@@ -20,8 +20,8 @@ closed bag. Its design goals are to:
 
 ## Non-goals
 
-- Not a kernel extension, not a signed privileged helper, not distributed.
-  Personal tool, ad-hoc signed, installed by a script.
+- Not a kernel extension, not a signed privileged helper, not a notarized
+  download. Built from source, ad-hoc signed, installed by a script.
 - Does not manage or restart the agents themselves. The only agent interaction
   is an optional "continue" keystroke into tagged tmux panes.
 - Does not touch sleep behaviour outside an active session.
