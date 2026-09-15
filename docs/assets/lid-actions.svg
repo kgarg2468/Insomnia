@@ -1,11 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="800" viewBox="0 0 880 800" role="img" aria-labelledby="la-title la-desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="460" viewBox="0 0 1000 460" role="img" aria-labelledby="la-title la-desc">
   <title id="la-title">Insomnia lid actions during a session</title>
-  <desc id="la-desc">An illustrated excerpt of the Lid-close actions section in Settings, with the defaults, connected by arrows to what happens when the lid closes and opens during a session. The Freeze while the lid is closed list contains Slack, WhatsApp and Discord. Pause Docker Desktop when no containers are running is on. Mute audio on lid close is off. When the lid closes, the listed apps are frozen with SIGSTOP after a journal entry is written; Docker Desktop is paused only if an idle check finds no containers running, and a container that is still starting can race that check; if muting is on, the volume is saved and audio is muted. When the lid opens, Insomnia attempts to undo the lid actions: it resumes only the freezes it can verify it made, resumes Docker if the rule paused it, and restores the saved audio. The session continues; the timer never stopped, only its on-screen redraw paused. This repeats every time the lid closes and opens. Without an active session the lid does nothing.</desc>
+  <desc id="la-desc">A simplified three-column diagram. Left, an illustrated Settings excerpt titled Lid-close actions: the freeze list contains Slack, WhatsApp and Discord; Pause idle Docker is on; Mute audio is off. Arrows lead to the middle column, Lid closes: freeze selected apps, pause idle Docker, mute if enabled. Docker is paused only if a check finds no containers running, and a container that is still starting can slip past that check. Muting saves your volume first. An arrow leads to the right column, Lid opens: try to restore, session continues. Insomnia resumes only the freezes it can verify it made, resumes Docker only if this rule paused it, and restores the saved volume. The timer never stopped; only its on-screen redraw paused. This repeats every time the lid closes and opens. Without an active session the lid does nothing. The Settings panel is a simplified illustration, not a screenshot.</desc>
   <style>
     svg { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Helvetica, Arial, sans-serif; }
     .bg { fill: #F3F2EF; }
     .panel { fill: #FAF9F6; stroke: #DBD9D4; stroke-width: 1.5; }
-    .chip { fill: #ECEAE6; stroke: #DBD9D4; stroke-width: 1.5; }
     .sep { stroke: #DBD9D4; stroke-width: 1.5; }
     .t { fill: #292D30; }
     .m { fill: #5F6467; }
@@ -21,7 +20,6 @@
     @media (prefers-color-scheme: dark) {
       .bg { fill: #242628; }
       .panel { fill: #303336; stroke: #3E4145; }
-      .chip { fill: #383B3F; stroke: #474A4E; }
       .sep { stroke: #3E4145; }
       .t { fill: #E6E3DD; }
       .m { fill: #B5B7B8; }
@@ -42,104 +40,82 @@
     </marker>
   </defs>
 
-  <rect class="bg" x="0" y="0" width="880" height="800" rx="24"/>
+  <rect class="bg" x="0" y="0" width="1000" height="460" rx="24"/>
 
   <!-- Header -->
-  <g transform="translate(40 24) scale(1.6667)">
+  <g transform="translate(32 20) scale(1.6667)">
     <use href="#la-eye" class="ic" stroke-width="1.5"/>
     <use href="#la-moon" class="hdr-moon"/>
   </g>
-  <text class="t" x="96" y="52" font-size="26" font-weight="700">What the lid does during a session</text>
-  <text class="m" x="96" y="82" font-size="20">Lid actions run only while a session is active. Defaults shown.</text>
+  <text class="t" x="88" y="50" font-size="26" font-weight="700">What the lid does during a session</text>
 
-  <!-- Settings excerpt (illustration) -->
+  <!-- Column 1: simplified Settings illustration -->
   <g>
-    <rect class="panel" x="40" y="112" width="400" height="428" rx="18"/>
-    <text class="t" x="64" y="150" font-size="22" font-weight="700">Lid-close actions</text>
-    <text class="t" x="64" y="190" font-size="20" font-weight="600">Freeze while the lid is closed</text>
+    <rect class="panel" x="32" y="80" width="300" height="300" rx="16"/>
+    <text class="t" x="52" y="114" font-size="20" font-weight="700">Lid-close actions</text>
 
-    <text class="t" x="64" y="230" font-size="20">Slack</text>
-    <circle class="remove" cx="404" cy="223" r="10"/>
-    <path class="minus" d="M398 223 H410"/>
-    <text class="t" x="64" y="272" font-size="20">WhatsApp</text>
-    <circle class="remove" cx="404" cy="265" r="10"/>
-    <path class="minus" d="M398 265 H410"/>
-    <text class="t" x="64" y="314" font-size="20">Discord</text>
-    <circle class="remove" cx="404" cy="307" r="10"/>
-    <path class="minus" d="M398 307 H410"/>
+    <text class="t" x="52" y="158" font-size="19">Slack</text>
+    <circle class="remove" cx="302" cy="152" r="10"/>
+    <path class="minus" d="M296 152 H308"/>
+    <text class="t" x="52" y="192" font-size="19">WhatsApp</text>
+    <circle class="remove" cx="302" cy="186" r="10"/>
+    <path class="minus" d="M296 186 H308"/>
+    <text class="t" x="52" y="226" font-size="19">Discord</text>
+    <circle class="remove" cx="302" cy="220" r="10"/>
+    <path class="minus" d="M296 220 H308"/>
 
-    <path class="sep" d="M64 362 H416"/>
+    <path class="sep" d="M52 250 H312"/>
 
     <!-- Docker toggle: on -->
-    <text class="t" x="64" y="418" font-size="20">Pause Docker Desktop when</text>
-    <text class="t" x="64" y="444" font-size="20">no containers are running</text>
-    <rect class="on" x="362" y="410" width="52" height="30" rx="15"/>
-    <circle class="knob" cx="399" cy="425" r="12"/>
+    <text class="t" x="52" y="290" font-size="19">Pause idle Docker</text>
+    <rect class="on" x="260" y="268" width="52" height="30" rx="15"/>
+    <circle class="knob" cx="297" cy="283" r="12"/>
 
     <!-- Mute toggle: off -->
-    <text class="t" x="64" y="505" font-size="20">Mute audio on lid close</text>
-    <rect class="off" x="362" y="483" width="52" height="30" rx="15"/>
-    <circle class="knob" cx="377" cy="498" r="12"/>
+    <text class="t" x="52" y="348" font-size="19">Mute audio</text>
+    <rect class="off" x="260" y="326" width="52" height="30" rx="15"/>
+    <circle class="knob" cx="275" cy="341" r="12"/>
   </g>
-  <text class="m" x="40" y="572" font-size="20">Illustrated Settings excerpt, not a screenshot.</text>
+  <text class="m" x="32" y="406" font-size="17">Simplified Settings</text>
 
-  <!-- Straight arrows from each setting to its lid-close entry -->
-  <path class="ln" d="M446 265 H474" marker-end="url(#la-arrow)"/>
-  <path class="ln" d="M446 425 H474" marker-end="url(#la-arrow)"/>
-  <path class="ln" d="M446 498 H474" marker-end="url(#la-arrow)"/>
+  <!-- Arrows: each setting to its lid-close action -->
+  <path class="ln" d="M340 186 H366" marker-end="url(#la-arrow)"/>
+  <path class="ln" d="M340 283 H366" marker-end="url(#la-arrow)"/>
+  <path class="ln" d="M340 341 H366" marker-end="url(#la-arrow)"/>
 
-  <!-- Lid closes -->
+  <!-- Column 2: Lid closes -->
   <g>
-    <rect class="panel" x="480" y="112" width="360" height="428" rx="18"/>
-    <g class="ic" transform="translate(500 130)">
+    <rect class="panel" x="372" y="80" width="290" height="300" rx="16"/>
+    <g class="ic" transform="translate(392 96)">
       <rect x="2" y="16" width="36" height="8" rx="3"/>
       <path d="M8 11 H32"/>
     </g>
-    <text class="t" x="552" y="154" font-size="24" font-weight="700">Lid closes</text>
+    <text class="t" x="444" y="120" font-size="22" font-weight="700">Lid closes</text>
 
-    <text class="t" x="500" y="246" font-size="20" font-weight="600">Freezes the listed apps</text>
-    <text class="m" x="500" y="272" font-size="20">SIGSTOP, journaled first.</text>
-    <text class="m" x="500" y="298" font-size="20">Agent apps are excluded from this list.</text>
-
-    <text class="t" x="500" y="418" font-size="20" font-weight="600">Pauses Docker if it looks idle</text>
-    <text class="m" x="500" y="444" font-size="20">A starting container can race the check.</text>
-
-    <text class="t" x="500" y="492" font-size="20" font-weight="600">Mutes audio, if turned on</text>
-    <text class="m" x="500" y="518" font-size="20">Saves your volume first.</text>
+    <text class="t" x="392" y="193" font-size="20" font-weight="600">Freeze selected apps</text>
+    <text class="t" x="392" y="290" font-size="20" font-weight="600">Pause idle Docker</text>
+    <text class="t" x="392" y="348" font-size="20" font-weight="600">Mute if enabled</text>
   </g>
 
-  <path class="ln" d="M660 540 V566" marker-end="url(#la-arrow)"/>
+  <path class="ln" d="M670 230 H696" marker-end="url(#la-arrow)"/>
 
-  <!-- Lid opens -->
+  <!-- Column 3: Lid opens -->
   <g>
-    <rect class="panel" x="480" y="570" width="360" height="212" rx="18"/>
-    <g class="ic" transform="translate(500 586)">
+    <rect class="panel" x="702" y="80" width="266" height="300" rx="16"/>
+    <g class="ic" transform="translate(722 96)">
       <rect x="8" y="2" width="24" height="17" rx="3"/>
       <rect x="2" y="22" width="36" height="6" rx="3"/>
     </g>
-    <text class="t" x="552" y="612" font-size="24" font-weight="700">Lid opens</text>
+    <text class="t" x="774" y="120" font-size="22" font-weight="700">Lid opens</text>
 
-    <text class="t" x="500" y="654" font-size="20" font-weight="600">Attempts to undo the lid actions</text>
-    <text class="m" x="500" y="680" font-size="20">Resumes only freezes it can verify it</text>
-    <text class="m" x="500" y="706" font-size="20">made, Docker if the rule paused it,</text>
-    <text class="m" x="500" y="732" font-size="20">and the saved audio.</text>
-    <text class="t" x="500" y="764" font-size="20" font-weight="600">The session continues.</text>
+    <text class="t" x="722" y="193" font-size="20" font-weight="600">Try to restore</text>
+    <text class="t" x="722" y="290" font-size="20" font-weight="600">Session continues</text>
   </g>
 
-  <!-- Loop back: repeats each time the lid closes again -->
-  <path class="ln" d="M846 668 H862 V326 H846" stroke-dasharray="6 7" marker-end="url(#la-arrow)"/>
-
-  <!-- Captions, left column -->
+  <!-- Footer -->
   <g class="ic">
-    <circle cx="52" cy="628" r="11"/>
-    <path d="M52 622 V628 H57"/>
+    <circle cx="44" cy="436" r="10"/>
+    <path d="M44 431 V436 H48.5"/>
   </g>
-  <text class="t" x="76" y="635" font-size="20">The timer never stops while the lid is closed;</text>
-  <text class="m" x="76" y="661" font-size="20">only its on-screen redraw pauses.</text>
-  <g class="ic">
-    <circle cx="52" cy="708" r="11"/>
-    <path d="M44.5 700.5 L59.5 715.5"/>
-  </g>
-  <text class="t" x="76" y="715" font-size="20">No active session means no lid actions.</text>
-  <text class="m" x="76" y="741" font-size="20">Repeats each time the lid closes again.</text>
+  <text class="m" x="64" y="442" font-size="19">Active sessions only. Timer keeps running.</text>
 </svg>
