@@ -31,9 +31,10 @@ final class LidActionsTests: XCTestCase {
     private func make(
         dockerIdle: @escaping @Sendable () async throws -> Bool = { true },
         mute: Bool = true,
-        sampler: BrightnessSampler? = nil
+        sampler: BrightnessSampler? = nil,
+        reassertDelay: Duration = .seconds(3600)
     ) async -> (SessionManager, LidActions) {
-        let m = h.makeManager()
+        let m = h.makeManager(reassertDelay: reassertDelay)
         m.config.muteOnLidClose = mute
         m.config.freezeList = ["com.tinyspeck.slackmacgap"]
         let docker = DockerRule(freezer: freezer, probe: dockerIdle)
@@ -169,6 +170,84 @@ final class LidActionsTests: XCTestCase {
         XCTAssertNil(try h.store.loadState()?.savedKeyboardBrightness)
         XCTAssertEqual(h.display.sets, [0])
         XCTAssertEqual(try h.store.loadState()?.savedDisplayBrightness, 0.7)
+    }
+
+    // MARK: Re-asserted restore
+
+    /// powerd re-applies its own remembered brightness a moment after the
+    /// wake and can override the restore, so the restore is written a
+    /// second time after a delay. With the delay at zero both writes land.
+    func testOpenReassertsTheRestoreAfterTheDelay() async throws {
+        let (m, actions) = await make(reassertDelay: .zero)
+        await m.start(duration: 3600)
+        await actions.onClose()
+
+        await actions.onOpen()
+
+        for _ in 0..<300 where h.display.sets.count < 3 || h.keyboard.sets.count < 3 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(h.display.sets, [0, 0.7, 0.7])
+        XCTAssertEqual(h.keyboard.sets, [0, 0.5, 0.5])
+        let s = try XCTUnwrap(try h.store.loadState())
+        XCTAssertNil(s.savedDisplayBrightness, "the re-assert is not a journaled action")
+        XCTAssertNil(s.savedKeyboardBrightness)
+        XCTAssertNil(m.lastError)
+        let log = (try? String(contentsOf: h.home.paths.logFile, encoding: .utf8)) ?? ""
+        XCTAssertTrue(log.contains("display restore re-asserted"), log)
+        XCTAssertTrue(log.contains("keyboard restore re-asserted"), log)
+    }
+
+    /// A restore that failed is not re-asserted: there is nothing known to
+    /// have been written, and the entry stays for the next undo.
+    func testFailedRestoreIsNotReasserted() async throws {
+        let (m, actions) = await make(reassertDelay: .zero)
+        await m.start(duration: 3600)
+        await actions.onClose()
+        h.display.throwOnSet = true
+
+        await actions.onOpen()
+
+        for _ in 0..<300 where h.keyboard.sets.count < 3 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(h.keyboard.sets, [0, 0.5, 0.5])
+        XCTAssertEqual(h.display.sets, [0], "a display whose restore threw must not be written again")
+        XCTAssertEqual(try h.store.loadState()?.savedDisplayBrightness, 0.7)
+    }
+
+    /// The restore succeeded but clearing its journal entry did not: that
+    /// is reported, not swallowed, and the entry stays so the next undo
+    /// retries (writing the same value again is harmless).
+    func testRestoreWhoseJournalClearFailsIsReported() async throws {
+        let (m, actions) = await make()
+        await m.start(duration: 3600)
+        await actions.onClose()
+        let file = h.home.paths.stateFile.path
+        h.display.onSet = { value in
+            // Rename over an immutable state.json is refused.
+            if value != 0 { try? FileManager.default.setAttributes([.immutable: true], ofItemAtPath: file) }
+        }
+        defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: file) }
+
+        await actions.onOpen()
+        try FileManager.default.setAttributes([.immutable: false], ofItemAtPath: file)
+
+        XCTAssertEqual(h.display.sets, [0, 0.7])
+        XCTAssertEqual(h.keyboard.sets, [0, 0.5])
+        let err = try XCTUnwrap(m.lastError)
+        XCTAssertTrue(err.contains("restored but the journal entry could not be cleared"), err)
+        XCTAssertTrue(err.contains("it will be retried"), err)
+        let s = try XCTUnwrap(try h.store.loadState())
+        XCTAssertEqual(s.savedDisplayBrightness, 0.7, "the entry must stay for the next undo")
+        XCTAssertEqual(s.savedKeyboardBrightness, 0.5)
+
+        h.display.onSet = nil
+        await actions.onOpen()
+        XCTAssertEqual(h.display.sets, [0, 0.7, 0.7])
+        XCTAssertEqual(h.keyboard.sets, [0, 0.5, 0.5])
+        XCTAssertNil(try h.store.loadState()?.savedDisplayBrightness)
+        XCTAssertNil(try h.store.loadState()?.savedKeyboardBrightness)
     }
 
     // MARK: Display and keyboard backlight

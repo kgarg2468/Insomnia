@@ -470,8 +470,14 @@ struct Harness {
     }
 
     /// `lockTimeout` is short so contention tests fail closed quickly;
-    /// `retryDelay` is long so the in-process retry never fires by accident.
-    func makeManager(lockTimeout: TimeInterval = 0.3, retryDelay: TimeInterval = 60) -> SessionManager {
+    /// `retryDelay` is long so the in-process retry never fires by accident;
+    /// `reassertDelay` likewise, so the second display/keyboard write after
+    /// a restore never lands in a test that did not ask for it.
+    func makeManager(
+        lockTimeout: TimeInterval = 0.3,
+        retryDelay: TimeInterval = 60,
+        reassertDelay: Duration = .seconds(3600)
+    ) -> SessionManager {
         let c = clock
         let lid = clamshell
         return SessionManager(
@@ -486,7 +492,8 @@ struct Harness {
             clamshell: { lid.closed },
             clock: { c.now },
             recoveryLockTimeout: lockTimeout,
-            recoveryRetryDelay: retryDelay
+            recoveryRetryDelay: retryDelay,
+            reassertDelay: reassertDelay
         )
     }
 }
