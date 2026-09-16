@@ -84,12 +84,22 @@ final class SessionManager {
     private let processControl: any ProcessSignaling
     private let backstop: any BackstopScheduling
     private let audio: any AudioControlling
+    private let display: any DisplayDimming
+    private let keyboard: any KeyboardBacklighting
     private let notifier: any Notifying
     private let clamshell: @Sendable () -> Bool?
     private let clock: @Sendable () -> Date
     private let recoveryLock: RecoveryLock
     private let recoveryLockTimeout: TimeInterval
     private let recoveryRetryDelay: TimeInterval
+    /// How long after a display/keyboard restore the same values are
+    /// written once more. powerd re-applies its own remembered brightness
+    /// asynchronously after the wake and can override the first write.
+    private let reassertDelay: Duration
+    /// The pending second write of a display/keyboard restore. One at a
+    /// time: the next restore cancels it, and a lid close that darkened
+    /// again in the meantime makes it skip (see undoLidActionsInJournal).
+    private var reassertTask: Task<Void, Never>?
 
     /// System integrations (lid, battery, network, ...). Set by `live()`;
     /// nil in tests. Started after a session starts, stopped when it ends.
@@ -124,11 +134,14 @@ final class SessionManager {
         processControl: any ProcessSignaling,
         backstop: any BackstopScheduling,
         audio: any AudioControlling = NoopAudioControl(),
+        display: any DisplayDimming = NoopDisplayDimmer(),
+        keyboard: any KeyboardBacklighting = NoopKeyboardBacklight(),
         notifier: any Notifying = RecordingNotifier(),
         clamshell: @escaping @Sendable () -> Bool? = { LidObserver.readClamshellState() },
         clock: @escaping @Sendable () -> Date = { Date() },
         recoveryLockTimeout: TimeInterval = 10,
-        recoveryRetryDelay: TimeInterval = 30
+        recoveryRetryDelay: TimeInterval = 30,
+        reassertDelay: Duration = .seconds(2)
     ) {
         self.paths = paths
         self.store = Store(paths: paths)
@@ -136,12 +149,15 @@ final class SessionManager {
         self.processControl = processControl
         self.backstop = backstop
         self.audio = audio
+        self.display = display
+        self.keyboard = keyboard
         self.notifier = notifier
         self.clamshell = clamshell
         self.clock = clock
         self.recoveryLock = RecoveryLock(url: paths.recoveryLock)
         self.recoveryLockTimeout = recoveryLockTimeout
         self.recoveryRetryDelay = recoveryRetryDelay
+        self.reassertDelay = reassertDelay
 
         try? paths.createDirectories()
         var loadedState: RuntimeState?
@@ -168,6 +184,8 @@ final class SessionManager {
     static func live(paths: Paths = .fromEnvironment()) -> SessionManager {
         let notifier = Notifier()
         let audio = CoreAudioControl()
+        let display = DisplayServicesDimmer()
+        let keyboard = CoreBrightnessKeyboardBacklight()
         let processControl = SignalProcessControl()
         let m = SessionManager(
             paths: paths,
@@ -175,9 +193,18 @@ final class SessionManager {
             processControl: processControl,
             backstop: LaunchdBackstop(paths: paths),
             audio: audio,
+            display: display,
+            keyboard: keyboard,
             notifier: notifier
         )
-        let services = AppServices(paths: paths, notifier: notifier, audio: audio, processControl: processControl)
+        let services = AppServices(
+            paths: paths,
+            notifier: notifier,
+            audio: audio,
+            processControl: processControl,
+            display: display,
+            keyboard: keyboard
+        )
         m.services = services
         services.logStartupSnapshot()
         return m
@@ -641,6 +668,83 @@ final class SessionManager {
                 fail("could not restore audio: \(error.localizedDescription)")
             }
         }
+
+        // Display and keyboard were darkened by us (spec section 4), not by
+        // the OS: with the sleep guard on, macOS never turns the panel off on
+        // lid close, so brightness 0 is what keeps it dark. Wake first: the
+        // panel may also be asleep from the best-effort sleep request.
+        if state.savedDisplayBrightness != nil || state.savedKeyboardBrightness != nil {
+            display.wake()
+        }
+        // Read before the entries are cleared: the re-assert below needs them.
+        var restoredDisplay: Float?
+        var restoredKeyboard: Float?
+        if let saved = state.savedDisplayBrightness {
+            do {
+                try display.setBrightness(saved)
+                Log.info("display restored (brightness \(saved))")
+                restoredDisplay = saved
+                do {
+                    try journal { $0.savedDisplayBrightness = nil }
+                } catch {
+                    fail("display brightness restored but the journal entry could not be cleared: \(error.localizedDescription); it will be retried")
+                }
+            } catch {
+                fail("could not restore display brightness: \(error.localizedDescription)")
+            }
+        }
+        if let saved = state.savedKeyboardBrightness {
+            do {
+                try keyboard.setBrightness(saved)
+                Log.info("keyboard backlight restored (brightness \(saved))")
+                restoredKeyboard = saved
+                do {
+                    try journal { $0.savedKeyboardBrightness = nil }
+                } catch {
+                    fail("keyboard backlight restored but the journal entry could not be cleared: \(error.localizedDescription); it will be retried")
+                }
+            } catch {
+                fail("could not restore keyboard backlight: \(error.localizedDescription)")
+            }
+        }
+        // powerd applies its own remembered "pre-dim" brightness a moment
+        // after the wake and can override the write above, so the same
+        // values go out once more. Best effort: errors are only logged.
+        // Tracked, not detached: a newer restore cancels it, and if a lid
+        // close journaled fresh values during the delay (it journals before
+        // it darkens) the old values must not light the panel again.
+        reassertTask?.cancel()
+        if restoredDisplay != nil || restoredKeyboard != nil {
+            let delay = reassertDelay
+            reassertTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: delay)
+                guard let self, !Task.isCancelled else { return }
+                if let value = restoredDisplay {
+                    if self.state.savedDisplayBrightness != nil {
+                        Log.info("display restore re-assert skipped: darkened again")
+                    } else {
+                        do {
+                            try self.display.setBrightness(value)
+                            Log.info("display restore re-asserted (brightness \(value))")
+                        } catch {
+                            Log.info("display restore re-assert failed: \(error.localizedDescription)")
+                        }
+                    }
+                }
+                if let value = restoredKeyboard {
+                    if self.state.savedKeyboardBrightness != nil {
+                        Log.info("keyboard restore re-assert skipped: darkened again")
+                    } else {
+                        do {
+                            try self.keyboard.setBrightness(value)
+                            Log.info("keyboard restore re-asserted (brightness \(value))")
+                        } catch {
+                            Log.info("keyboard restore re-assert failed: \(error.localizedDescription)")
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: Reconcile (spec section 8)
@@ -695,7 +799,7 @@ final class SessionManager {
             let lidClosed = clamshell()
             if lidClosed == false {
                 undoLidActionsInJournal()
-            } else if !state.frozenPids.isEmpty || state.savedOutputVolume != nil {
+            } else if state.hasLidActions {
                 Log.info("reconcile: lid \(lidClosed == nil ? "unknown" : "closed"), keeping lid-close actions")
             }
             await armDeadline(s.endsAt)

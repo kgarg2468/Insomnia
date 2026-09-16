@@ -215,6 +215,43 @@ final class RecoveryScriptTests: XCTestCase {
         XCTAssertFalse(fx.log().contains("journal cleared"), fx.log())
     }
 
+    /// Display brightness and keyboard backlight saved on lid close are
+    /// restored only by the app; the backstop keeps both keys, still undoes
+    /// the rest, and says so.
+    func testSavedDisplayAndKeyboardArePreservedAndReportedAsUnresolved() throws {
+        try fx.writeSession(endsAt: Date(timeIntervalSinceNow: -60))
+        try fx.writeState(#"{"sleepDisabledByUs":true,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false,"savedDisplayBrightness":0.75,"savedKeyboardBrightness":0.25}"#)
+
+        let r = try fx.run(fx.backstop)
+
+        XCTAssertNotEqual(r.status, 0, "display and keyboard need the app; the run is not complete")
+        XCTAssertEqual(fx.calls().count, 1, "sleep is still restored; nothing else runs")
+        XCTAssertTrue(fx.calls().first?.hasSuffix("pmset -a disablesleep 0") ?? false, fx.calls().description)
+        let s = try fx.stateJSON()
+        XCTAssertEqual(s["sleepDisabledByUs"] as? Bool, false)
+        XCTAssertEqual(s["savedDisplayBrightness"] as? Double, 0.75)
+        XCTAssertEqual(s["savedKeyboardBrightness"] as? Double, 0.25)
+        XCTAssertTrue(fx.log().contains("Open Insomnia"), fx.log())
+        XCTAssertTrue(fx.log().contains("display brightness"), fx.log())
+        XCTAssertTrue(fx.log().contains("keyboard backlight"), fx.log())
+        XCTAssertFalse(fx.log().contains("journal cleared"), fx.log())
+    }
+
+    /// A journal whose only entry is a saved display brightness is dirty:
+    /// the backstop must not report it clean and must keep retrying.
+    func testSavedDisplayBrightnessAloneKeepsTheJournalDirty() throws {
+        try fx.writeSession(endsAt: Date(timeIntervalSinceNow: -60))
+        let json = #"{"sleepDisabledByUs":false,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false,"savedKeyboardBrightness":0.5}"#
+        try fx.writeState(json)
+
+        let r = try fx.run(fx.backstop)
+
+        XCTAssertNotEqual(r.status, 0, r.stderr + fx.log())
+        XCTAssertEqual(fx.calls(), [])
+        XCTAssertEqual(try fx.stateJSON()["savedKeyboardBrightness"] as? Double, 0.5)
+        XCTAssertFalse(fx.log().contains("journal cleared"), fx.log())
+    }
+
     func testMalformedJournalBlocksWithoutCommandsAndKeepsEvidence() throws {
         try fx.writeSession(endsAt: Date(timeIntervalSinceNow: -60))
         let broken = #"{"sleepDisabledByUs":true,"frozenProcesses":[{"pid":"#
@@ -319,6 +356,22 @@ final class RecoveryScriptTests: XCTestCase {
         XCTAssertTrue(fx.exists(fx.home), "--purge must not run before recovery is verified")
         XCTAssertEqual(try fx.stateJSON()["savedOutputVolume"] as? Double, 0.25)
         XCTAssertTrue(r.stderr.contains("saved audio"), r.stderr)
+        XCTAssertTrue(r.stderr.contains("open Insomnia.app"), r.stderr)
+    }
+
+    func testUninstallAbortsOnSavedDisplayBrightnessAndExplainsReopeningTheApp() throws {
+        try fx.installMachinery()
+        try fx.writeState(#"{"sleepDisabledByUs":false,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false,"savedDisplayBrightness":0.6}"#)
+
+        let r = try fx.run(fx.uninstall, ["--purge"])
+
+        XCTAssertNotEqual(r.status, 0)
+        XCTAssertTrue(fx.exists(fx.plist))
+        XCTAssertTrue(fx.exists(fx.sudoers))
+        XCTAssertTrue(fx.exists(fx.app))
+        XCTAssertTrue(fx.exists(fx.home), "--purge must not run before recovery is verified")
+        XCTAssertEqual(try fx.stateJSON()["savedDisplayBrightness"] as? Double, 0.6)
+        XCTAssertTrue(r.stderr.contains("display brightness"), r.stderr)
         XCTAssertTrue(r.stderr.contains("open Insomnia.app"), r.stderr)
     }
 
@@ -450,6 +503,8 @@ final class RecoveryScriptTests: XCTestCase {
             #"{"sleepDisabledByUs":false,"frozenPids":["7"]}"#,
             #"{"sleepDisabledByUs":false,"savedOutputVolume":"loud"}"#,
             #"{"sleepDisabledByUs":false,"savedMuted":1}"#,
+            #"{"sleepDisabledByUs":false,"savedDisplayBrightness":"bright"}"#,
+            #"{"sleepDisabledByUs":false,"savedKeyboardBrightness":true}"#,
         ]
         for json in corrupt {
             let f = try ScriptFixture()
@@ -470,7 +525,7 @@ final class RecoveryScriptTests: XCTestCase {
     func testNullOptionalFieldsCountAsAbsent() throws {
         // Swift's decodeIfPresent treats null as nil; the shell must agree.
         try fx.writeSession(endsAt: Date(timeIntervalSinceNow: -60))
-        let json = #"{"sleepDisabledByUs":false,"lowPowerSetByUs":null,"frozenProcesses":[],"dockerFrozen":false,"savedOutputVolume":null,"savedMuted":null,"frozenPids":null}"#
+        let json = #"{"sleepDisabledByUs":false,"lowPowerSetByUs":null,"frozenProcesses":[],"dockerFrozen":false,"savedOutputVolume":null,"savedMuted":null,"savedDisplayBrightness":null,"savedKeyboardBrightness":null,"frozenPids":null}"#
         try fx.writeState(json)
 
         let r = try fx.run(fx.backstop)
@@ -500,7 +555,12 @@ final class RecoveryScriptTests: XCTestCase {
     }
 
     func testUninstallRejectsTypedCorruptJournalEvenWhenBackstopExitsZero() throws {
-        for json in ["[]", #"{"sleepDisabledByUs":"true"}"#, #"{"sleepDisabledByUs":false,"frozenProcesses":"garbage"}"#] {
+        for json in [
+            "[]",
+            #"{"sleepDisabledByUs":"true"}"#,
+            #"{"sleepDisabledByUs":false,"frozenProcesses":"garbage"}"#,
+            #"{"sleepDisabledByUs":false,"savedDisplayBrightness":"bright"}"#,
+        ] {
             let f = try ScriptFixture()
             defer { f.destroy() }
             try f.installMachinery()

@@ -52,6 +52,8 @@ RuntimeState {                // everything Insomnia changed and must undo
   dockerFrozen:       Bool
   savedOutputVolume:  Float?  // nil when mute is off or lid is open
   savedMuted:         Bool?
+  savedDisplayBrightness:  Float?  // nil when darkening is off or lid is open
+  savedKeyboardBrightness: Float?  // nil when there is no backlight, too
 }
 ```
 
@@ -105,6 +107,8 @@ Quit, or reconcile.
 
 | action | on close | on open |
 |---|---|---|
+| Display (optional, default on) | save brightness, set it to 0, request display sleep (best effort) | wake the display, restore the saved brightness |
+| Keyboard backlight (optional, same toggle) | save brightness, set it to 0 | restore the saved brightness |
 | Freeze list | `SIGSTOP` every process whose responsible app is in the list | `SIGCONT` the recorded pids only |
 | Docker rule | if Docker Desktop is running and `docker ps -q` is empty, freeze it | resume |
 | Mute (optional) | save volume and mute state, then mute | restore both exactly |
@@ -122,6 +126,40 @@ Freeze list rules:
 - Electron apps are stopped as a whole process tree (main + helpers), found
   via the responsible-pid relationship, so no helper keeps spinning.
 
+Display and keyboard backlight are handled by Insomnia, not by the hardware.
+The September 16, 2026 audit (docs/release-validation.md) found that the
+sleep guard (`pmset -a disablesleep 1`) removes the only path by which macOS
+turns the built-in panel and keyboard backlight off on clamshell close: that
+happens on the system-sleep path, which the guard disables. The earlier claim
+here that both are "already off by hardware" was wrong under the guard, so
+the panel and keys stayed lit for the whole closed period. A display sleep
+request (`IORequestIdle` on `IODisplayWrangler`, what `pmset displaysleepnow`
+does) is ignored while any process holds a display assertion, and agents
+routinely do, so brightness 0 is the primary mechanism and the sleep request
+is best effort. Display brightness 0 does not switch the keyboard backlight
+off; it is set separately. Both values are journaled before they are changed
+and restored on open, session end, Quit, or reconcile with the lid open; the
+backstop keeps the entries and only the app restores them (private
+frameworks). What is journaled is a trusted value, not whatever the device
+reads at that instant: a reading is trusted only when the last keyboard,
+mouse or trackpad input was under 30 s ago (`CGEventSource`; the idle dim
+never starts sooner) and the panel is awake (`CGDisplayIsAsleep`, else it
+reads the idle-dim value) or the keyboard backlight is neither suppressed by
+display sleep (it reads 0) nor idle-dimmed, and the app keeps the last trusted
+reading of each (every 30 s with the lid open, at start, and 3 s after each
+lid open) to journal when the close finds the device untrusted. When nothing
+trustworthy is known for the keyboard it is left to macOS entirely (no journal
+entry, no write), because restoring a suppressed 0 would leave the backlight
+off; a display with no trusted sample journals the dim value anyway, since a
+dim panel on open beats a black one. On open the restore is written, the
+entries cleared, and the same values written once more 2 s later, because
+powerd re-applies its own remembered brightness asynchronously after the wake
+and can override the first write; that second write is skipped if the lid
+closed again in the meantime (the close journals fresh values first) and
+superseded by any newer restore. If Insomnia is not running when the lid
+opens, the brightness-up key restores the panel. Bluetooth is still left alone (needed for Instant
+Hotspot, and negligible).
+
 Low Power Mode on lid close is decided by the same rule as the battery and
 thermal floors (section 6), so the three causes never fight over the mode: it
 stays on while any of them holds and is switched off when none does. It applies
@@ -130,9 +168,6 @@ Mac otherwise runs at full speed and heats up. A lid-caused change is logged
 but not announced: switching the mode off is announced only when the cause that
 last held while it was on was the battery or thermal floor, not the lid.
 
-Not done on lid close, because it saves nothing: display brightness (panel is
-already off by hardware), keyboard backlight (same), Bluetooth (needed for
-Instant Hotspot, and negligible).
 
 ### 5. Agent apps: keep them fast
 
@@ -352,10 +387,12 @@ Insomnia/
       AppNap.swift
       AudioControl.swift
       BrowserThrottle.swift
+      DisplayPower.swift
       DockerRule.swift
       Freezer.swift
       HotspotJoiner.swift
       LidObserver.swift
+      LidSimulation.swift
       LocationPermission.swift
       NetworkFailover.swift
       Notifier.swift
@@ -379,6 +416,7 @@ Insomnia/
   Tests/InsomniaTests/
     BrowserThrottleTests.swift
     ConfigTests.swift
+    DisplayPowerTests.swift
     DurationInputTests.swift
     FailoverMachineTests.swift
     FloorRulesTests.swift
@@ -398,6 +436,7 @@ Insomnia/
     install.sh             build, bundle, codesign, sudoers, launchd, login item
     uninstall.sh           reverse all of the above, restore sleep
     backstop.sh            standalone restore from JSON
+    simulate-lid.sh        file trigger for the lid-close action path
   docs/spec.md
   README.md                setup, hotspot setting, Chrome note
 ```
@@ -447,6 +486,13 @@ that any case passed; record results in the release validation record.
     Plug in charger → off. Set `endFloor` above current charge → session ends.
 12. **Thermal.** Exercise injected thermal events first; verify responses to
     `serious`, `critical`, and recovery. Do not intentionally overheat the Mac.
+13. **Darken.** Brightness 70%, keyboard backlight on, close lid → both go to
+    0 (check `state.json` has `savedDisplayBrightness` and
+    `savedKeyboardBrightness`). Open → both back, journal entries gone. Repeat
+    with the lid open using `scripts/simulate-lid.sh closed` then `open`
+    during a session; the log shows `lid SIMULATED closed (file trigger)`.
+    Quit while closed → both restored. Force-quit while closed, reopen the app
+    → restored at reconcile, and `backstop.sh` alone leaves both keys in place.
 
 ## Open decisions (defaults chosen, change if you disagree)
 

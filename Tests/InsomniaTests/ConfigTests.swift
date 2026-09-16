@@ -15,6 +15,7 @@ final class ConfigTests: XCTestCase {
         XCTAssertTrue(c.agentList.contains("com.docker.docker"))
         XCTAssertTrue(c.dockerRule)
         XCTAssertFalse(c.muteOnLidClose)
+        XCTAssertTrue(c.darkenDisplayOnLidClose)
         XCTAssertTrue(c.lowPowerOnLidClose)
         XCTAssertTrue(c.thermalRules)
         XCTAssertEqual(c.hotspotSSID, "")
@@ -42,6 +43,20 @@ final class ConfigTests: XCTestCase {
     func testEmptyObjectIsDefaults() throws {
         let c = try Store.makeDecoder().decode(Config.self, from: Data("{}".utf8))
         XCTAssertEqual(c, Config())
+    }
+
+    /// A config.json written before the display toggle existed keeps the
+    /// default (on); an explicit false is honoured.
+    func testDarkenDisplayDecodesTolerantly() throws {
+        let legacy = try Store.makeDecoder().decode(Config.self, from: Data(#"{"muteOnLidClose": true}"#.utf8))
+        XCTAssertTrue(legacy.darkenDisplayOnLidClose)
+        let off = try Store.makeDecoder().decode(Config.self, from: Data(#"{"darkenDisplayOnLidClose": false}"#.utf8))
+        XCTAssertFalse(off.darkenDisplayOnLidClose)
+        var expected = Config()
+        expected.darkenDisplayOnLidClose = false
+        XCTAssertEqual(off, expected)
+        let data = try Store.makeEncoder().encode(off)
+        XCTAssertEqual(try Store.makeDecoder().decode(Config.self, from: data), off)
     }
 
     func testRoundTrip() throws {

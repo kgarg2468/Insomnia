@@ -54,6 +54,56 @@ reported no detected secrets across 175 locally available commits.
 Check each PR's latest commit and check results; this record does not make an
 earlier green run evidence for subsequent changes.
 
+## September 16, 2026 lid-close audit
+
+During an active session on the development MacBook the user closed the lid
+and the panel stayed lit with the keyboard backlight on. The log shows the
+session starting at 00:48:12, the lid closing at 00:48:19 and opening at
+00:48:25, with Insomnia's lid-close transaction running and freezing Slack
+(6 pids) only. `pmset -g log` has no "Display is turned off" event in that
+window; the next display-off is the 2-minute idle timer at 01:08:51. Root
+cause: `pmset -a disablesleep 1` (the sleep guard) removes the only path by
+which macOS turns the built-in panel and keyboard backlight off on clamshell
+close (the system-sleep path), and spec section 4 claimed both were "already
+off by hardware", so `LidActions` never touched them. Primitives measured on
+that machine, without root, and now used by `DisplayPower.swift`:
+`DisplayServicesGetBrightness` / `SetBrightness` / `CanChangeBrightness`
+(present, rc 0, immediate; `GetBrightness` can return a dimmed value during
+the "delayDisplayOff" phase); display sleep via `IORequestIdle` on
+`IODisplayWrangler` (honoured only without `PreventUserIdleDisplaySleep`
+assertions and deferred ~30 s after a wake, so best effort); wake via
+`IOPMAssertionDeclareUserActivity(kIOPMUserActiveLocal)` within ~1 s; and
+`KeyboardBrightnessClient` (`copyKeyboardBacklightIDs`, `isKeyboardBuiltIn:`,
+`brightnessForKeyboard:`, `setBrightness:forKeyboard:`; one built-in id).
+Display brightness 0 does not switch the keyboard backlight off. The
+computer-use agent declares `UserIsActive` and `PreventUserIdleDisplaySleep`
+every ~40 s, so the design does not fight it: brightness 0 keeps the panel
+dark either way. No sudoers or install change was needed. The fix is covered
+by unit tests with fakes only; the rows below stay "Not run" until exercised
+on hardware.
+
+A simulated run of that fix on the same machine, later on September 16, 2026
+(`scripts/simulate-lid.sh` during a session, lid open), found a defect in
+what was saved. The close happened after the panel had idle-dimmed and slept:
+`DisplayServicesGetBrightness` returned the idle-dim value (0.0625, user value
+0.5), and with the display asleep the keyboard backlight was suppressed
+(`isBacklightSuppressedOnKeyboard:` true), so `brightnessForKeyboard:`
+returned 0; the journal held 0.0625 and 0, and the open restored a dim panel
+and a dead backlight. Also measured: powerd keeps its own "pre-dim"
+brightness and re-applies it asynchronously on every display wake, so a
+restore written right after `IOPMAssertionDeclareUserActivity` can be
+overridden a moment later; writes made while the display is asleep never
+update that memory; the keyboard idle-dims on its own
+(`isBacklightDimmedOnKeyboard:`); and
+`CGEventSource.secondsSinceLastEventType(.hidSystemState, kCGAnyInputEventType)`
+(public, no permission) gives the idle time, with the idle dim never starting
+within 30 s of input. The fix: a reading is trusted only with idle under 30 s
+and the device awake/unsuppressed, `BrightnessSampler` keeps the last trusted
+reading (every 30 s with the lid open, at start, 3 s after each open), the
+close journals the trusted value or the sample, leaves the keyboard alone when
+neither exists, and the open re-asserts the restore 2 s after the wake. Unit
+tests with fakes only; the hardware rows below are unchanged.
+
 ## Hardware validation still required
 
 None of the cases below is certified by the automated regression suite. Record
@@ -66,6 +116,8 @@ is performed. Do not replace "not run" with "passed" based on source review.
 | Force-quit followed by launchd deadline recovery and retry after failure | Not run |
 | Reboot/login with active or dirty journals | Not run |
 | Lid-close/open and safe recovery of explicitly selected test processes | Not run |
+| Lid-close display/keyboard darkening and restore | Not run |
+| Simulated lid close/open via scripts/simulate-lid.sh | Not run |
 | Existing Low Power Mode preference and saved audio restoration | Not run |
 | Docker Desktop idle/busy behavior with another Docker context selected | Not run |
 | Hotspot permission, association, cancellation, and reconnect | Not run |

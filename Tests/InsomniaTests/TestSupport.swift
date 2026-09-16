@@ -237,6 +237,109 @@ final class FakeAudioControl: AudioControlling, @unchecked Sendable {
     }
 }
 
+/// Fake built-in display with a hook fired inside `setBrightness`.
+final class FakeDisplayDimmer: DisplayDimming, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _brightness: Float
+    private var _sets: [Float] = []
+    private var _sleepRequests = 0
+    private var _wakes = 0
+    private var _asleep = false
+    var throwOnRead = false
+    var throwOnSet = false
+    var throwOnSleep = false
+    /// Called synchronously inside `setBrightness`, so a test can inspect
+    /// disk at the moment the side effect happens.
+    var onSet: (@Sendable (Float) -> Void)?
+
+    init(brightness: Float = 0.7) {
+        _brightness = brightness
+    }
+
+    var brightness: Float {
+        get { lock.withLock { _brightness } }
+        set { lock.withLock { _brightness = newValue } }
+    }
+    /// Models `CGDisplayIsAsleep`; a read while asleep is the idle-dim value.
+    var asleep: Bool {
+        get { lock.withLock { _asleep } }
+        set { lock.withLock { _asleep = newValue } }
+    }
+    /// Every value written, in order.
+    var sets: [Float] { lock.withLock { _sets } }
+    var sleepRequests: Int { lock.withLock { _sleepRequests } }
+    var wakes: Int { lock.withLock { _wakes } }
+
+    func isAsleep() -> Bool { asleep }
+
+    func readBrightness() throws -> Float {
+        if throwOnRead { throw DisplayPowerError(what: "read brightness") }
+        return brightness
+    }
+
+    func setBrightness(_ value: Float) throws {
+        if throwOnSet { throw DisplayPowerError(what: "set brightness") }
+        lock.withLock {
+            _brightness = value
+            _sets.append(value)
+        }
+        onSet?(value)
+    }
+
+    func requestSleep() throws {
+        if throwOnSleep { throw DisplayPowerError(what: "IORequestIdle") }
+        lock.withLock { _sleepRequests += 1 }
+    }
+
+    func wake() {
+        lock.withLock { _wakes += 1 }
+    }
+}
+
+/// Fake keyboard backlight; `brightness` nil models a Mac without one.
+final class FakeKeyboardBacklight: KeyboardBacklighting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _brightness: Float?
+    private var _sets: [Float] = []
+    private var _suppressedOrDimmed = false
+    var throwOnRead = false
+    var throwOnSet = false
+    /// Called synchronously inside `setBrightness`.
+    var onSet: (@Sendable (Float) -> Void)?
+
+    init(brightness: Float? = 0.5) {
+        _brightness = brightness
+    }
+
+    var brightness: Float? {
+        get { lock.withLock { _brightness } }
+        set { lock.withLock { _brightness = newValue } }
+    }
+    /// Models display-sleep suppression or the keyboard's own idle dim; a
+    /// read while suppressed is 0.
+    var suppressedOrDimmed: Bool {
+        get { lock.withLock { _suppressedOrDimmed } }
+        set { lock.withLock { _suppressedOrDimmed = newValue } }
+    }
+    var sets: [Float] { lock.withLock { _sets } }
+
+    func isSuppressedOrDimmed() -> Bool { suppressedOrDimmed }
+
+    func readBrightness() throws -> Float? {
+        if throwOnRead { throw DisplayPowerError(what: "read keyboard backlight") }
+        return brightness
+    }
+
+    func setBrightness(_ value: Float) throws {
+        if throwOnSet { throw DisplayPowerError(what: "set keyboard backlight") }
+        lock.withLock {
+            _brightness = value
+            _sets.append(value)
+        }
+        onSet?(value)
+    }
+}
+
 /// Freezer over an injected process snapshot; signals go to a FakeProcessControl.
 final class FakeFreezer: Freezing, @unchecked Sendable {
     private let lock = NSLock()
@@ -347,6 +450,8 @@ struct Harness {
     let clock: FakeClock
     let store: Store
     let audio: FakeAudioControl
+    let display: FakeDisplayDimmer
+    let keyboard: FakeKeyboardBacklight
     let notifier: RecordingNotifier
     let clamshell: FakeClamshell
 
@@ -358,13 +463,21 @@ struct Harness {
         clock = FakeClock(now)
         store = Store(paths: home.paths)
         audio = FakeAudioControl()
+        display = FakeDisplayDimmer()
+        keyboard = FakeKeyboardBacklight()
         notifier = RecordingNotifier()
         clamshell = FakeClamshell(false)
     }
 
     /// `lockTimeout` is short so contention tests fail closed quickly;
-    /// `retryDelay` is long so the in-process retry never fires by accident.
-    func makeManager(lockTimeout: TimeInterval = 0.3, retryDelay: TimeInterval = 60) -> SessionManager {
+    /// `retryDelay` is long so the in-process retry never fires by accident;
+    /// `reassertDelay` likewise, so the second display/keyboard write after
+    /// a restore never lands in a test that did not ask for it.
+    func makeManager(
+        lockTimeout: TimeInterval = 0.3,
+        retryDelay: TimeInterval = 60,
+        reassertDelay: Duration = .seconds(3600)
+    ) -> SessionManager {
         let c = clock
         let lid = clamshell
         return SessionManager(
@@ -373,11 +486,14 @@ struct Harness {
             processControl: procs,
             backstop: backstop,
             audio: audio,
+            display: display,
+            keyboard: keyboard,
             notifier: notifier,
             clamshell: { lid.closed },
             clock: { c.now },
             recoveryLockTimeout: lockTimeout,
-            recoveryRetryDelay: retryDelay
+            recoveryRetryDelay: retryDelay,
+            reassertDelay: reassertDelay
         )
     }
 }
