@@ -41,10 +41,13 @@ final class AppServices {
 
     private let paths: Paths
     private let audio: any AudioControlling
+    private let display: any DisplayDimming
+    private let keyboard: any KeyboardBacklighting
     private let freezer: any Freezing
     private let docker: DockerRule
     private let keychain: any KeychainStoring
     private let lid = LidObserver()
+    private let lidSimulation = LidSimulation()
     private let power = PowerMonitor()
     private let browser: BrowserThrottle
 
@@ -63,12 +66,16 @@ final class AppServices {
         notifier: any Notifying,
         audio: any AudioControlling,
         processControl: any ProcessSignaling,
+        display: any DisplayDimming = NoopDisplayDimmer(),
+        keyboard: any KeyboardBacklighting = NoopKeyboardBacklight(),
         keychain: any KeychainStoring = KeychainStore(),
         locationPermission: LocationPermission = LocationPermission()
     ) {
         self.paths = paths
         self.notifier = notifier
         self.audio = audio
+        self.display = display
+        self.keyboard = keyboard
         self.freezer = Freezer(control: processControl)
         self.docker = DockerRule(freezer: freezer)
         self.keychain = keychain
@@ -92,12 +99,17 @@ final class AppServices {
         (notifier as? Notifier)?.requestAuthorizationIfNeeded()
         AppNap.disable(for: config.agentList)
 
-        lidActions = LidActions(manager: manager, freezer: freezer, docker: docker, audio: audio)
+        lidActions = LidActions(manager: manager, freezer: freezer, docker: docker, audio: audio, display: display, keyboard: keyboard)
         floors = FloorRuleDriver(manager: manager, notifier: notifier)
 
         lid.onChange = { [weak self] closed in self?.lidChanged(closed) }
         lid.start()
         status.lidClosed = lid.isClosed
+        // scripts/simulate-lid.sh drives the same action path as the hinge.
+        // The hardware reading in refreshInstant/reconcile still reflects
+        // the real lid; the trigger only runs the close/open actions.
+        lidSimulation.onEvent = { [weak self] closed in self?.lidChanged(closed) }
+        lidSimulation.start(directory: paths.appSupport, file: paths.simulateLidFile)
 
         power.onChange = { [weak self] in self?.powerChanged() }
         power.start()
@@ -127,6 +139,8 @@ final class AppServices {
         running = false
         lid.stop()
         lid.onChange = nil
+        lidSimulation.stop()
+        lidSimulation.onEvent = nil
         power.stop()
         power.onChange = nil
         networkTask?.cancel()

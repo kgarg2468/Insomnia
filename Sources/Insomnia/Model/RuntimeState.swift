@@ -74,6 +74,12 @@ struct RuntimeState: Codable, Equatable, Sendable {
     /// nil when mute is off or the lid is open.
     var savedOutputVolume: Float? = nil
     var savedMuted: Bool? = nil
+    /// Built-in display brightness (0...1) before the lid close set it to 0;
+    /// nil when darkening is off or the lid is open.
+    var savedDisplayBrightness: Float? = nil
+    /// Built-in keyboard backlight (0...1) before the lid close set it to 0;
+    /// nil when darkening is off, there is no backlight, or the lid is open.
+    var savedKeyboardBrightness: Float? = nil
 
     /// Bare pids of every journaled freeze, for display and de-duplication.
     var frozenPids: [Int32] { frozenProcesses.map(\.pid) }
@@ -83,12 +89,20 @@ struct RuntimeState: Codable, Equatable, Sendable {
 
     /// True when at least one entry still needs undoing.
     var isDirty: Bool {
-        sleepDisabledByUs || lowPowerSetByUs || !frozenProcesses.isEmpty || dockerFrozen
+        sleepDisabledByUs || lowPowerSetByUs || hasLidActions
+    }
+
+    /// True when a lid close left something to undo on lid open: freezes,
+    /// the Docker marker, saved audio, saved display or keyboard brightness.
+    var hasLidActions: Bool {
+        !frozenProcesses.isEmpty || dockerFrozen
             || savedOutputVolume != nil || savedMuted != nil
+            || savedDisplayBrightness != nil || savedKeyboardBrightness != nil
     }
 
     private enum CodingKeys: String, CodingKey {
         case sleepDisabledByUs, lowPowerSetByUs, frozenProcesses, frozenPids, dockerFrozen, savedOutputVolume, savedMuted
+        case savedDisplayBrightness, savedKeyboardBrightness
     }
 
     // Tolerate missing keys so a state.json written by an older build, or by
@@ -109,6 +123,8 @@ struct RuntimeState: Codable, Equatable, Sendable {
         dockerFrozen = try c.decodeIfPresent(Bool.self, forKey: .dockerFrozen) ?? false
         savedOutputVolume = try c.decodeIfPresent(Float.self, forKey: .savedOutputVolume)
         savedMuted = try c.decodeIfPresent(Bool.self, forKey: .savedMuted)
+        savedDisplayBrightness = try c.decodeIfPresent(Float.self, forKey: .savedDisplayBrightness)
+        savedKeyboardBrightness = try c.decodeIfPresent(Float.self, forKey: .savedKeyboardBrightness)
     }
 
     /// `frozenPids` is read for migration only and never written again, so
@@ -121,5 +137,7 @@ struct RuntimeState: Codable, Equatable, Sendable {
         try c.encode(dockerFrozen, forKey: .dockerFrozen)
         try c.encodeIfPresent(savedOutputVolume, forKey: .savedOutputVolume)
         try c.encodeIfPresent(savedMuted, forKey: .savedMuted)
+        try c.encodeIfPresent(savedDisplayBrightness, forKey: .savedDisplayBrightness)
+        try c.encodeIfPresent(savedKeyboardBrightness, forKey: .savedKeyboardBrightness)
     }
 }

@@ -64,6 +64,9 @@ struct Paths: Sendable, Equatable {
     /// flock(2) file shared with backstop.sh (`lockf -k` on the same path).
     /// Created once, never unlinked, so both sides lock the same inode.
     var recoveryLock: URL { appSupport.appendingPathComponent(".recovery.lock") }
+    /// Written by scripts/simulate-lid.sh ("closed" or "open") to drive the
+    /// lid-close action path without touching the hinge. See LidSimulation.
+    var simulateLidFile: URL { appSupport.appendingPathComponent("simulate-lid") }
 
     var logFile: URL { logs.appendingPathComponent("insomnia.log") }
     var handoffsLog: URL { logs.appendingPathComponent("handoffs.log") }

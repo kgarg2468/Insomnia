@@ -33,8 +33,256 @@ final class LidActionsTests: XCTestCase {
         m.config.muteOnLidClose = mute
         m.config.freezeList = ["com.tinyspeck.slackmacgap"]
         let docker = DockerRule(freezer: freezer, probe: dockerIdle)
-        let actions = LidActions(manager: m, freezer: freezer, docker: docker, audio: h.audio)
+        let actions = LidActions(manager: m, freezer: freezer, docker: docker, audio: h.audio, display: h.display, keyboard: h.keyboard)
         return (m, actions)
+    }
+
+    // MARK: Display and keyboard backlight
+
+    /// The saved brightness is on disk before the display or keyboard is
+    /// touched: a crash between the two leaves a journal that restores.
+    func testCloseJournalsBrightnessBeforeDarkening() async throws {
+        let (m, actions) = await make()
+        await m.start(duration: 3600)
+        let store = h.store
+        let displaySaw = Locked<Float?>(nil)
+        h.display.onSet = { _ in displaySaw.value = ((try? store.loadState()) ?? nil)?.savedDisplayBrightness }
+        let keyboardSaw = Locked<Float?>(nil)
+        h.keyboard.onSet = { _ in keyboardSaw.value = ((try? store.loadState()) ?? nil)?.savedKeyboardBrightness }
+
+        await actions.onClose()
+
+        XCTAssertEqual(displaySaw.value, 0.7, "display set to 0 before its brightness was journaled")
+        XCTAssertEqual(keyboardSaw.value, 0.5, "keyboard set to 0 before its backlight was journaled")
+        XCTAssertEqual(h.display.sets, [0])
+        XCTAssertEqual(h.keyboard.sets, [0])
+        XCTAssertEqual(h.display.sleepRequests, 1)
+        let s = try XCTUnwrap(try store.loadState())
+        XCTAssertEqual(s.savedDisplayBrightness, 0.7)
+        XCTAssertEqual(s.savedKeyboardBrightness, 0.5)
+        XCTAssertEqual(m.state, s)
+        XCTAssertNil(m.lastError)
+    }
+
+    /// Darkening is the first step, before mute and every freeze.
+    func testDarkeningRunsBeforeMuteAndFreezes() async throws {
+        let (m, actions) = await make()
+        await m.start(duration: 3600)
+        let order = Locked<[String]>([])
+        h.display.onSet = { _ in order.value.append("display") }
+        h.keyboard.onSet = { _ in order.value.append("keyboard") }
+        h.audio.onMute = { order.value.append("mute") }
+        h.procs.onSuspend = { _ in order.value.append("freeze") }
+
+        await actions.onClose()
+
+        XCTAssertEqual(order.value, ["display", "keyboard", "mute", "freeze", "freeze"])
+    }
+
+    /// A second close without an open in between (a crash, a reconcile with
+    /// the lid still shut) reads 0 and must not overwrite the real values.
+    func testSecondCloseKeepsTheFirstSavedBrightness() async throws {
+        let (m, actions) = await make()
+        await m.start(duration: 3600)
+        await actions.onClose()
+        XCTAssertEqual(h.display.brightness, 0)
+        XCTAssertEqual(h.keyboard.brightness, 0)
+
+        await actions.onClose()
+
+        let s = try XCTUnwrap(try h.store.loadState())
+        XCTAssertEqual(s.savedDisplayBrightness, 0.7)
+        XCTAssertEqual(s.savedKeyboardBrightness, 0.5)
+        XCTAssertEqual(h.display.sets, [0, 0])
+        XCTAssertEqual(h.keyboard.sets, [0, 0])
+
+        await actions.onOpen()
+        XCTAssertEqual(h.display.sets, [0, 0, 0.7])
+        XCTAssertEqual(h.keyboard.sets, [0, 0, 0.5])
+    }
+
+    func testDisplayReadFailureSkipsTheDisplayButKeyboardAndFreezesStillRun() async throws {
+        let (m, actions) = await make()
+        h.display.throwOnRead = true
+        await m.start(duration: 3600)
+
+        await actions.onClose()
+
+        XCTAssertEqual(h.display.sets, [], "a display whose brightness is unknown must not be set")
+        XCTAssertNil(try h.store.loadState()?.savedDisplayBrightness)
+        XCTAssertEqual(h.keyboard.sets, [0])
+        XCTAssertEqual(try h.store.loadState()?.savedKeyboardBrightness, 0.5)
+        XCTAssertEqual(h.procs.suspended.count, 2)
+        XCTAssertEqual(h.audio.mutes, 1)
+        XCTAssertNil(m.lastError, "a skipped display is logged, not surfaced as an error")
+
+        await actions.onOpen()
+        XCTAssertEqual(h.display.sets, [], "nothing saved, nothing restored")
+        XCTAssertEqual(h.keyboard.sets, [0, 0.5])
+    }
+
+    /// Setting 0 failed: the value is still journaled, so the open restores
+    /// it (harmless if the panel never dimmed).
+    func testDisplaySetFailureKeepsTheSavedValueForTheOpen() async throws {
+        let (m, actions) = await make()
+        h.display.throwOnSet = true
+        await m.start(duration: 3600)
+
+        await actions.onClose()
+
+        XCTAssertEqual(h.display.sets, [])
+        XCTAssertEqual(try h.store.loadState()?.savedDisplayBrightness, 0.7)
+        XCTAssertEqual(h.keyboard.sets, [0])
+        XCTAssertEqual(h.procs.suspended.count, 2)
+        XCTAssertNil(m.lastError)
+
+        h.display.throwOnSet = false
+        await actions.onOpen()
+        XCTAssertEqual(h.display.sets, [0.7])
+        XCTAssertNil(try h.store.loadState()?.savedDisplayBrightness)
+    }
+
+    func testDarkenOffTouchesNeitherDisplayNorKeyboard() async throws {
+        let (m, actions) = await make()
+        m.config.darkenDisplayOnLidClose = false
+        await m.start(duration: 3600)
+
+        await actions.onClose()
+
+        XCTAssertEqual(h.display.sets, [])
+        XCTAssertEqual(h.keyboard.sets, [])
+        XCTAssertEqual(h.display.sleepRequests, 0)
+        let s = try XCTUnwrap(try h.store.loadState())
+        XCTAssertNil(s.savedDisplayBrightness)
+        XCTAssertNil(s.savedKeyboardBrightness)
+        XCTAssertEqual(h.procs.suspended.count, 2, "the rest of the transaction still runs")
+
+        await actions.onOpen()
+        XCTAssertEqual(h.display.sets, [])
+        XCTAssertEqual(h.keyboard.sets, [])
+        XCTAssertEqual(h.display.wakes, 0)
+    }
+
+    /// Open: wake the panel first (a slept display lights before its
+    /// brightness returns), restore both, clear both entries.
+    func testOpenWakesThenRestoresBothAndClearsTheJournal() async throws {
+        let (m, actions) = await make()
+        await m.start(duration: 3600)
+        await actions.onClose()
+        let display = h.display
+        let wokeBeforeDisplaySet = Locked<Bool?>(nil)
+        display.onSet = { value in if value != 0 { wokeBeforeDisplaySet.value = display.wakes == 1 } }
+        let wokeBeforeKeyboardSet = Locked<Bool?>(nil)
+        h.keyboard.onSet = { value in if value != 0 { wokeBeforeKeyboardSet.value = display.wakes == 1 } }
+
+        await actions.onOpen()
+
+        XCTAssertEqual(wokeBeforeDisplaySet.value, true, "display brightness restored before the panel was woken")
+        XCTAssertEqual(wokeBeforeKeyboardSet.value, true)
+        XCTAssertEqual(h.display.wakes, 1)
+        XCTAssertEqual(h.display.sets, [0, 0.7])
+        XCTAssertEqual(h.keyboard.sets, [0, 0.5])
+        let s = try XCTUnwrap(try h.store.loadState())
+        XCTAssertNil(s.savedDisplayBrightness)
+        XCTAssertNil(s.savedKeyboardBrightness)
+        XCTAssertEqual(m.state, s)
+        XCTAssertNil(m.lastError)
+        XCTAssertTrue(m.isActive)
+    }
+
+    func testDisplayRestoreFailureKeepsTheEntryAndReportsIt() async throws {
+        let (m, actions) = await make()
+        await m.start(duration: 3600)
+        await actions.onClose()
+        h.display.throwOnSet = true
+
+        await actions.onOpen()
+
+        let err = try XCTUnwrap(m.lastError)
+        XCTAssertTrue(err.contains("could not restore display brightness"), err)
+        let s = try XCTUnwrap(try h.store.loadState())
+        XCTAssertEqual(s.savedDisplayBrightness, 0.7, "a failed restore stays journaled for the next undo")
+        XCTAssertNil(s.savedKeyboardBrightness, "the keyboard is restored independently")
+        XCTAssertEqual(h.keyboard.sets, [0, 0.5])
+        XCTAssertEqual(h.procs.resumed.count, 1)
+        XCTAssertEqual(h.audio.applied.count, 1)
+
+        // The next open retries from disk.
+        h.display.throwOnSet = false
+        await actions.onOpen()
+        XCTAssertEqual(h.display.sets, [0, 0.7])
+        XCTAssertNil(try h.store.loadState()?.savedDisplayBrightness)
+        XCTAssertEqual(h.keyboard.sets, [0, 0.5], "already restored, not restored twice")
+    }
+
+    func testKeyboardRestoreFailureKeepsTheEntryAndReportsIt() async throws {
+        let (m, actions) = await make()
+        await m.start(duration: 3600)
+        await actions.onClose()
+        h.keyboard.throwOnSet = true
+
+        await actions.onOpen()
+
+        let err = try XCTUnwrap(m.lastError)
+        XCTAssertTrue(err.contains("could not restore keyboard backlight"), err)
+        let s = try XCTUnwrap(try h.store.loadState())
+        XCTAssertNil(s.savedDisplayBrightness)
+        XCTAssertEqual(s.savedKeyboardBrightness, 0.5)
+        XCTAssertEqual(h.display.sets, [0, 0.7])
+
+        h.keyboard.throwOnSet = false
+        await m.end(reason: .user)
+        XCTAssertEqual(h.keyboard.sets, [0, 0.5])
+        XCTAssertEqual(try h.store.loadState(), RuntimeState.clean)
+    }
+
+    func testSessionEndWhileClosedRestoresDisplayAndKeyboard() async throws {
+        let (m, actions) = await make()
+        await m.start(duration: 3600)
+        await actions.onClose()
+
+        await m.end(reason: .timer)
+
+        XCTAssertEqual(h.display.wakes, 1)
+        XCTAssertEqual(h.display.sets, [0, 0.7])
+        XCTAssertEqual(h.keyboard.sets, [0, 0.5])
+        XCTAssertEqual(try h.store.loadState(), RuntimeState.clean)
+    }
+
+    /// Display sleep is refused whenever any process holds a display
+    /// assertion; brightness 0 is the mechanism, the sleep is a bonus.
+    func testDisplaySleepRequestFailureIsOnlyLogged() async throws {
+        let (m, actions) = await make()
+        h.display.throwOnSleep = true
+        await m.start(duration: 3600)
+
+        await actions.onClose()
+
+        XCTAssertEqual(h.display.sets, [0])
+        XCTAssertEqual(h.keyboard.sets, [0])
+        XCTAssertEqual(try h.store.loadState()?.savedDisplayBrightness, 0.7)
+        XCTAssertEqual(h.procs.suspended.count, 2)
+        XCTAssertNil(m.lastError)
+        let log = (try? String(contentsOf: h.home.paths.logFile, encoding: .utf8)) ?? ""
+        XCTAssertTrue(log.contains("display sleep request failed"), log)
+    }
+
+    func testNoKeyboardBacklightSkipsTheKeyboard() async throws {
+        let (m, actions) = await make()
+        h.keyboard.brightness = nil
+        await m.start(duration: 3600)
+
+        await actions.onClose()
+
+        XCTAssertEqual(h.keyboard.sets, [])
+        XCTAssertNil(try h.store.loadState()?.savedKeyboardBrightness)
+        XCTAssertEqual(h.display.sets, [0])
+        XCTAssertEqual(try h.store.loadState()?.savedDisplayBrightness, 0.7)
+        XCTAssertNil(m.lastError)
+
+        await actions.onOpen()
+        XCTAssertEqual(h.keyboard.sets, [])
+        XCTAssertEqual(h.display.sets, [0, 0.7])
     }
 
     func testCloseJournalsBeforeActing() async throws {

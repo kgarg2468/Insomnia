@@ -123,6 +123,7 @@ struct SettingsView: View {
 
     private var lidSection: some View {
         Section {
+            Toggle("Turn off the display and keyboard backlight", isOn: bind(\.darkenDisplayOnLidClose))
             bundleList(
                 title: "Freeze while the lid is closed",
                 items: manager.config.freezeList,
@@ -135,7 +136,7 @@ struct SettingsView: View {
         } header: {
             Text("Lid-close actions")
         } footer: {
-            Text("Frozen apps are stopped with SIGSTOP and resumed when the lid opens. Agents are never frozen.")
+            Text("Frozen apps are stopped with SIGSTOP and resumed when the lid opens. Agents are never frozen. The display brightness and keyboard backlight are saved, set to zero and restored when the lid opens. If Insomnia is not running when you open the lid, press the brightness-up key.")
         }
     }
 

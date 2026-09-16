@@ -33,8 +33,76 @@ final class StoreTests: XCTestCase {
         st.frozenProcesses = [FrozenProcess(pid: 12, startedAt: 1_700_000_000), FrozenProcess(pid: 34, startedAt: 1_700_000_001)]
         st.savedOutputVolume = 0.6
         st.savedMuted = false
+        st.savedDisplayBrightness = 0.75
+        st.savedKeyboardBrightness = 0.25
         try store.saveState(st)
         XCTAssertEqual(try store.loadState(), st)
+    }
+
+    /// backstop.sh reads the display and keyboard entries by these flat keys
+    /// and must see plain numbers; absent means nothing saved.
+    func testStateWritesSavedBrightnessAsFlatNumbersForTheBackstop() throws {
+        var st = RuntimeState()
+        st.savedDisplayBrightness = 0.75
+        st.savedKeyboardBrightness = 0.25
+        try store.saveState(st)
+        let text = try String(contentsOf: home.paths.stateFile, encoding: .utf8)
+        XCTAssertTrue(text.contains("\"savedDisplayBrightness\" : 0.75"), text)
+        XCTAssertTrue(text.contains("\"savedKeyboardBrightness\" : 0.25"), text)
+
+        try store.saveState(RuntimeState())
+        let clean = try String(contentsOf: home.paths.stateFile, encoding: .utf8)
+        XCTAssertFalse(clean.contains("savedDisplayBrightness"), clean)
+        XCTAssertFalse(clean.contains("savedKeyboardBrightness"), clean)
+    }
+
+    /// A journal written before display darkening existed has neither key.
+    func testLegacyJournalWithoutBrightnessKeysDecodes() throws {
+        let data = Data(#"{"sleepDisabledByUs":true,"lowPowerSetByUs":false,"frozenProcesses":[],"dockerFrozen":false,"savedOutputVolume":0.5,"savedMuted":true}"#.utf8)
+        let st = try Store.makeDecoder().decode(RuntimeState.self, from: data)
+        XCTAssertNil(st.savedDisplayBrightness)
+        XCTAssertNil(st.savedKeyboardBrightness)
+        XCTAssertEqual(st.savedOutputVolume, 0.5)
+        XCTAssertTrue(st.isDirty)
+    }
+
+    func testSavedBrightnessCountsAsDirty() throws {
+        var st = RuntimeState()
+        XCTAssertFalse(st.isDirty)
+        st.savedDisplayBrightness = 0.5
+        XCTAssertTrue(st.isDirty)
+        st = RuntimeState()
+        st.savedKeyboardBrightness = 0
+        XCTAssertTrue(st.isDirty)
+    }
+
+    /// Reconcile keeps lid-close actions while the lid is closed; every
+    /// entry a lid close can write must count, not only freezes and audio.
+    func testHasLidActionsCoversEveryLidCloseEntry() throws {
+        XCTAssertFalse(RuntimeState.clean.hasLidActions)
+        var sleepOnly = RuntimeState()
+        sleepOnly.sleepDisabledByUs = true
+        sleepOnly.lowPowerSetByUs = true
+        XCTAssertFalse(sleepOnly.hasLidActions, "sleep and Low Power Mode are not lid-close actions")
+
+        var frozen = RuntimeState()
+        frozen.frozenProcesses = [FrozenProcess(pid: 1, startedAt: nil)]
+        XCTAssertTrue(frozen.hasLidActions)
+        var docker = RuntimeState()
+        docker.dockerFrozen = true
+        XCTAssertTrue(docker.hasLidActions)
+        var volume = RuntimeState()
+        volume.savedOutputVolume = 0.5
+        XCTAssertTrue(volume.hasLidActions)
+        var muted = RuntimeState()
+        muted.savedMuted = false
+        XCTAssertTrue(muted.hasLidActions)
+        var display = RuntimeState()
+        display.savedDisplayBrightness = 0.5
+        XCTAssertTrue(display.hasLidActions)
+        var keyboard = RuntimeState()
+        keyboard.savedKeyboardBrightness = 0.5
+        XCTAssertTrue(keyboard.hasLidActions)
     }
 
     /// backstop.sh reads the same file: each frozen process carries its
@@ -96,6 +164,8 @@ final class StoreTests: XCTestCase {
         XCTAssertTrue(st.sleepDisabledByUs)
         XCTAssertEqual(st.frozenProcesses, [])
         XCTAssertNil(st.savedOutputVolume)
+        XCTAssertNil(st.savedDisplayBrightness)
+        XCTAssertNil(st.savedKeyboardBrightness)
     }
 
     func testPathsFromEnvironment() {

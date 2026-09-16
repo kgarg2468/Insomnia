@@ -4,8 +4,10 @@ import Foundation
 /// undone on lid open. Every step is journaled to state.json *before* the
 /// side effect; undo reads state.json, never memory.
 ///
-/// Order on close: mute (save volume + mute state first), freeze list (one
-/// journal write per app), Docker rule, stop the countdown redraw.
+/// Order on close: darken (save display brightness and keyboard backlight
+/// first, then set both to 0 and ask the display to sleep), mute (save
+/// volume + mute state first), freeze list (one journal write per app),
+/// Docker rule, stop the countdown redraw.
 /// Order on open: the exact reverse, driven by `SessionManager.undoLidActions`.
 @MainActor
 final class LidActions {
@@ -13,12 +15,23 @@ final class LidActions {
     private let freezer: any Freezing
     private let docker: DockerRule
     private let audio: any AudioControlling
+    private let display: any DisplayDimming
+    private let keyboard: any KeyboardBacklighting
 
-    init(manager: SessionManager, freezer: any Freezing, docker: DockerRule, audio: any AudioControlling) {
+    init(
+        manager: SessionManager,
+        freezer: any Freezing,
+        docker: DockerRule,
+        audio: any AudioControlling,
+        display: any DisplayDimming = NoopDisplayDimmer(),
+        keyboard: any KeyboardBacklighting = NoopKeyboardBacklight()
+    ) {
         self.manager = manager
         self.freezer = freezer
         self.docker = docker
         self.audio = audio
+        self.display = display
+        self.keyboard = keyboard
     }
 
     func onClose() async {
@@ -32,6 +45,10 @@ final class LidActions {
             guard manager.isActive, !Task.isCancelled else { return }
             let ticket = manager.endTicket
             let config = manager.config
+
+            if config.darkenDisplayOnLidClose {
+                darkenSavingCurrent(manager)
+            }
 
             if config.muteOnLidClose {
                 muteSavingCurrent(manager)
@@ -66,6 +83,54 @@ final class LidActions {
     }
 
     // MARK: Private
+
+    /// With `pmset disablesleep 1` macOS never turns the built-in panel or
+    /// the keyboard backlight off on lid close, so this does. Brightness 0
+    /// is the mechanism; the display sleep request is a bonus that macOS
+    /// ignores while any process (an agent, say) holds a display assertion.
+    private func darkenSavingCurrent(_ manager: SessionManager) {
+        do {
+            let current = try display.readBrightness()
+            try manager.journal { s in
+                // Keep an earlier save if a previous close was never undone.
+                if s.savedDisplayBrightness == nil { s.savedDisplayBrightness = current }
+            }
+            do {
+                try display.setBrightness(0)
+                Log.info("display darkened (was brightness \(current))")
+            } catch {
+                // The journal entry stays: the open restores whatever is there.
+                Log.error("display darken failed: \(error.localizedDescription)")
+            }
+        } catch {
+            Log.error("display darken on lid close skipped: \(error.localizedDescription)")
+        }
+
+        do {
+            if let current = try keyboard.readBrightness() {
+                try manager.journal { s in
+                    if s.savedKeyboardBrightness == nil { s.savedKeyboardBrightness = current }
+                }
+                do {
+                    try keyboard.setBrightness(0)
+                    Log.info("keyboard backlight off (was brightness \(current))")
+                } catch {
+                    Log.error("keyboard backlight off failed: \(error.localizedDescription)")
+                }
+            } else {
+                Log.info("no built-in keyboard backlight; skipped")
+            }
+        } catch {
+            Log.error("keyboard backlight on lid close skipped: \(error.localizedDescription)")
+        }
+
+        do {
+            try display.requestSleep()
+            Log.info("display sleep requested")
+        } catch {
+            Log.info("display sleep request failed: \(error.localizedDescription)")
+        }
+    }
 
     private func muteSavingCurrent(_ manager: SessionManager) {
         do {

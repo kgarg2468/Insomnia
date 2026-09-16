@@ -16,6 +16,10 @@ struct Config: Codable, Equatable, Sendable {
     var freezeList: [String] = Config.defaultFreezeList
     var dockerRule: Bool = true
     var muteOnLidClose: Bool = false
+    /// Save the display brightness and keyboard backlight, set both to zero
+    /// on lid close and restore them on lid open. With sleep disabled macOS
+    /// no longer turns the panel off itself.
+    var darkenDisplayOnLidClose: Bool = true
 
     // Agent apps that must never be throttled or frozen.
     var agentList: [String] = Config.defaultAgentList
@@ -82,6 +86,7 @@ struct Config: Codable, Equatable, Sendable {
         freezeList = try c.decodeIfPresent([String].self, forKey: .freezeList) ?? d.freezeList
         dockerRule = try c.decodeIfPresent(Bool.self, forKey: .dockerRule) ?? d.dockerRule
         muteOnLidClose = try c.decodeIfPresent(Bool.self, forKey: .muteOnLidClose) ?? d.muteOnLidClose
+        darkenDisplayOnLidClose = try c.decodeIfPresent(Bool.self, forKey: .darkenDisplayOnLidClose) ?? d.darkenDisplayOnLidClose
         agentList = try c.decodeIfPresent([String].self, forKey: .agentList) ?? d.agentList
         lowPowerFloor = try c.decodeIfPresent(Int.self, forKey: .lowPowerFloor) ?? d.lowPowerFloor
         endFloor = try c.decodeIfPresent(Int.self, forKey: .endFloor) ?? d.endFloor

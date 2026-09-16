@@ -84,6 +84,8 @@ final class SessionManager {
     private let processControl: any ProcessSignaling
     private let backstop: any BackstopScheduling
     private let audio: any AudioControlling
+    private let display: any DisplayDimming
+    private let keyboard: any KeyboardBacklighting
     private let notifier: any Notifying
     private let clamshell: @Sendable () -> Bool?
     private let clock: @Sendable () -> Date
@@ -124,6 +126,8 @@ final class SessionManager {
         processControl: any ProcessSignaling,
         backstop: any BackstopScheduling,
         audio: any AudioControlling = NoopAudioControl(),
+        display: any DisplayDimming = NoopDisplayDimmer(),
+        keyboard: any KeyboardBacklighting = NoopKeyboardBacklight(),
         notifier: any Notifying = RecordingNotifier(),
         clamshell: @escaping @Sendable () -> Bool? = { LidObserver.readClamshellState() },
         clock: @escaping @Sendable () -> Date = { Date() },
@@ -136,6 +140,8 @@ final class SessionManager {
         self.processControl = processControl
         self.backstop = backstop
         self.audio = audio
+        self.display = display
+        self.keyboard = keyboard
         self.notifier = notifier
         self.clamshell = clamshell
         self.clock = clock
@@ -168,6 +174,8 @@ final class SessionManager {
     static func live(paths: Paths = .fromEnvironment()) -> SessionManager {
         let notifier = Notifier()
         let audio = CoreAudioControl()
+        let display = DisplayServicesDimmer()
+        let keyboard = CoreBrightnessKeyboardBacklight()
         let processControl = SignalProcessControl()
         let m = SessionManager(
             paths: paths,
@@ -175,9 +183,18 @@ final class SessionManager {
             processControl: processControl,
             backstop: LaunchdBackstop(paths: paths),
             audio: audio,
+            display: display,
+            keyboard: keyboard,
             notifier: notifier
         )
-        let services = AppServices(paths: paths, notifier: notifier, audio: audio, processControl: processControl)
+        let services = AppServices(
+            paths: paths,
+            notifier: notifier,
+            audio: audio,
+            processControl: processControl,
+            display: display,
+            keyboard: keyboard
+        )
         m.services = services
         services.logStartupSnapshot()
         return m
@@ -641,6 +658,32 @@ final class SessionManager {
                 fail("could not restore audio: \(error.localizedDescription)")
             }
         }
+
+        // Display and keyboard were darkened by us (spec section 4), not by
+        // the OS: with the sleep guard on, macOS never turns the panel off on
+        // lid close, so brightness 0 is what keeps it dark. Wake first: the
+        // panel may also be asleep from the best-effort sleep request.
+        if state.savedDisplayBrightness != nil || state.savedKeyboardBrightness != nil {
+            display.wake()
+        }
+        if let saved = state.savedDisplayBrightness {
+            do {
+                try display.setBrightness(saved)
+                try? journal { $0.savedDisplayBrightness = nil }
+                Log.info("display restored (brightness \(saved))")
+            } catch {
+                fail("could not restore display brightness: \(error.localizedDescription)")
+            }
+        }
+        if let saved = state.savedKeyboardBrightness {
+            do {
+                try keyboard.setBrightness(saved)
+                try? journal { $0.savedKeyboardBrightness = nil }
+                Log.info("keyboard backlight restored (brightness \(saved))")
+            } catch {
+                fail("could not restore keyboard backlight: \(error.localizedDescription)")
+            }
+        }
     }
 
     // MARK: Reconcile (spec section 8)
@@ -695,7 +738,7 @@ final class SessionManager {
             let lidClosed = clamshell()
             if lidClosed == false {
                 undoLidActionsInJournal()
-            } else if !state.frozenPids.isEmpty || state.savedOutputVolume != nil {
+            } else if state.hasLidActions {
                 Log.info("reconcile: lid \(lidClosed == nil ? "unknown" : "closed"), keeping lid-close actions")
             }
             await armDeadline(s.endsAt)
