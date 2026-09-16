@@ -23,6 +23,10 @@ protocol DisplayDimming: Sendable {
     func requestSleep() throws
     /// Declare local user activity so a sleeping display wakes. Best effort, never throws.
     func wake()
+    /// Whether the built-in display is asleep (`CGDisplayIsAsleep`). While it
+    /// is, `readBrightness()` returns the idle-dim value, not the user's.
+    /// No display: false.
+    func isAsleep() -> Bool
 }
 
 /// Built-in keyboard backlight. Setting the display to 0 does not switch it
@@ -31,6 +35,10 @@ protocol KeyboardBacklighting: Sendable {
     /// nil when there is no built-in keyboard backlight.
     func readBrightness() throws -> Float?
     func setBrightness(_ value: Float) throws
+    /// Whether macOS is holding the backlight down itself: suppressed by
+    /// display sleep (reads as 0) or idle-dimmed. A value read then is not
+    /// the user's. No keyboard: false.
+    func isSuppressedOrDimmed() -> Bool
 }
 
 /// Pure helpers shared by the live implementations, tested without the
@@ -63,12 +71,14 @@ struct NoopDisplayDimmer: DisplayDimming {
     func setBrightness(_ value: Float) throws {}
     func requestSleep() throws {}
     func wake() {}
+    func isAsleep() -> Bool { false }
 }
 
 /// Does nothing; reads as "no built-in keyboard backlight".
 struct NoopKeyboardBacklight: KeyboardBacklighting {
     func readBrightness() throws -> Float? { nil }
     func setBrightness(_ value: Float) throws {}
+    func isSuppressedOrDimmed() -> Bool { false }
 }
 
 /// Private DisplayServices.framework, measured on macOS 26 (see
@@ -129,6 +139,12 @@ final class DisplayServicesDimmer: DisplayDimming, @unchecked Sendable {
         }
     }
 
+    /// Public CoreGraphics; needs no private symbol. A missing display
+    /// (`kCGNullDirectDisplay`) reads as awake.
+    func isAsleep() -> Bool {
+        CGDisplayIsAsleep(Self.builtInDisplayID()) != 0
+    }
+
     // MARK: Private
 
     private func symbols() throws -> Symbols {
@@ -184,13 +200,19 @@ final class DisplayServicesDimmer: DisplayDimming, @unchecked Sendable {
 
 /// Selectors of the private CoreBrightness `KeyboardBrightnessClient`,
 /// verified on macOS 26. The instance is checked with `responds(to:)` for
-/// each of them before it is used, so a renamed method in a future macOS
-/// throws instead of raising an unrecognized selector.
-@objc protocol KeyboardBrightnessClientBridge {
+/// each of the first four before it is used, so a renamed method in a future
+/// macOS throws instead of raising an unrecognized selector. The two
+/// suppressed/dimmed queries are optional: each is checked at call time and
+/// a missing one reads as false.
+@objc protocol KeyboardBrightnessClientBridge: NSObjectProtocol {
     @objc(copyKeyboardBacklightIDs) func copyKeyboardBacklightIDs() -> NSArray?
     @objc(isKeyboardBuiltIn:) func isKeyboardBuiltIn(_ id: UInt64) -> Bool
     @objc(brightnessForKeyboard:) func brightness(forKeyboard id: UInt64) -> Float
     @objc(setBrightness:forKeyboard:) func setBrightness(_ value: Float, forKeyboard id: UInt64) -> Bool
+    /// True while display sleep holds the backlight off; reads then are 0.
+    @objc(isBacklightSuppressedOnKeyboard:) func isBacklightSuppressed(onKeyboard id: UInt64) -> Bool
+    /// True while the keyboard's own idle dim is in effect.
+    @objc(isBacklightDimmedOnKeyboard:) func isBacklightDimmed(onKeyboard id: UInt64) -> Bool
 }
 
 /// Private CoreBrightness.framework. A write made while the display is
@@ -219,6 +241,17 @@ final class CoreBrightnessKeyboardBacklight: KeyboardBacklighting, @unchecked Se
         for id in ids where !client.setBrightness(DisplayPower.clamped(value), forKeyboard: id) {
             throw DisplayPowerError(what: "setBrightness:forKeyboard: refused for keyboard \(id)")
         }
+    }
+
+    /// Each query is behind its own `responds(to:)`: a macOS that drops one
+    /// reads as "not held down", which only costs a less trusted sample.
+    func isSuppressedOrDimmed() -> Bool {
+        guard let client = try? self.client(), let first = Self.builtInIDs(client).first else { return false }
+        let suppressed = client.responds(to: NSSelectorFromString("isBacklightSuppressedOnKeyboard:"))
+            && client.isBacklightSuppressed(onKeyboard: first)
+        let dimmed = client.responds(to: NSSelectorFromString("isBacklightDimmedOnKeyboard:"))
+            && client.isBacklightDimmed(onKeyboard: first)
+        return suppressed || dimmed
     }
 
     // MARK: Private

@@ -24,6 +24,9 @@ struct Config: Codable, Equatable, Sendable {
     /// on lid close and restore them on lid open. With sleep disabled macOS
     /// no longer turns the panel off itself.
     var darkenDisplayOnLidClose: Bool = true
+    /// Switch Low Power Mode on while the lid is closed (heat and battery:
+    /// with sleep disabled the machine otherwise runs at full speed).
+    var lowPowerOnLidClose: Bool = true
 
     // Agent apps that must never be throttled or frozen.
     var agentList: [String] = Config.defaultAgentList
@@ -101,6 +104,7 @@ struct Config: Codable, Equatable, Sendable {
         dockerRule = try c.decodeIfPresent(Bool.self, forKey: .dockerRule) ?? d.dockerRule
         muteOnLidClose = try c.decodeIfPresent(Bool.self, forKey: .muteOnLidClose) ?? d.muteOnLidClose
         darkenDisplayOnLidClose = try c.decodeIfPresent(Bool.self, forKey: .darkenDisplayOnLidClose) ?? d.darkenDisplayOnLidClose
+        lowPowerOnLidClose = try c.decodeIfPresent(Bool.self, forKey: .lowPowerOnLidClose) ?? d.lowPowerOnLidClose
         agentList = try c.decodeIfPresent([String].self, forKey: .agentList) ?? d.agentList
         lowPowerFloor = try c.decodeIfPresent(Int.self, forKey: .lowPowerFloor) ?? d.lowPowerFloor
         endFloor = try c.decodeIfPresent(Int.self, forKey: .endFloor) ?? d.endFloor

@@ -112,6 +112,7 @@ Quit, or reconcile.
 | Freeze scope | `SIGSTOP` every process whose responsible app is in the freeze scope (rules below) | `SIGCONT` the recorded pids only |
 | Docker rule | if Docker Desktop is running and `docker ps -q` is empty, freeze it | resume |
 | Mute (optional) | save volume and mute state, then mute | restore both exactly |
+| Low Power Mode | on (optional, default on) | off unless a battery or thermal floor still wants it |
 | Countdown redraw | stop timer | restart timer |
 
 Freeze scope rules:
@@ -157,9 +158,32 @@ is best effort. Display brightness 0 does not switch the keyboard backlight
 off; it is set separately. Both values are journaled before they are changed
 and restored on open, session end, Quit, or reconcile with the lid open; the
 backstop keeps the entries and only the app restores them (private
-frameworks). If Insomnia is not running when the lid opens, the brightness-up
-key restores the panel. Bluetooth is still left alone (needed for Instant
+frameworks). What is journaled is a trusted value, not whatever the device
+reads at that instant: a reading is trusted only when the last keyboard,
+mouse or trackpad input was under 30 s ago (`CGEventSource`; the idle dim
+never starts sooner) and the panel is awake (`CGDisplayIsAsleep`, else it
+reads the idle-dim value) or the keyboard backlight is neither suppressed by
+display sleep (it reads 0) nor idle-dimmed, and the app keeps the last trusted
+reading of each (every 30 s with the lid open, at start, and 3 s after each
+lid open) to journal when the close finds the device untrusted. When nothing
+trustworthy is known for the keyboard it is left to macOS entirely (no journal
+entry, no write), because restoring a suppressed 0 would leave the backlight
+off; a display with no trusted sample journals the dim value anyway, since a
+dim panel on open beats a black one. On open the restore is written, the
+entries cleared, and the same values written once more 2 s later, because
+powerd re-applies its own remembered brightness asynchronously after the wake
+and can override the first write. If Insomnia is not running when the lid
+opens, the brightness-up key restores the panel. Bluetooth is still left alone (needed for Instant
 Hotspot, and negligible).
+
+Low Power Mode on lid close is decided by the same rule as the battery and
+thermal floors (section 6), so the three causes never fight over the mode: it
+stays on while any of them holds and is switched off when none does. It applies
+whether or not the charger is connected, because with sleep disabled a closed
+Mac otherwise runs at full speed and heats up. A lid-caused change is logged
+but not announced: switching the mode off is announced only when the cause that
+last held while it was on was the battery or thermal floor, not the lid.
+
 
 ### 5. Agent apps: keep them fast
 
@@ -201,8 +225,11 @@ percentage change) and `ProcessInfo.thermalStateDidChangeNotification`.
 | battery below `endFloor` (default 10%) | end session, notify | — |
 | thermal state `serious` | `lowpowermode 1` | thermal back to `nominal`/`fair`, or session end |
 | thermal state `critical` | end session, notify | — |
+| lid closed (if `lowPowerOnLidClose`, charging or not) | `lowpowermode 1`, no notification | lid opened, or session end |
 
-Insomnia does not enable Low Power Mode merely because a session starts.
+Insomnia does not enable Low Power Mode merely because a session starts; the
+causes are the battery floor, a serious thermal state, and (by default) a closed
+lid. One evaluation owns the mode: it is switched off only when no cause holds.
 Battery and thermal rules run only while the app is alive; they are not
 provided by the standalone backstop. Performance effects depend on workload.
 

@@ -1,0 +1,88 @@
+import CoreGraphics
+import Foundation
+
+/// The last display and keyboard brightness values that were read while
+/// they could be trusted (spec section 4).
+struct BrightnessSample: Equatable, Sendable {
+    var display: Float?
+    var keyboard: Float?
+    var takenAt: Date
+}
+
+/// Seconds since the last keyboard, mouse or trackpad event, from public
+/// CoreGraphics; needs no permission.
+enum UserInput {
+    /// `kCGAnyInputEventType` (~0) is not importable in Swift, so it is
+    /// spelled out. `CGEventType` is an open enum: any raw value is valid.
+    static let anyInputEventType = CGEventType(rawValue: UInt32.max)!
+
+    static func secondsSinceLastInput() -> Double {
+        CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: anyInputEventType)
+    }
+}
+
+/// Remembers the user's real brightness values so a lid close that finds the
+/// panel idle-dimmed or asleep (where the display reads its dim value and
+/// the keyboard reads 0) still journals something worth restoring. A reading
+/// is trusted when the user touched the machine less than `maxIdle` seconds
+/// ago (the idle dim never starts within 30 s of input) and the device is
+/// not being held down by macOS itself.
+@MainActor
+final class BrightnessSampler {
+    private let display: any DisplayDimming
+    private let keyboard: any KeyboardBacklighting
+    private let idleSeconds: @Sendable () -> Double
+    private let clock: @Sendable () -> Date
+    private let maxIdle: Double
+
+    private(set) var last: BrightnessSample?
+
+    init(
+        display: any DisplayDimming,
+        keyboard: any KeyboardBacklighting,
+        idleSeconds: @escaping @Sendable () -> Double,
+        clock: @escaping @Sendable () -> Date = { Date() },
+        maxIdle: Double = 30
+    ) {
+        self.display = display
+        self.keyboard = keyboard
+        self.idleSeconds = idleSeconds
+        self.clock = clock
+        self.maxIdle = maxIdle
+    }
+
+    /// True when a display reading taken now is the user's value: recent
+    /// input and the panel is awake.
+    var displayReadIsTrusted: Bool {
+        idleSeconds() < maxIdle && !display.isAsleep()
+    }
+
+    /// Same for the keyboard: recent input and the backlight is neither
+    /// suppressed by display sleep nor idle-dimmed.
+    var keyboardReadIsTrusted: Bool {
+        idleSeconds() < maxIdle && !keyboard.isSuppressedOrDimmed()
+    }
+
+    /// Reads whichever of the two values is trustworthy right now and merges
+    /// them into `last` per field, so a trusted display read next to an
+    /// untrusted keyboard keeps the earlier keyboard value. A read that
+    /// throws, or a keyboard without a backlight, is skipped. Returns what
+    /// was taken now; nil when nothing was.
+    @discardableResult
+    func sample() -> BrightnessSample? {
+        var taken = BrightnessSample(display: nil, keyboard: nil, takenAt: clock())
+        if displayReadIsTrusted, let value = try? display.readBrightness() {
+            taken.display = value
+        }
+        if keyboardReadIsTrusted, let value = (try? keyboard.readBrightness()) ?? nil {
+            taken.keyboard = value
+        }
+        guard taken.display != nil || taken.keyboard != nil else { return nil }
+        var merged = last ?? taken
+        merged.takenAt = taken.takenAt
+        if let value = taken.display { merged.display = value }
+        if let value = taken.keyboard { merged.keyboard = value }
+        last = merged
+        return taken
+    }
+}

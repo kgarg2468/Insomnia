@@ -92,6 +92,10 @@ final class SessionManager {
     private let recoveryLock: RecoveryLock
     private let recoveryLockTimeout: TimeInterval
     private let recoveryRetryDelay: TimeInterval
+    /// How long after a display/keyboard restore the same values are
+    /// written once more. powerd re-applies its own remembered brightness
+    /// asynchronously after the wake and can override the first write.
+    private let reassertDelay: Duration
 
     /// System integrations (lid, battery, network, ...). Set by `live()`;
     /// nil in tests. Started after a session starts, stopped when it ends.
@@ -132,7 +136,8 @@ final class SessionManager {
         clamshell: @escaping @Sendable () -> Bool? = { LidObserver.readClamshellState() },
         clock: @escaping @Sendable () -> Date = { Date() },
         recoveryLockTimeout: TimeInterval = 10,
-        recoveryRetryDelay: TimeInterval = 30
+        recoveryRetryDelay: TimeInterval = 30,
+        reassertDelay: Duration = .seconds(2)
     ) {
         self.paths = paths
         self.store = Store(paths: paths)
@@ -148,6 +153,7 @@ final class SessionManager {
         self.recoveryLock = RecoveryLock(url: paths.recoveryLock)
         self.recoveryLockTimeout = recoveryLockTimeout
         self.recoveryRetryDelay = recoveryRetryDelay
+        self.reassertDelay = reassertDelay
 
         try? paths.createDirectories()
         var loadedState: RuntimeState?
@@ -666,11 +672,19 @@ final class SessionManager {
         if state.savedDisplayBrightness != nil || state.savedKeyboardBrightness != nil {
             display.wake()
         }
+        // Read before the entries are cleared: the re-assert below needs them.
+        var restoredDisplay: Float?
+        var restoredKeyboard: Float?
         if let saved = state.savedDisplayBrightness {
             do {
                 try display.setBrightness(saved)
-                try? journal { $0.savedDisplayBrightness = nil }
                 Log.info("display restored (brightness \(saved))")
+                restoredDisplay = saved
+                do {
+                    try journal { $0.savedDisplayBrightness = nil }
+                } catch {
+                    fail("display brightness restored but the journal entry could not be cleared: \(error.localizedDescription); it will be retried")
+                }
             } catch {
                 fail("could not restore display brightness: \(error.localizedDescription)")
             }
@@ -678,10 +692,44 @@ final class SessionManager {
         if let saved = state.savedKeyboardBrightness {
             do {
                 try keyboard.setBrightness(saved)
-                try? journal { $0.savedKeyboardBrightness = nil }
                 Log.info("keyboard backlight restored (brightness \(saved))")
+                restoredKeyboard = saved
+                do {
+                    try journal { $0.savedKeyboardBrightness = nil }
+                } catch {
+                    fail("keyboard backlight restored but the journal entry could not be cleared: \(error.localizedDescription); it will be retried")
+                }
             } catch {
                 fail("could not restore keyboard backlight: \(error.localizedDescription)")
+            }
+        }
+        // powerd applies its own remembered "pre-dim" brightness a moment
+        // after the wake and can override the write above, so the same
+        // values go out once more. Best effort: errors are only logged.
+        if restoredDisplay != nil || restoredKeyboard != nil {
+            let display = display
+            let keyboard = keyboard
+            let delay = reassertDelay
+            let displayValue = restoredDisplay
+            let keyboardValue = restoredKeyboard
+            Task.detached {
+                try? await Task.sleep(for: delay)
+                if let value = displayValue {
+                    do {
+                        try display.setBrightness(value)
+                        Log.info("display restore re-asserted (brightness \(value))")
+                    } catch {
+                        Log.info("display restore re-assert failed: \(error.localizedDescription)")
+                    }
+                }
+                if let value = keyboardValue {
+                    do {
+                        try keyboard.setBrightness(value)
+                        Log.info("keyboard restore re-asserted (brightness \(value))")
+                    } catch {
+                        Log.info("keyboard restore re-assert failed: \(error.localizedDescription)")
+                    }
+                }
             }
         }
     }

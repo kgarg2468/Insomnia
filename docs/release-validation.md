@@ -82,6 +82,28 @@ dark either way. No sudoers or install change was needed. The fix is covered
 by unit tests with fakes only; the rows below stay "Not run" until exercised
 on hardware.
 
+A simulated run of that fix on the same machine, later on September 16, 2026
+(`scripts/simulate-lid.sh` during a session, lid open), found a defect in
+what was saved. The close happened after the panel had idle-dimmed and slept:
+`DisplayServicesGetBrightness` returned the idle-dim value (0.0625, user value
+0.5), and with the display asleep the keyboard backlight was suppressed
+(`isBacklightSuppressedOnKeyboard:` true), so `brightnessForKeyboard:`
+returned 0; the journal held 0.0625 and 0, and the open restored a dim panel
+and a dead backlight. Also measured: powerd keeps its own "pre-dim"
+brightness and re-applies it asynchronously on every display wake, so a
+restore written right after `IOPMAssertionDeclareUserActivity` can be
+overridden a moment later; writes made while the display is asleep never
+update that memory; the keyboard idle-dims on its own
+(`isBacklightDimmedOnKeyboard:`); and
+`CGEventSource.secondsSinceLastEventType(.hidSystemState, kCGAnyInputEventType)`
+(public, no permission) gives the idle time, with the idle dim never starting
+within 30 s of input. The fix: a reading is trusted only with idle under 30 s
+and the device awake/unsuppressed, `BrightnessSampler` keeps the last trusted
+reading (every 30 s with the lid open, at start, 3 s after each open), the
+close journals the trusted value or the sample, leaves the keyboard alone when
+neither exists, and the open re-asserts the restore 2 s after the wake. Unit
+tests with fakes only; the hardware rows below are unchanged.
+
 ## Hardware validation still required
 
 None of the cases below is certified by the automated regression suite. Record
