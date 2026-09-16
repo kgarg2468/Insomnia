@@ -215,6 +215,10 @@ final class AppServices {
             if closed { await actions.onClose() } else { await actions.onOpen() }
             guard !Task.isCancelled, self.running else { return }
             self.syncState()
+            // The lid is a Low Power Mode cause (spec section 4): re-run the
+            // floors now that the lid transaction is done. Queued on the
+            // floor chain, so it stays serialized with battery events.
+            self.powerChanged()
         }
         lidTasks.append(task)
     }
@@ -225,11 +229,12 @@ final class AppServices {
         let percent = power.percent
         let charging = power.isCharging
         let thermal = power.thermalState
+        let lidClosed = status.lidClosed
         let previous = floorTasks.last
         let task = Task { @MainActor in
             await previous?.value
             guard !Task.isCancelled, self.running else { return }
-            await floors.run(percent: percent, isCharging: charging, thermal: thermal)
+            await floors.run(percent: percent, isCharging: charging, thermal: thermal, lidClosed: lidClosed)
             guard !Task.isCancelled, self.running else { return }
             self.syncState()
         }

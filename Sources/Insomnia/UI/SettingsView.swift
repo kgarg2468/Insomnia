@@ -132,6 +132,7 @@ struct SettingsView: View {
             )
             Toggle("Pause Docker Desktop when no containers are running", isOn: bind(\.dockerRule))
             Toggle("Mute audio on lid close", isOn: bind(\.muteOnLidClose))
+            Toggle("Low Power Mode while the lid is closed", isOn: bind(\.lowPowerOnLidClose))
         } header: {
             Text("Lid-close actions")
         } footer: {

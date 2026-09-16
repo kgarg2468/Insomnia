@@ -16,6 +16,9 @@ struct Config: Codable, Equatable, Sendable {
     var freezeList: [String] = Config.defaultFreezeList
     var dockerRule: Bool = true
     var muteOnLidClose: Bool = false
+    /// Switch Low Power Mode on while the lid is closed (heat and battery:
+    /// with sleep disabled the machine otherwise runs at full speed).
+    var lowPowerOnLidClose: Bool = true
 
     // Agent apps that must never be throttled or frozen.
     var agentList: [String] = Config.defaultAgentList
@@ -82,6 +85,7 @@ struct Config: Codable, Equatable, Sendable {
         freezeList = try c.decodeIfPresent([String].self, forKey: .freezeList) ?? d.freezeList
         dockerRule = try c.decodeIfPresent(Bool.self, forKey: .dockerRule) ?? d.dockerRule
         muteOnLidClose = try c.decodeIfPresent(Bool.self, forKey: .muteOnLidClose) ?? d.muteOnLidClose
+        lowPowerOnLidClose = try c.decodeIfPresent(Bool.self, forKey: .lowPowerOnLidClose) ?? d.lowPowerOnLidClose
         agentList = try c.decodeIfPresent([String].self, forKey: .agentList) ?? d.agentList
         lowPowerFloor = try c.decodeIfPresent(Int.self, forKey: .lowPowerFloor) ?? d.lowPowerFloor
         endFloor = try c.decodeIfPresent(Int.self, forKey: .endFloor) ?? d.endFloor
