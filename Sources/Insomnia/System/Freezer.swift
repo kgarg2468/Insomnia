@@ -109,6 +109,12 @@ enum FreezePlanner {
         // (observed running alongside com.docker.docker); the Docker rule
         // owns the whole tree, the automatic scope must not.
         "com.electron.dockerdesktop",       // Docker Desktop UI
+        // Dock apps that host services agents depend on (SSH agent, local
+        // databases, container runtimes). Unverified ids, see below.
+        "com.1password.1password",          // 1Password (SSH agent lives in the app; unverified)
+        "com.bitwarden.desktop",            // Bitwarden (unverified)
+        "com.postgresapp.Postgres2",        // Postgres.app (unverified)
+        "dev.orbstack.OrbStack",            // OrbStack (unverified)
         // Unverified: bundle ids taken from vendor documentation, not from a
         // running copy on this machine.
         "com.exafunction.windsurf",         // Windsurf (unverified)
