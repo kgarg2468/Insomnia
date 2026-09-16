@@ -15,6 +15,7 @@ final class ConfigTests: XCTestCase {
         XCTAssertTrue(c.agentList.contains("com.docker.docker"))
         XCTAssertTrue(c.dockerRule)
         XCTAssertFalse(c.muteOnLidClose)
+        XCTAssertTrue(c.lowPowerOnLidClose)
         XCTAssertTrue(c.thermalRules)
         XCTAssertEqual(c.hotspotSSID, "")
         XCTAssertEqual(c.tmuxTargets, [])
@@ -27,6 +28,15 @@ final class ConfigTests: XCTestCase {
         var expected = Config()
         expected.lowPowerFloor = 25
         XCTAssertEqual(c, expected)
+    }
+
+    func testLowPowerOnLidCloseDecodesAndDefaultsOn() throws {
+        let off = try Store.makeDecoder().decode(Config.self, from: Data(#"{"lowPowerOnLidClose": false}"#.utf8))
+        XCTAssertFalse(off.lowPowerOnLidClose)
+        // A config written before the key existed keeps the default.
+        let old = try Store.makeDecoder().decode(Config.self, from: Data(#"{"muteOnLidClose": true}"#.utf8))
+        XCTAssertTrue(old.lowPowerOnLidClose)
+        XCTAssertTrue(old.muteOnLidClose)
     }
 
     func testEmptyObjectIsDefaults() throws {
