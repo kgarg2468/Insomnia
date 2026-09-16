@@ -482,6 +482,66 @@ final class LidActionsTests: XCTestCase {
         XCTAssertEqual(h.procs.suspended.count, 2)
     }
 
+    // MARK: Freeze every other app
+
+    /// Figma (600 + helper 601) and Wispr Flow (700) are Dock apps not on
+    /// any list; Bartender (800) is a menu-bar (accessory) app.
+    private func addDockAndAccessoryApps() {
+        freezer.apps = apps + [
+            RunningApp(pid: 600, bundleId: "com.figma.Desktop", name: "Figma"),
+            RunningApp(pid: 700, bundleId: "com.electron.wispr-flow", name: "Wispr Flow"),
+            RunningApp(pid: 800, bundleId: "com.surteesstudios.Bartender", name: "Bartender", activationPolicy: .accessory),
+        ]
+        freezer.processes = processes + [
+            ProcessEntry(pid: 600, ppid: 1, startedAt: 6000),
+            ProcessEntry(pid: 601, ppid: 600, startedAt: 6001),
+            ProcessEntry(pid: 700, ppid: 1, startedAt: 7000),
+            ProcessEntry(pid: 800, ppid: 1, startedAt: 8000),
+        ]
+    }
+
+    /// With the toggle on, every regular app outside the denylist is frozen
+    /// after the explicit list; the accessory app is never touched. Each
+    /// group is journaled before its SIGSTOP, as for the explicit list.
+    func testFreezeAllFreezesRegularAppsButNotAccessoryApps() async throws {
+        addDockAndAccessoryApps()
+        let (m, actions) = await make()
+        m.config.freezeAllApps = true
+        await m.start(duration: 3600)
+        let store = h.store
+        let sawPids = Locked(true)
+        h.procs.onSuspend = { pids in
+            let s = (try? store.loadState()) ?? nil
+            if !Set(pids).isSubset(of: Set(s?.frozenPids ?? [])) { sawPids.value = false }
+        }
+
+        await actions.onClose()
+
+        XCTAssertTrue(sawPids.value, "SIGSTOP ran before the pids were journaled")
+        XCTAssertEqual(h.procs.suspended, [[100, 101, 102], [600, 601], [700], [400, 401]])
+        XCTAssertFalse(h.procs.suspended.flatMap { $0 }.contains(800), "accessory app frozen")
+        let s = try XCTUnwrap(try store.loadState())
+        XCTAssertEqual(s.frozenPids, [100, 101, 102, 600, 601, 700, 400, 401])
+        XCTAssertTrue(s.frozenProcesses.allSatisfy { $0.identity != nil })
+        XCTAssertEqual(m.state, s)
+
+        await actions.onOpen()
+        XCTAssertEqual(h.procs.resumed, [[100, 101, 102, 600, 601, 700, 400, 401]])
+        XCTAssertEqual(try h.store.loadState()?.frozenProcesses, [])
+    }
+
+    func testFreezeAllOffFreezesTheListOnly() async throws {
+        addDockAndAccessoryApps()
+        let (m, actions) = await make()
+        m.config.freezeAllApps = false
+        await m.start(duration: 3600)
+
+        await actions.onClose()
+
+        XCTAssertEqual(h.procs.suspended, [[100, 101, 102], [400, 401]])
+        XCTAssertEqual(try h.store.loadState()?.frozenPids, [100, 101, 102, 400, 401])
+    }
+
     /// A helper that was already stopped before the lid closed (a debugger,
     /// the user, an earlier crash) is not Insomnia's to freeze: it is never
     /// journaled and never resumed on lid open.
