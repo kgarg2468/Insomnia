@@ -109,18 +109,36 @@ Quit, or reconcile.
 |---|---|---|
 | Display (optional, default on) | save brightness, set it to 0, request display sleep (best effort) | wake the display, restore the saved brightness |
 | Keyboard backlight (optional, same toggle) | save brightness, set it to 0 | restore the saved brightness |
-| Freeze list | `SIGSTOP` every process whose responsible app is in the list | `SIGCONT` the recorded pids only |
+| Freeze scope | `SIGSTOP` every process whose responsible app is in the freeze scope (rules below) | `SIGCONT` the recorded pids only |
 | Docker rule | if Docker Desktop is running and `docker ps -q` is empty, freeze it | resume |
 | Mute (optional) | save volume and mute state, then mute | restore both exactly |
 | Low Power Mode | on (optional, default on) | off unless a battery or thermal floor still wants it |
 | Countdown redraw | stop timer | restart timer |
 
-Freeze list rules:
+Freeze scope rules:
 
-- User picks apps by bundle id from a list of currently running apps.
-- Hard denylist that can never be frozen: `com.apple.*`, Insomnia itself,
-  Docker Desktop (handled by the Docker rule), and any bundle id in the
-  agent list (below).
+- Two scopes. The explicit freeze list: apps the user picks by bundle id from
+  a list of currently running apps; always frozen. The automatic scope
+  (`freezeAllApps`, default on): every running app with a regular activation
+  policy (a Dock app) and a bundle id, so that only agents keep running while
+  the lid is closed. Menu-bar (accessory) and background apps are never picked
+  up automatically; they can be put on the explicit list by hand. With the
+  toggle off the explicit list is the whole scope.
+- Hard denylist that can never be frozen, from either scope: `com.apple.*`,
+  Insomnia itself, Docker Desktop (handled by the Docker rule), and any bundle
+  id in the agent list (below).
+- Built-in protected set (`FreezePlanner.builtInProtected`): editors and agent
+  hosts (VS Code, Cursor, Zed, Antigravity, Claude, ChatGPT/Codex, Conductor,
+  T3 Code, Windsurf, JetBrains IDEs), terminals (Warp, Ghostty, iTerm),
+  browsers agents drive (Arc, Chrome, Chromium), Tailscale, LM Studio, Ollama
+  and Docker Desktop's Electron front end. The automatic scope leaves them
+  alone even when they are not on the agent list. Code level and not
+  persisted: an existing config.json already carries its own agent list, so
+  new agent-list defaults never reach it. An explicit freeze-list entry
+  overrides this set; the hard denylist does not.
+- Order: the explicit list first, in its own order, then the automatic
+  candidates by app name, de-duplicated. One info log line names the
+  automatic candidates on each close.
 - Only pids Insomnia stopped are resumed. An app launched while the lid is
   closed is left alone.
 - Electron apps are stopped as a whole process tree (main + helpers), found
@@ -172,7 +190,13 @@ last held while it was on was the battery or thermal floor, not the lid.
 ### 5. Agent apps: keep them fast
 
 - Agent list (bundle ids, default: T3 Code, Conductor, Terminal, iTerm,
-  Ghostty, Warp, Chrome, Chromium, Arc, Docker Desktop). Editable.
+  Ghostty, Warp, Chrome, Chromium, Arc, Docker Desktop, VS Code, Cursor, Zed,
+  Antigravity, Claude, ChatGPT/Codex, Tailscale, LM Studio, Ollama). Editable.
+- Built-in protection (section 4): the same editors, agent hosts, terminals,
+  browsers, VPN and local model runtimes are protected from the automatic
+  lid-close scope even on an install whose config.json predates these
+  defaults and never lists them. Only the agent list also disables App Nap;
+  only an explicit freeze-list entry overrides the built-in protection.
 - On session start Insomnia sets `NSAppSleepDisabled = YES` for each listed app
   so App Nap never throttles them. This is a persistent per-app default and is
   left in place after session end and uninstall. This changes the affected
@@ -281,7 +305,8 @@ JSON at `~/Library/Application Support/Insomnia/config.json`, edited through a
 small settings window:
 
 - presets, default preset
-- freeze list (bundle ids), Docker rule on/off, mute on lid close on/off
+- freeze list (bundle ids), freeze every other app on/off, Docker rule
+  on/off, mute on lid close on/off
 - agent list (bundle ids)
 - `lowPowerFloor`, `endFloor`, thermal rules on/off
 - hotspot SSID (password entered once, stored in Keychain), `nudgeThreshold`

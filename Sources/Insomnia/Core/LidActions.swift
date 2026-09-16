@@ -6,7 +6,8 @@ import Foundation
 ///
 /// Order on close: darken (save display brightness and keyboard backlight
 /// first, then set both to 0 and ask the display to sleep), mute (save
-/// volume + mute state first), freeze list (one journal write per app),
+/// volume + mute state first), freeze scope (the freeze list plus every
+/// other Dock app when `freezeAllApps` is on; one journal write per app),
 /// Docker rule, stop the countdown redraw.
 /// Order on open: the exact reverse, driven by `SessionManager.undoLidActions`.
 @MainActor
@@ -60,7 +61,7 @@ final class LidActions {
                 muteSavingCurrent(manager)
             }
 
-            let groups = freezer.plan(bundleIds: config.freezeList, config: config)
+            let groups = freezer.plan(config: config)
             for group in groups {
                 freeze(group, docker: false, manager: manager)
             }

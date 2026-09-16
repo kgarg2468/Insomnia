@@ -117,6 +117,7 @@ is performed. Do not replace "not run" with "passed" based on source review.
 | Reboot/login with active or dirty journals | Not run |
 | Lid-close/open and safe recovery of explicitly selected test processes | Not run |
 | Lid-close display/keyboard darkening and restore | Not run |
+| Freeze-all scope with agents running (Cursor/T3 Code/Claude untouched) | Not run |
 | Simulated lid close/open via scripts/simulate-lid.sh | Not run |
 | Existing Low Power Mode preference and saved audio restoration | Not run |
 | Docker Desktop idle/busy behavior with another Docker context selected | Not run |

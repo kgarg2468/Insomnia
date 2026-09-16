@@ -13,9 +13,13 @@ final class ConfigTests: XCTestCase {
         XCTAssertTrue(c.agentList.contains("com.apple.Terminal"))
         XCTAssertTrue(c.agentList.contains("com.t3tools.t3code"))
         XCTAssertTrue(c.agentList.contains("com.docker.docker"))
+        XCTAssertTrue(c.agentList.contains("com.microsoft.VSCode"))
+        XCTAssertTrue(c.agentList.contains("com.todesktop.230313mzl4w4u92"))
+        XCTAssertTrue(c.agentList.contains("io.tailscale.ipn.macsys"))
         XCTAssertTrue(c.dockerRule)
         XCTAssertFalse(c.muteOnLidClose)
         XCTAssertTrue(c.darkenDisplayOnLidClose)
+        XCTAssertTrue(c.freezeAllApps)
         XCTAssertTrue(c.lowPowerOnLidClose)
         XCTAssertTrue(c.thermalRules)
         XCTAssertEqual(c.hotspotSSID, "")
@@ -57,6 +61,33 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(off, expected)
         let data = try Store.makeEncoder().encode(off)
         XCTAssertEqual(try Store.makeDecoder().decode(Config.self, from: data), off)
+    }
+
+    /// A config.json written before the freeze-all toggle existed keeps the
+    /// default (on); an explicit false is honoured.
+    func testFreezeAllAppsDecodesTolerantly() throws {
+        let legacy = try Store.makeDecoder().decode(Config.self, from: Data(#"{"freezeList": ["com.hnc.Discord"]}"#.utf8))
+        XCTAssertTrue(legacy.freezeAllApps)
+        XCTAssertEqual(legacy.freezeList, ["com.hnc.Discord"])
+        let off = try Store.makeDecoder().decode(Config.self, from: Data(#"{"freezeAllApps": false}"#.utf8))
+        XCTAssertFalse(off.freezeAllApps)
+        var expected = Config()
+        expected.freezeAllApps = false
+        XCTAssertEqual(off, expected)
+        let data = try Store.makeEncoder().encode(off)
+        XCTAssertEqual(try Store.makeDecoder().decode(Config.self, from: data), off)
+    }
+
+    /// Cheap typo guard for the shipped defaults: no duplicates, and every
+    /// id looks like a reverse-DNS bundle id with a lowercase first label.
+    func testDefaultListsAreUniqueReverseDNSIds() throws {
+        let pattern = #"^[a-z][a-z0-9-]*(\.[A-Za-z0-9_-]+)+$"#
+        for (name, ids) in [("agentList", Config.defaultAgentList), ("freezeList", Config.defaultFreezeList), ("builtInProtected", Array(FreezePlanner.builtInProtected))] {
+            XCTAssertEqual(Set(ids).count, ids.count, "\(name) has duplicates")
+            for id in ids {
+                XCTAssertNotNil(id.range(of: pattern, options: .regularExpression), "\(name): \(id) does not look like a bundle id")
+            }
+        }
     }
 
     func testRoundTrip() throws {

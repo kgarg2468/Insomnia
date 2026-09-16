@@ -14,6 +14,10 @@ struct Config: Codable, Equatable, Sendable {
     // Lid-close actions
     /// Bundle ids to SIGSTOP while the lid is closed.
     var freezeList: [String] = Config.defaultFreezeList
+    /// Also SIGSTOP every other Dock app that is not an agent app, an Apple
+    /// app, Docker Desktop or built-in protected (`FreezePlanner.builtInProtected`).
+    /// Off: the freeze list only.
+    var freezeAllApps: Bool = true
     var dockerRule: Bool = true
     var muteOnLidClose: Bool = false
     /// Save the display brightness and keyboard backlight, set both to zero
@@ -76,6 +80,15 @@ struct Config: Codable, Equatable, Sendable {
         "org.chromium.Chromium",          // Chromium
         "company.thebrowser.Browser",     // Arc
         "com.docker.docker",              // Docker Desktop
+        "com.microsoft.VSCode",           // Visual Studio Code
+        "com.todesktop.230313mzl4w4u92",  // Cursor
+        "dev.zed.Zed",                    // Zed
+        "com.google.antigravity",         // Antigravity
+        "com.anthropic.claudefordesktop", // Claude
+        "com.openai.codex",               // ChatGPT (hosts Codex and computer use)
+        "io.tailscale.ipn.macsys",        // Tailscale
+        "ai.elementlabs.lmstudio",        // LM Studio
+        "com.electron.ollama",            // Ollama
     ]
 
     init() {}
@@ -87,6 +100,7 @@ struct Config: Codable, Equatable, Sendable {
         defaultPreset = try c.decodeIfPresent(TimeInterval.self, forKey: .defaultPreset) ?? d.defaultPreset
         maxDuration = try c.decodeIfPresent(TimeInterval.self, forKey: .maxDuration) ?? d.maxDuration
         freezeList = try c.decodeIfPresent([String].self, forKey: .freezeList) ?? d.freezeList
+        freezeAllApps = try c.decodeIfPresent(Bool.self, forKey: .freezeAllApps) ?? d.freezeAllApps
         dockerRule = try c.decodeIfPresent(Bool.self, forKey: .dockerRule) ?? d.dockerRule
         muteOnLidClose = try c.decodeIfPresent(Bool.self, forKey: .muteOnLidClose) ?? d.muteOnLidClose
         darkenDisplayOnLidClose = try c.decodeIfPresent(Bool.self, forKey: .darkenDisplayOnLidClose) ?? d.darkenDisplayOnLidClose

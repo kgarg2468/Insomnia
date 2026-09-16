@@ -361,6 +361,15 @@ final class FakeFreezer: Freezing, @unchecked Sendable {
         }
     }
 
+    func plan(config: Config) -> [FreezeGroup] {
+        lock.withLock {
+            FreezePlanner.groups(
+                bundleIds: FreezePlanner.lidCloseBundleIds(config: config, apps: apps, selfBundleId: selfBundleId),
+                apps: apps, processes: processes, config: config, selfBundleId: selfBundleId, applyDenylist: true
+            )
+        }
+    }
+
     func suspend(_ processes: [FrozenProcess], expectedParents: [Int32: Int32]) -> SuspendReport {
         control.suspend(processes, expectedParents: expectedParents)
     }
