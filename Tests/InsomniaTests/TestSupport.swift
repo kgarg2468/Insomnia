@@ -244,6 +244,7 @@ final class FakeDisplayDimmer: DisplayDimming, @unchecked Sendable {
     private var _sets: [Float] = []
     private var _sleepRequests = 0
     private var _wakes = 0
+    private var _asleep = false
     var throwOnRead = false
     var throwOnSet = false
     var throwOnSleep = false
@@ -259,10 +260,17 @@ final class FakeDisplayDimmer: DisplayDimming, @unchecked Sendable {
         get { lock.withLock { _brightness } }
         set { lock.withLock { _brightness = newValue } }
     }
+    /// Models `CGDisplayIsAsleep`; a read while asleep is the idle-dim value.
+    var asleep: Bool {
+        get { lock.withLock { _asleep } }
+        set { lock.withLock { _asleep = newValue } }
+    }
     /// Every value written, in order.
     var sets: [Float] { lock.withLock { _sets } }
     var sleepRequests: Int { lock.withLock { _sleepRequests } }
     var wakes: Int { lock.withLock { _wakes } }
+
+    func isAsleep() -> Bool { asleep }
 
     func readBrightness() throws -> Float {
         if throwOnRead { throw DisplayPowerError(what: "read brightness") }
@@ -293,6 +301,7 @@ final class FakeKeyboardBacklight: KeyboardBacklighting, @unchecked Sendable {
     private let lock = NSLock()
     private var _brightness: Float?
     private var _sets: [Float] = []
+    private var _suppressedOrDimmed = false
     var throwOnRead = false
     var throwOnSet = false
     /// Called synchronously inside `setBrightness`.
@@ -306,7 +315,15 @@ final class FakeKeyboardBacklight: KeyboardBacklighting, @unchecked Sendable {
         get { lock.withLock { _brightness } }
         set { lock.withLock { _brightness = newValue } }
     }
+    /// Models display-sleep suppression or the keyboard's own idle dim; a
+    /// read while suppressed is 0.
+    var suppressedOrDimmed: Bool {
+        get { lock.withLock { _suppressedOrDimmed } }
+        set { lock.withLock { _suppressedOrDimmed = newValue } }
+    }
     var sets: [Float] { lock.withLock { _sets } }
+
+    func isSuppressedOrDimmed() -> Bool { suppressedOrDimmed }
 
     func readBrightness() throws -> Float? {
         if throwOnRead { throw DisplayPowerError(what: "read keyboard backlight") }
