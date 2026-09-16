@@ -172,7 +172,9 @@ off; a display with no trusted sample journals the dim value anyway, since a
 dim panel on open beats a black one. On open the restore is written, the
 entries cleared, and the same values written once more 2 s later, because
 powerd re-applies its own remembered brightness asynchronously after the wake
-and can override the first write. If Insomnia is not running when the lid
+and can override the first write; that second write is skipped if the lid
+closed again in the meantime (the close journals fresh values first) and
+superseded by any newer restore. If Insomnia is not running when the lid
 opens, the brightness-up key restores the panel. Bluetooth is still left alone (needed for Instant
 Hotspot, and negligible).
 

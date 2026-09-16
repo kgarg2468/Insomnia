@@ -198,6 +198,26 @@ final class LidActionsTests: XCTestCase {
         XCTAssertTrue(log.contains("keyboard restore re-asserted"), log)
     }
 
+    /// The lid closed again before the delayed re-assert ran: the close
+    /// journaled fresh values before darkening, so the stale re-assert
+    /// must skip rather than light the panel under a closed lid.
+    func testReassertIsSkippedWhenTheLidClosedAgain() async throws {
+        let (m, actions) = await make(reassertDelay: .milliseconds(200))
+        await m.start(duration: 3600)
+        await actions.onClose()
+        await actions.onOpen()
+
+        await actions.onClose()
+        try await Task.sleep(for: .milliseconds(700))
+
+        XCTAssertEqual(h.display.sets, [0, 0.7, 0], "no 0.7 after the second close")
+        XCTAssertEqual(h.keyboard.sets, [0, 0.5, 0])
+        XCTAssertEqual(try h.store.loadState()?.savedDisplayBrightness, 0.7, "the second close is journaled")
+        let log = (try? String(contentsOf: h.home.paths.logFile, encoding: .utf8)) ?? ""
+        XCTAssertTrue(log.contains("display restore re-assert skipped: darkened again"), log)
+        XCTAssertFalse(log.contains("display restore re-asserted"), log)
+    }
+
     /// A restore that failed is not re-asserted: there is nothing known to
     /// have been written, and the entry stays for the next undo.
     func testFailedRestoreIsNotReasserted() async throws {

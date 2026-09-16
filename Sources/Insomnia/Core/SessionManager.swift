@@ -96,6 +96,10 @@ final class SessionManager {
     /// written once more. powerd re-applies its own remembered brightness
     /// asynchronously after the wake and can override the first write.
     private let reassertDelay: Duration
+    /// The pending second write of a display/keyboard restore. One at a
+    /// time: the next restore cancels it, and a lid close that darkened
+    /// again in the meantime makes it skip (see undoLidActionsInJournal).
+    private var reassertTask: Task<Void, Never>?
 
     /// System integrations (lid, battery, network, ...). Set by `live()`;
     /// nil in tests. Started after a session starts, stopped when it ends.
@@ -706,28 +710,37 @@ final class SessionManager {
         // powerd applies its own remembered "pre-dim" brightness a moment
         // after the wake and can override the write above, so the same
         // values go out once more. Best effort: errors are only logged.
+        // Tracked, not detached: a newer restore cancels it, and if a lid
+        // close journaled fresh values during the delay (it journals before
+        // it darkens) the old values must not light the panel again.
+        reassertTask?.cancel()
         if restoredDisplay != nil || restoredKeyboard != nil {
-            let display = display
-            let keyboard = keyboard
             let delay = reassertDelay
-            let displayValue = restoredDisplay
-            let keyboardValue = restoredKeyboard
-            Task.detached {
+            reassertTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: delay)
-                if let value = displayValue {
-                    do {
-                        try display.setBrightness(value)
-                        Log.info("display restore re-asserted (brightness \(value))")
-                    } catch {
-                        Log.info("display restore re-assert failed: \(error.localizedDescription)")
+                guard let self, !Task.isCancelled else { return }
+                if let value = restoredDisplay {
+                    if self.state.savedDisplayBrightness != nil {
+                        Log.info("display restore re-assert skipped: darkened again")
+                    } else {
+                        do {
+                            try self.display.setBrightness(value)
+                            Log.info("display restore re-asserted (brightness \(value))")
+                        } catch {
+                            Log.info("display restore re-assert failed: \(error.localizedDescription)")
+                        }
                     }
                 }
-                if let value = keyboardValue {
-                    do {
-                        try keyboard.setBrightness(value)
-                        Log.info("keyboard restore re-asserted (brightness \(value))")
-                    } catch {
-                        Log.info("keyboard restore re-assert failed: \(error.localizedDescription)")
+                if let value = restoredKeyboard {
+                    if self.state.savedKeyboardBrightness != nil {
+                        Log.info("keyboard restore re-assert skipped: darkened again")
+                    } else {
+                        do {
+                            try self.keyboard.setBrightness(value)
+                            Log.info("keyboard restore re-asserted (brightness \(value))")
+                        } catch {
+                            Log.info("keyboard restore re-assert failed: \(error.localizedDescription)")
+                        }
                     }
                 }
             }
