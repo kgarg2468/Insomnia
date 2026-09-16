@@ -36,6 +36,33 @@ final class IntegrationWiringTests: XCTestCase {
         XCTAssertEqual(source.locationPermission.authorizationStatus, .authorizedAlways)
     }
 
+    /// `reevaluateFloors()` is the hook Settings calls when a floor input
+    /// changes. It queues on the floor chain exactly like a power event, so
+    /// with no session (no floor driver) it does nothing. Starting the
+    /// services needs the real lid and battery observers, so the queued run
+    /// itself is covered at the driver level
+    /// (`testTogglingLidOptionWhileLidIsClosedAppliesOnTheNextRun`).
+    @MainActor
+    func testReevaluateFloorsWithoutASessionIsANoOp() {
+        let home = TempHome()
+        defer { home.destroy() }
+        let notifier = RecordingNotifier()
+        let services = AppServices(
+            paths: home.paths,
+            notifier: notifier,
+            audio: FakeAudioControl(),
+            processControl: FakeProcessControl(),
+            locationPermission: LocationPermission(authorizationStatus: .notDetermined)
+        )
+        services.status.lidClosed = true
+
+        services.reevaluateFloors()
+
+        XCTAssertFalse(services.running)
+        XCTAssertTrue(services.status.lidClosed)
+        XCTAssertEqual(notifier.posts.count, 0)
+    }
+
     @MainActor
     func testLiveStatusSourceMapsBrowserDisplayNameToBundleID() {
         let statuses = [

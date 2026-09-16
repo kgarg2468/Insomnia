@@ -127,7 +127,8 @@ thermal floors (section 6), so the three causes never fight over the mode: it
 stays on while any of them holds and is switched off when none does. It applies
 whether or not the charger is connected, because with sleep disabled a closed
 Mac otherwise runs at full speed and heats up. A lid-caused change is logged
-but not announced.
+but not announced: switching the mode off is announced only when the cause that
+last held while it was on was the battery or thermal floor, not the lid.
 
 Not done on lid close, because it saves nothing: display brightness (panel is
 already off by hardware), keyboard backlight (same), Bluetooth (needed for

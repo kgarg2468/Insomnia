@@ -126,6 +126,31 @@ final class FloorRulesTests: XCTestCase {
         XCTAssertEqual(eval(30, thermal: .serious, lid: true), [.enableLowPower(.thermal)])
         XCTAssertEqual(eval(80, thermal: .serious, lid: true), [.enableLowPower(.thermal)])
     }
+
+    func cause(_ percent: Int?, charging: Bool = false, thermal: ProcessInfo.ThermalState = .nominal, lid: Bool = false, config: Config = Config()) -> FloorRules.LowPowerCause? {
+        FloorRules.lowPowerCause(percent: percent, isCharging: charging, thermal: thermal, lidClosed: lid, config: config)
+    }
+
+    /// The effective cause is the strongest one holding right now, whether
+    /// or not Insomnia already has the mode on.
+    func testLowPowerCauseNamesTheStrongestHoldingCause() {
+        XCTAssertNil(cause(80))
+        XCTAssertNil(cause(35, charging: true))
+        XCTAssertEqual(cause(35), .battery)
+        XCTAssertEqual(cause(80, thermal: .serious), .thermal)
+        XCTAssertEqual(cause(80, lid: true), .lid)
+        XCTAssertEqual(cause(35, lid: true), .battery)
+        XCTAssertEqual(cause(35, charging: true, lid: true), .lid)
+        XCTAssertEqual(cause(35, thermal: .serious, lid: true), .thermal)
+    }
+
+    func testLowPowerCauseHonorsTheOptions() {
+        var c = Config()
+        c.lowPowerOnLidClose = false
+        c.thermalRules = false
+        XCTAssertNil(cause(80, thermal: .serious, lid: true, config: c))
+        XCTAssertEqual(cause(35, thermal: .serious, lid: true, config: c), .battery)
+    }
 }
 
 @MainActor
@@ -349,5 +374,123 @@ final class FloorRuleDriverTests: XCTestCase {
         await driver.run(percent: 80, isCharging: false, thermal: .nominal, lidClosed: true)
         XCTAssertFalse(h.guardFake.calls.contains("lowpowermode 1"))
         XCTAssertEqual(try h.store.loadState()?.lowPowerSetByUs, false)
+    }
+
+    // The disable is announced iff the cause that last held while Insomnia
+    // had the mode on was battery or thermal; it is silent iff that cause
+    // was the lid. The cause is tracked on every run, not only at enable.
+
+    /// Lid enable, battery takes over, charger connected with the lid still
+    /// closed (the lid holds the mode: no action), then lid open: the last
+    /// holding cause was the lid, so the disable is silent.
+    func testBatteryTakeoverThenRecoveryUnderClosedLidEndsSilentlyOnLidOpen() async throws {
+        let m = h.makeManager()
+        await m.start(duration: 3600)
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 80, isCharging: false, thermal: .nominal, lidClosed: true)
+        XCTAssertTrue(h.guardFake.lowPowerOn)
+        XCTAssertEqual(h.notifier.posts.count, 0)
+
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal, lidClosed: true)
+        await driver.run(percent: 35, isCharging: true, thermal: .nominal, lidClosed: true)
+        XCTAssertTrue(h.guardFake.lowPowerOn)
+        XCTAssertFalse(h.guardFake.calls.contains("lowpowermode 0"))
+        XCTAssertEqual(h.notifier.posts.count, 0)
+
+        await driver.run(percent: 35, isCharging: true, thermal: .nominal, lidClosed: false)
+        XCTAssertFalse(h.guardFake.lowPowerOn)
+        XCTAssertEqual(h.guardFake.calls.last, "lowpowermode 0")
+        XCTAssertEqual(try h.store.loadState()?.lowPowerSetByUs, false)
+        XCTAssertEqual(h.notifier.posts.count, 0, "lid-open disable was announced")
+    }
+
+    /// Lid enable, battery takes over, lid opens while the battery is still
+    /// below the floor (battery holds the mode: no action), then charger
+    /// connected: the last holding cause was the battery, so the recovery
+    /// is announced.
+    func testBatteryTakeoverThenLidOpenAnnouncesTheChargerRecovery() async throws {
+        let m = h.makeManager()
+        await m.start(duration: 3600)
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 80, isCharging: false, thermal: .nominal, lidClosed: true)
+        XCTAssertTrue(h.guardFake.lowPowerOn)
+        XCTAssertEqual(h.notifier.posts.count, 0)
+
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal, lidClosed: true)
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal, lidClosed: false)
+        XCTAssertTrue(h.guardFake.lowPowerOn)
+        XCTAssertFalse(h.guardFake.calls.contains("lowpowermode 0"))
+        XCTAssertEqual(h.notifier.posts.count, 0)
+
+        await driver.run(percent: 35, isCharging: true, thermal: .nominal, lidClosed: false)
+        XCTAssertFalse(h.guardFake.lowPowerOn)
+        XCTAssertEqual(h.guardFake.calls.last, "lowpowermode 0")
+        XCTAssertEqual(h.notifier.posts.count, 1)
+        XCTAssertEqual(h.notifier.posts.last?.title, "Low Power Mode off")
+        XCTAssertEqual(h.notifier.posts.last?.body, "Charger connected.")
+    }
+
+    /// The reverse: battery enable (announced), lid closes, charger
+    /// connected with the lid still closed (lid holds the mode: nothing to
+    /// announce), then lid open: the last holding cause was the lid, so
+    /// the disable is silent.
+    func testBatteryEnableThenLidTakeoverEndsSilentlyOnLidOpen() async throws {
+        let m = h.makeManager()
+        await m.start(duration: 3600)
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal, lidClosed: false)
+        XCTAssertTrue(h.guardFake.lowPowerOn)
+        XCTAssertEqual(h.notifier.posts.count, 1)
+        XCTAssertEqual(h.notifier.posts.last?.title, "Low Power Mode on")
+
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal, lidClosed: true)
+        await driver.run(percent: 35, isCharging: true, thermal: .nominal, lidClosed: true)
+        XCTAssertTrue(h.guardFake.lowPowerOn)
+        XCTAssertFalse(h.guardFake.calls.contains("lowpowermode 0"))
+        XCTAssertEqual(h.notifier.posts.count, 1)
+
+        await driver.run(percent: 35, isCharging: true, thermal: .nominal, lidClosed: false)
+        XCTAssertFalse(h.guardFake.lowPowerOn)
+        XCTAssertEqual(h.guardFake.calls.last, "lowpowermode 0")
+        XCTAssertEqual(h.notifier.posts.count, 1, "lid-open disable was announced")
+    }
+
+    /// The thermal cause is tracked the same way: lid enable, thermal
+    /// takes over, lid opens (thermal holds), cools down: announced.
+    func testThermalTakeoverThenLidOpenAnnouncesTheCooldown() async throws {
+        let m = h.makeManager()
+        await m.start(duration: 3600)
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 80, isCharging: false, thermal: .nominal, lidClosed: true)
+        await driver.run(percent: 80, isCharging: false, thermal: .serious, lidClosed: true)
+        await driver.run(percent: 80, isCharging: false, thermal: .serious, lidClosed: false)
+        XCTAssertTrue(h.guardFake.lowPowerOn)
+        XCTAssertEqual(h.notifier.posts.count, 0)
+
+        await driver.run(percent: 80, isCharging: false, thermal: .fair, lidClosed: false)
+        XCTAssertFalse(h.guardFake.lowPowerOn)
+        XCTAssertEqual(h.notifier.posts.last?.title, "Low Power Mode off")
+        XCTAssertEqual(h.notifier.posts.last?.body, "Back above the floor.")
+    }
+
+    /// Flipping the lid option while the lid is closed takes effect on the
+    /// next floor run (`AppServices.reevaluateFloors()` queues one).
+    func testTogglingLidOptionWhileLidIsClosedAppliesOnTheNextRun() async throws {
+        let m = h.makeManager()
+        await m.start(duration: 3600)
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 80, isCharging: true, thermal: .nominal, lidClosed: true)
+        XCTAssertTrue(h.guardFake.lowPowerOn)
+
+        m.config.lowPowerOnLidClose = false
+        await driver.run(percent: 80, isCharging: true, thermal: .nominal, lidClosed: true)
+        XCTAssertFalse(h.guardFake.lowPowerOn)
+        XCTAssertEqual(try h.store.loadState()?.lowPowerSetByUs, false)
+
+        m.config.lowPowerOnLidClose = true
+        await driver.run(percent: 80, isCharging: true, thermal: .nominal, lidClosed: true)
+        XCTAssertTrue(h.guardFake.lowPowerOn)
+        XCTAssertEqual(try h.store.loadState()?.lowPowerSetByUs, true)
+        XCTAssertEqual(h.notifier.posts.count, 0)
     }
 }
