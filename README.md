@@ -105,10 +105,16 @@ check the status menu and `~/Library/Logs/Insomnia/insomnia.log` afterward.
   <img src="docs/assets/lid-actions.svg" alt="Illustrated Settings defaults: Slack, WhatsApp, and Discord on the freeze list, Docker's idle rule on, mute off. During a session, lid close applies configured actions; reopening attempts to resume verified owned freezes and restore saved audio. The session continues. Without an active session, lid changes do nothing." width="880">
 </p>
 
-During a session, Insomnia can pause selected background apps, check whether
-Docker Desktop is idle before pausing it, and save then mute audio. Reopening
-the lid attempts to undo those lid actions. **The timer keeps counting down
-while the lid is closed**; only its on-screen redraw pauses.
+During a session, Insomnia turns the display and keyboard backlight off
+(saving their brightness first), can pause selected background apps, check
+whether Docker Desktop is idle before pausing it, and save then mute audio.
+Reopening the lid attempts to undo those lid actions. **The timer keeps
+counting down while the lid is closed**; only its on-screen redraw pauses.
+
+The display step exists because the sleep guard stops macOS from doing it:
+with sleep disabled, closing the lid no longer turns the panel or the keys off
+by itself. Insomnia sets both to zero and restores them when the lid opens. If
+Insomnia is not running when you open the lid, press the brightness-up key.
 
 The defaults are worth knowing:
 
@@ -118,9 +124,16 @@ The defaults are worth knowing:
   Container startup can race that check; disable the rule for important Docker
   workloads where an unexpected pause would be disruptive.
 - **Mute on close:** off.
+- **Display and keyboard backlight:** on ("Turn off the display and keyboard
+  backlight" in Settings). Both values are saved to the journal before they
+  are changed.
 - **Battery rules:** below 40% on battery, request Low Power Mode; below 10%,
   end the session. Serious thermal state requests Low Power Mode; critical
   thermal state ends the session. These rules require the app to be running.
+
+To exercise the lid actions without closing the lid, run
+`scripts/simulate-lid.sh closed` and then `scripts/simulate-lid.sh open` during
+a session; the app runs the same actions it would on a real lid event.
 
 ## How recovery works
 
