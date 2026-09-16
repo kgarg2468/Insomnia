@@ -50,6 +50,14 @@ final class AppServices {
     private let lidSimulation = LidSimulation()
     private let power = PowerMonitor()
     private let browser: BrowserThrottle
+    /// Last trusted display/keyboard brightness for the lid close (spec
+    /// section 4): read every 30 s while the lid is open, at start, and 3 s
+    /// after each lid open (the backlight stays suppressed briefly after the
+    /// wake).
+    private let sampler: BrightnessSampler
+    private static let sampleInterval: TimeInterval = 30
+    private static let sampleLeeway: DispatchTimeInterval = .seconds(5)
+    private static let postOpenSampleDelay: Duration = .seconds(3)
 
     private weak var manager: SessionManager?
     private var lidActions: LidActions?
@@ -59,6 +67,8 @@ final class AppServices {
     private var lidTasks: [Task<Void, Never>] = []
     private var floorTasks: [Task<Void, Never>] = []
     private var browserTasks: [Task<Void, Never>] = []
+    private var sampleTimer: (any DispatchSourceTimer)?
+    private var postOpenSampleTask: Task<Void, Never>?
     private(set) var running = false
 
     init(
@@ -69,13 +79,15 @@ final class AppServices {
         display: any DisplayDimming = NoopDisplayDimmer(),
         keyboard: any KeyboardBacklighting = NoopKeyboardBacklight(),
         keychain: any KeychainStoring = KeychainStore(),
-        locationPermission: LocationPermission = LocationPermission()
+        locationPermission: LocationPermission = LocationPermission(),
+        idleSeconds: @escaping @Sendable () -> Double = { UserInput.secondsSinceLastInput() }
     ) {
         self.paths = paths
         self.notifier = notifier
         self.audio = audio
         self.display = display
         self.keyboard = keyboard
+        self.sampler = BrightnessSampler(display: display, keyboard: keyboard, idleSeconds: idleSeconds)
         self.freezer = Freezer(control: processControl)
         self.docker = DockerRule(freezer: freezer)
         self.keychain = keychain
@@ -99,12 +111,20 @@ final class AppServices {
         (notifier as? Notifier)?.requestAuthorizationIfNeeded()
         AppNap.disable(for: config.agentList)
 
-        lidActions = LidActions(manager: manager, freezer: freezer, docker: docker, audio: audio, display: display, keyboard: keyboard)
+        lidActions = LidActions(manager: manager, freezer: freezer, docker: docker, audio: audio, display: display, keyboard: keyboard, sampler: sampler)
         floors = FloorRuleDriver(manager: manager, notifier: notifier)
 
         lid.onChange = { [weak self] closed in self?.lidChanged(closed) }
         lid.start()
         status.lidClosed = lid.isClosed
+        sampleBrightnessIfLidOpen()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + Self.sampleInterval, repeating: Self.sampleInterval, leeway: Self.sampleLeeway)
+        timer.setEventHandler { [weak self] in
+            Task { @MainActor in self?.sampleBrightnessIfLidOpen() }
+        }
+        sampleTimer = timer
+        timer.resume()
         // scripts/simulate-lid.sh drives the same action path as the hinge.
         // The hardware reading in refreshInstant/reconcile still reflects
         // the real lid; the trigger only runs the close/open actions.
@@ -143,6 +163,10 @@ final class AppServices {
         lidSimulation.onEvent = nil
         power.stop()
         power.onChange = nil
+        sampleTimer?.cancel()
+        sampleTimer = nil
+        postOpenSampleTask?.cancel()
+        postOpenSampleTask = nil
         networkTask?.cancel()
         networkTask = nil
         for task in lidTasks { task.cancel() }
@@ -241,8 +265,29 @@ final class AppServices {
             // floors now that the lid transaction is done. Queued on the
             // floor chain, so it stays serialized with battery events.
             self.powerChanged()
+            if !closed { self.scheduleSampleAfterOpen() }
         }
         lidTasks.append(task)
+    }
+
+    /// A reading taken while the lid is closed is the darkened value, never
+    /// the user's, so the sampler only runs with the lid open. The sampler
+    /// itself skips anything not trustworthy at that moment.
+    private func sampleBrightnessIfLidOpen() {
+        guard running, !status.lidClosed else { return }
+        sampler.sample()
+    }
+
+    /// The keyboard backlight stays suppressed for a moment after the wake
+    /// on lid open; a sample right then would be skipped, so wait 3 s. Off
+    /// the lid chain so the next lid event is not held behind the wait.
+    private func scheduleSampleAfterOpen() {
+        postOpenSampleTask?.cancel()
+        postOpenSampleTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.postOpenSampleDelay)
+            guard !Task.isCancelled else { return }
+            self?.sampleBrightnessIfLidOpen()
+        }
     }
 
     private func powerChanged() {

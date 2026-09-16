@@ -17,6 +17,10 @@ final class LidActions {
     private let audio: any AudioControlling
     private let display: any DisplayDimming
     private let keyboard: any KeyboardBacklighting
+    /// Last trusted brightness values, kept by AppServices while the lid is
+    /// open. nil (tests) means the device's own asleep/suppressed reading
+    /// decides alone.
+    private let sampler: BrightnessSampler?
 
     init(
         manager: SessionManager,
@@ -24,7 +28,8 @@ final class LidActions {
         docker: DockerRule,
         audio: any AudioControlling,
         display: any DisplayDimming = NoopDisplayDimmer(),
-        keyboard: any KeyboardBacklighting = NoopKeyboardBacklight()
+        keyboard: any KeyboardBacklighting = NoopKeyboardBacklight(),
+        sampler: BrightnessSampler? = nil
     ) {
         self.manager = manager
         self.freezer = freezer
@@ -32,6 +37,7 @@ final class LidActions {
         self.audio = audio
         self.display = display
         self.keyboard = keyboard
+        self.sampler = sampler
     }
 
     func onClose() async {
@@ -88,16 +94,34 @@ final class LidActions {
     /// the keyboard backlight off on lid close, so this does. Brightness 0
     /// is the mechanism; the display sleep request is a bonus that macOS
     /// ignores while any process (an agent, say) holds a display assertion.
+    ///
+    /// What gets journaled is the user's value, not whatever the device
+    /// reads at this instant: a panel that idle-dimmed or slept before the
+    /// lid closed reads its dim value, and a keyboard suppressed by display
+    /// sleep reads 0. Per device: the current read if it is trusted now,
+    /// else the last trusted sample, else (display) the current read anyway
+    /// since a dim panel on open beats a black one, or (keyboard) nothing,
+    /// since restoring 0 would leave the backlight off for good.
     private func darkenSavingCurrent(_ manager: SessionManager) {
         do {
             let current = try display.readBrightness()
+            let value: Float
+            if sampler?.displayReadIsTrusted ?? !display.isAsleep() {
+                value = current
+            } else if let sampled = sampler?.last?.display {
+                value = sampled
+                Log.info("display brightness read while dimmed or asleep (\(current)); journaling the last trusted sample \(sampled)")
+            } else {
+                value = current
+                Log.info("display brightness read while dimmed or asleep and no trusted sample; restoring that value on open")
+            }
             try manager.journal { s in
                 // Keep an earlier save if a previous close was never undone.
-                if s.savedDisplayBrightness == nil { s.savedDisplayBrightness = current }
+                if s.savedDisplayBrightness == nil { s.savedDisplayBrightness = value }
             }
             do {
                 try display.setBrightness(0)
-                Log.info("display darkened (was brightness \(current))")
+                Log.info("display darkened (was brightness \(value))")
             } catch {
                 // The journal entry stays: the open restores whatever is there.
                 Log.error("display darken failed: \(error.localizedDescription)")
@@ -108,14 +132,27 @@ final class LidActions {
 
         do {
             if let current = try keyboard.readBrightness() {
-                try manager.journal { s in
-                    if s.savedKeyboardBrightness == nil { s.savedKeyboardBrightness = current }
+                let value: Float?
+                if sampler?.keyboardReadIsTrusted ?? !keyboard.isSuppressedOrDimmed() {
+                    value = current
+                } else if let sampled = sampler?.last?.keyboard {
+                    value = sampled
+                    Log.info("keyboard backlight read while suppressed or dimmed (\(current)); journaling the last trusted sample \(sampled)")
+                } else {
+                    value = nil
                 }
-                do {
-                    try keyboard.setBrightness(0)
-                    Log.info("keyboard backlight off (was brightness \(current))")
-                } catch {
-                    Log.error("keyboard backlight off failed: \(error.localizedDescription)")
+                if let value {
+                    try manager.journal { s in
+                        if s.savedKeyboardBrightness == nil { s.savedKeyboardBrightness = value }
+                    }
+                    do {
+                        try keyboard.setBrightness(0)
+                        Log.info("keyboard backlight off (was brightness \(value))")
+                    } catch {
+                        Log.error("keyboard backlight off failed: \(error.localizedDescription)")
+                    }
+                } else {
+                    Log.info("keyboard backlight suppressed by display sleep and no trusted sample; leaving it to macOS")
                 }
             } else {
                 Log.info("no built-in keyboard backlight; skipped")

@@ -28,13 +28,147 @@ final class LidActionsTests: XCTestCase {
         h.home.destroy()
     }
 
-    private func make(dockerIdle: @escaping @Sendable () async throws -> Bool = { true }, mute: Bool = true) async -> (SessionManager, LidActions) {
+    private func make(
+        dockerIdle: @escaping @Sendable () async throws -> Bool = { true },
+        mute: Bool = true,
+        sampler: BrightnessSampler? = nil
+    ) async -> (SessionManager, LidActions) {
         let m = h.makeManager()
         m.config.muteOnLidClose = mute
         m.config.freezeList = ["com.tinyspeck.slackmacgap"]
         let docker = DockerRule(freezer: freezer, probe: dockerIdle)
-        let actions = LidActions(manager: m, freezer: freezer, docker: docker, audio: h.audio, display: h.display, keyboard: h.keyboard)
+        let actions = LidActions(manager: m, freezer: freezer, docker: docker, audio: h.audio, display: h.display, keyboard: h.keyboard, sampler: sampler)
         return (m, actions)
+    }
+
+    /// A sampler over the harness fakes whose idle clock the test controls.
+    private func makeSampler(idle: Locked<Double>) -> BrightnessSampler {
+        BrightnessSampler(display: h.display, keyboard: h.keyboard, idleSeconds: { idle.value })
+    }
+
+    private func logText() -> String {
+        (try? String(contentsOf: h.home.paths.logFile, encoding: .utf8)) ?? ""
+    }
+
+    // MARK: Trusted brightness samples
+
+    /// Recent input, panel awake, backlight unsuppressed: the values read
+    /// now are the user's and are what gets journaled.
+    func testTrustedReadAtCloseJournalsTheCurrentValues() async throws {
+        let idle = Locked<Double>(3)
+        let sampler = makeSampler(idle: idle)
+        let (m, actions) = await make(sampler: sampler)
+        await m.start(duration: 3600)
+        // An older sample must not win over a trusted current read.
+        h.display.brightness = 0.3
+        h.keyboard.brightness = 0.2
+        sampler.sample()
+        h.display.brightness = 0.7
+        h.keyboard.brightness = 0.5
+
+        await actions.onClose()
+
+        let s = try XCTUnwrap(try h.store.loadState())
+        XCTAssertEqual(s.savedDisplayBrightness, 0.7)
+        XCTAssertEqual(s.savedKeyboardBrightness, 0.5)
+        XCTAssertEqual(h.display.sets, [0])
+        XCTAssertEqual(h.keyboard.sets, [0])
+        XCTAssertNil(m.lastError)
+    }
+
+    /// The live defect: the lid closes after the panel idle-dimmed and
+    /// slept. The display reads its dim value and the keyboard reads 0.
+    /// Restoring those would leave a dim panel and a dead backlight; the
+    /// last trusted sample is journaled instead. Both are still set to 0.
+    func testAsleepAndSuppressedAtCloseJournalsTheLastTrustedSample() async throws {
+        let idle = Locked<Double>(3)
+        let sampler = makeSampler(idle: idle)
+        let (m, actions) = await make(sampler: sampler)
+        await m.start(duration: 3600)
+        sampler.sample()
+        idle.value = 400
+        h.display.asleep = true
+        h.display.brightness = 0.0625
+        h.keyboard.suppressedOrDimmed = true
+        h.keyboard.brightness = 0
+
+        await actions.onClose()
+
+        let s = try XCTUnwrap(try h.store.loadState())
+        XCTAssertEqual(s.savedDisplayBrightness, 0.7, "the idle-dim value was journaled")
+        XCTAssertEqual(s.savedKeyboardBrightness, 0.5, "the suppressed 0 was journaled")
+        XCTAssertEqual(h.display.sets, [0])
+        XCTAssertEqual(h.keyboard.sets, [0])
+        XCTAssertNil(m.lastError)
+
+        await actions.onOpen()
+        XCTAssertEqual(h.display.sets, [0, 0.7])
+        XCTAssertEqual(h.keyboard.sets, [0, 0.5])
+    }
+
+    /// Nothing trustworthy is known for the keyboard and it reads 0 under
+    /// suppression: journaling that 0 would restore "off" on open, so the
+    /// keyboard is left to macOS entirely. The display is still darkened.
+    func testSuppressedKeyboardWithNoSampleIsLeftAlone() async throws {
+        let idle = Locked<Double>(400)
+        let sampler = makeSampler(idle: idle)
+        let (m, actions) = await make(sampler: sampler)
+        await m.start(duration: 3600)
+        h.keyboard.suppressedOrDimmed = true
+        h.keyboard.brightness = 0
+
+        await actions.onClose()
+
+        XCTAssertEqual(h.keyboard.sets, [], "a suppressed keyboard with nothing to restore must not be written")
+        XCTAssertNil(try h.store.loadState()?.savedKeyboardBrightness)
+        XCTAssertEqual(h.display.sets, [0])
+        XCTAssertEqual(try h.store.loadState()?.savedDisplayBrightness, 0.7)
+        XCTAssertEqual(h.procs.suspended.count, 2)
+        XCTAssertNil(m.lastError)
+        XCTAssertTrue(logText().contains("keyboard backlight suppressed by display sleep and no trusted sample; leaving it to macOS"), logText())
+
+        await actions.onOpen()
+        XCTAssertEqual(h.keyboard.sets, [])
+        XCTAssertEqual(h.display.sets, [0, 0.7])
+    }
+
+    /// An asleep display with no sample: the dim value is journaled anyway
+    /// and set to 0. A dim panel on open beats a black one; the
+    /// brightness-up key is the manual fallback.
+    func testAsleepDisplayWithNoSampleJournalsTheDimValue() async throws {
+        let idle = Locked<Double>(400)
+        let sampler = makeSampler(idle: idle)
+        let (m, actions) = await make(sampler: sampler)
+        await m.start(duration: 3600)
+        h.display.asleep = true
+        h.display.brightness = 0.0625
+
+        await actions.onClose()
+
+        XCTAssertEqual(try h.store.loadState()?.savedDisplayBrightness, 0.0625)
+        XCTAssertEqual(h.display.sets, [0])
+        XCTAssertNil(m.lastError)
+        XCTAssertTrue(logText().contains("display brightness read while dimmed or asleep and no trusted sample; restoring that value on open"), logText())
+        XCTAssertFalse(logText().contains("[error] insomnia: display brightness read while dimmed"), "a known-dim save is a warning, not an error")
+
+        await actions.onOpen()
+        XCTAssertEqual(h.display.sets, [0, 0.0625])
+    }
+
+    /// Without a sampler (tests, or a build that never wired one) the
+    /// device's own asleep/suppressed reading decides on its own.
+    func testWithoutASamplerTheDeviceStateAloneDecides() async throws {
+        let (m, actions) = await make()
+        await m.start(duration: 3600)
+        h.keyboard.suppressedOrDimmed = true
+        h.keyboard.brightness = 0
+
+        await actions.onClose()
+
+        XCTAssertEqual(h.keyboard.sets, [])
+        XCTAssertNil(try h.store.loadState()?.savedKeyboardBrightness)
+        XCTAssertEqual(h.display.sets, [0])
+        XCTAssertEqual(try h.store.loadState()?.savedDisplayBrightness, 0.7)
     }
 
     // MARK: Display and keyboard backlight
