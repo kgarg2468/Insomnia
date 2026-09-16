@@ -37,7 +37,11 @@ struct SettingsView: View {
             hotspotPassword = (try? secrets.load()) ?? ""
             refreshWouldFreeze()
         }
-        .onChange(of: manager.config.freezeAllApps) { refreshWouldFreeze() }
+        // The preview depends on the toggle, both lists and what is running:
+        // recompute on any config change and whenever an app launches or quits.
+        .onChange(of: manager.config) { refreshWouldFreeze() }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didLaunchApplicationNotification)) { _ in refreshWouldFreeze() }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didTerminateApplicationNotification)) { _ in refreshWouldFreeze() }
     }
 
     // MARK: Bindings
