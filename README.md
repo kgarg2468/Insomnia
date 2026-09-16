@@ -127,6 +127,9 @@ The defaults are worth knowing:
 - **Display and keyboard backlight:** on ("Turn off the display and keyboard
   backlight" in Settings). Both values are saved to the journal before they
   are changed.
+- **Low Power Mode while the lid is closed:** on. With sleep disabled a closed
+  Mac otherwise keeps running at full speed; the mode is switched off again
+  when the lid opens, unless a battery or thermal rule still wants it.
 - **Battery rules:** below 40% on battery, request Low Power Mode; below 10%,
   end the session. Serious thermal state requests Low Power Mode; critical
   thermal state ends the session. These rules require the app to be running.

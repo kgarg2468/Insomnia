@@ -217,6 +217,14 @@ final class AppServices {
         await task.value
     }
 
+    /// Re-run the floors with the current inputs. Settings that change a
+    /// floor input (the lid option) call this so the change applies now,
+    /// not at the next battery, thermal or lid event. Queued on the floor
+    /// chain like a power event; a no-op outside a session.
+    func reevaluateFloors() {
+        powerChanged()
+    }
+
     // MARK: Private
 
     private func lidChanged(_ closed: Bool) {
@@ -229,6 +237,10 @@ final class AppServices {
             if closed { await actions.onClose() } else { await actions.onOpen() }
             guard !Task.isCancelled, self.running else { return }
             self.syncState()
+            // The lid is a Low Power Mode cause (spec section 4): re-run the
+            // floors now that the lid transaction is done. Queued on the
+            // floor chain, so it stays serialized with battery events.
+            self.powerChanged()
         }
         lidTasks.append(task)
     }
@@ -239,11 +251,12 @@ final class AppServices {
         let percent = power.percent
         let charging = power.isCharging
         let thermal = power.thermalState
+        let lidClosed = status.lidClosed
         let previous = floorTasks.last
         let task = Task { @MainActor in
             await previous?.value
             guard !Task.isCancelled, self.running else { return }
-            await floors.run(percent: percent, isCharging: charging, thermal: thermal)
+            await floors.run(percent: percent, isCharging: charging, thermal: thermal, lidClosed: lidClosed)
             guard !Task.isCancelled, self.running else { return }
             self.syncState()
         }

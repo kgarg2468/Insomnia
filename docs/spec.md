@@ -112,6 +112,7 @@ Quit, or reconcile.
 | Freeze list | `SIGSTOP` every process whose responsible app is in the list | `SIGCONT` the recorded pids only |
 | Docker rule | if Docker Desktop is running and `docker ps -q` is empty, freeze it | resume |
 | Mute (optional) | save volume and mute state, then mute | restore both exactly |
+| Low Power Mode | on (optional, default on) | off unless a battery or thermal floor still wants it |
 | Countdown redraw | stop timer | restart timer |
 
 Freeze list rules:
@@ -142,6 +143,15 @@ backstop keeps the entries and only the app restores them (private
 frameworks). If Insomnia is not running when the lid opens, the brightness-up
 key restores the panel. Bluetooth is still left alone (needed for Instant
 Hotspot, and negligible).
+
+Low Power Mode on lid close is decided by the same rule as the battery and
+thermal floors (section 6), so the three causes never fight over the mode: it
+stays on while any of them holds and is switched off when none does. It applies
+whether or not the charger is connected, because with sleep disabled a closed
+Mac otherwise runs at full speed and heats up. A lid-caused change is logged
+but not announced: switching the mode off is announced only when the cause that
+last held while it was on was the battery or thermal floor, not the lid.
+
 
 ### 5. Agent apps: keep them fast
 
@@ -177,8 +187,11 @@ percentage change) and `ProcessInfo.thermalStateDidChangeNotification`.
 | battery below `endFloor` (default 10%) | end session, notify | — |
 | thermal state `serious` | `lowpowermode 1` | thermal back to `nominal`/`fair`, or session end |
 | thermal state `critical` | end session, notify | — |
+| lid closed (if `lowPowerOnLidClose`, charging or not) | `lowpowermode 1`, no notification | lid opened, or session end |
 
-Insomnia does not enable Low Power Mode merely because a session starts.
+Insomnia does not enable Low Power Mode merely because a session starts; the
+causes are the battery floor, a serious thermal state, and (by default) a closed
+lid. One evaluation owns the mode: it is switched off only when no cause holds.
 Battery and thermal rules run only while the app is alive; they are not
 provided by the standalone backstop. Performance effects depend on workload.
 
