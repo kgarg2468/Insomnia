@@ -90,8 +90,10 @@ journal_shape_problems() { # file
     t="$(type_of "$f" "$key")"
     [[ -z "$t" || "$t" == bool || "$t" == "(any)" ]] || echo "$key is a $t, not a bool"
   done
-  t="$(type_of "$f" savedOutputVolume)"
-  [[ -z "$t" || "$t" == float || "$t" == integer || "$t" == "(any)" ]] || echo "savedOutputVolume is a $t, not a number"
+  for key in savedOutputVolume savedDisplayBrightness savedKeyboardBrightness; do
+    t="$(type_of "$f" "$key")"
+    [[ -z "$t" || "$t" == float || "$t" == integer || "$t" == "(any)" ]] || echo "$key is a $t, not a number"
+  done
   t="$(type_of "$f" frozenProcesses)"
   if [[ -n "$t" && "$t" != "(any)" ]]; then
     if [[ "$t" != array ]]; then
@@ -162,6 +164,12 @@ journal_problems() {
   if extract "$STATE" savedOutputVolume >/dev/null || extract "$STATE" savedMuted >/dev/null; then
     echo "saved audio settings (volume/mute) are not restored; only the app can do that"
   fi
+  if extract "$STATE" savedDisplayBrightness >/dev/null; then
+    echo "saved display brightness is not restored; only the app can do that"
+  fi
+  if extract "$STATE" savedKeyboardBrightness >/dev/null; then
+    echo "saved keyboard backlight is not restored; only the app can do that"
+  fi
 }
 
 abort_incomplete() { # backstop exit status, problem lines...
@@ -179,8 +187,9 @@ Nothing was removed on purpose: the LaunchAgent keeps retrying every minute,
 the sudoers rule keeps pmset undoable, and the journal keeps the evidence.
 
 What to do, then rerun this script:
-  - Saved audio (volume/mute): open Insomnia.app; it restores audio from the
-    journal at launch.
+  - Saved audio (volume/mute), display brightness or keyboard backlight:
+    open Insomnia.app; it restores them from the journal at launch. If the
+    display is dark, press the brightness-up key first.
   - pmset failures (sleep / Low Power Mode): check $SUDOERS
     (rerun scripts/install.sh to reinstall it), or run
     'sudo pmset -a disablesleep 0' / 'sudo pmset -b lowpowermode 0' yourself.

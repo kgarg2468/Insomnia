@@ -35,6 +35,10 @@
 #                              process is ours. Only the app resolves them.
 #       savedOutputVolume / savedMuted -> CoreAudio; only the app can restore
 #                              these. Kept for the app's reconcile.
+#       savedDisplayBrightness / savedKeyboardBrightness -> display brightness
+#                              and keyboard backlight the app set to 0 on lid
+#                              close; only the app can restore these (private
+#                              frameworks). Kept for the app's reconcile.
 #     A flag is cleared only after its undo succeeded. Unknown keys survive.
 #     Exit 0 only when the journal is clean afterwards; otherwise exit 1 so
 #     the failure is visible and the next periodic run retries.
@@ -220,8 +224,10 @@ journal_shape_problems() { # file
     t="$(type_of "$f" "$key")"
     [[ -z "$t" || "$t" == bool || "$t" == "(any)" ]] || echo "$key is a $t, not a bool"
   done
-  t="$(type_of "$f" savedOutputVolume)"
-  [[ -z "$t" || "$t" == float || "$t" == integer || "$t" == "(any)" ]] || echo "savedOutputVolume is a $t, not a number"
+  for key in savedOutputVolume savedDisplayBrightness savedKeyboardBrightness; do
+    t="$(type_of "$f" "$key")"
+    [[ -z "$t" || "$t" == float || "$t" == integer || "$t" == "(any)" ]] || echo "$key is a $t, not a number"
+  done
   t="$(type_of "$f" frozenProcesses)"
   if [[ -n "$t" && "$t" != "(any)" ]]; then
     if [[ "$t" != array ]]; then
@@ -300,6 +306,7 @@ if [[ "$journal_state" == malformed ]]; then
 fi
 
 sleep_held=false; low_power=false; docker_frozen=false; has_audio=0
+has_display=0; has_keyboard=0
 frozen_count=0; legacy_count=0
 if [[ "$journal_state" == clean ]]; then
   is_true "$STATE" sleepDisabledByUs && sleep_held=true
@@ -307,6 +314,8 @@ if [[ "$journal_state" == clean ]]; then
   is_true "$STATE" dockerFrozen && docker_frozen=true
   extract "$STATE" savedOutputVolume >/dev/null && has_audio=1
   extract "$STATE" savedMuted >/dev/null && has_audio=1
+  extract "$STATE" savedDisplayBrightness >/dev/null && has_display=1
+  extract "$STATE" savedKeyboardBrightness >/dev/null && has_keyboard=1
   while extract_json "$STATE" "frozenProcesses.$frozen_count" >/dev/null; do
     frozen_count=$((frozen_count + 1))
   done
@@ -314,7 +323,7 @@ if [[ "$journal_state" == clean ]]; then
     legacy_count=$((legacy_count + 1))
   done
   if [[ "$sleep_held" == true || "$low_power" == true || "$docker_frozen" == true ]] \
-     || (( has_audio == 1 || frozen_count > 0 || legacy_count > 0 )); then
+     || (( has_audio == 1 || has_display == 1 || has_keyboard == 1 || frozen_count > 0 || legacy_count > 0 )); then
     journal_state=dirty
   fi
 fi
@@ -469,9 +478,15 @@ if [[ "$docker_frozen" == true ]] && (( kept_frozen_count == 0 && legacy_count =
   new_docker=false; changed=1
 fi
 
-if (( has_audio == 1 )); then
-  log error "saved audio (volume/mute) can only be restored by the app; kept. Open Insomnia"
-  failures+=("saved audio settings need the app: open Insomnia to restore volume/mute")
+# Display brightness and keyboard backlight are set through private
+# frameworks the shell has no access to; the keys stay for the app's reconcile.
+if (( has_audio == 1 || has_display == 1 || has_keyboard == 1 )); then
+  pending=()
+  (( has_audio == 1 )) && pending+=("saved audio (volume/mute)")
+  (( has_display == 1 )) && pending+=("saved display brightness")
+  (( has_keyboard == 1 )) && pending+=("saved keyboard backlight")
+  log error "$(IFS=,; echo "${pending[*]}") can only be restored by the app; kept. Open Insomnia"
+  failures+=("saved audio, display brightness or keyboard backlight settings need the app: open Insomnia to restore them")
 fi
 
 # --- Publish -----------------------------------------------------------------

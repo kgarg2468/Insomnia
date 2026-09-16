@@ -186,8 +186,9 @@ Install stopped: the backstop could not fully undo a previous session
 (exit status $recovery_rc). The LaunchAgent was not replaced or unloaded.
 Installed so far: the app at $APP, $APP_SUPPORT/backstop.sh, and $SUDOERS.
 $agent_note
-Check $LOG_DIR/insomnia.log and resolve what it reports (saved audio needs
-the app: open "$APP"), or run the recovery by hand:
+Check $LOG_DIR/insomnia.log and resolve what it reports (saved audio, display
+brightness or keyboard backlight needs the app: open "$APP"), or run the
+recovery by hand:
   /bin/bash "$APP_SUPPORT/backstop.sh" --force
 Then rerun this script to install the LaunchAgent.
 FAIL
