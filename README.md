@@ -96,7 +96,8 @@ You do not need to close the lid to use a timed session. Opening the lid does
 not end it, and a sleeping display is not the same as a sleeping Mac.
 
 Before the first session, review the settings—some lid actions are enabled by
-default. Start with a short, supervised session on a ventilated surface and
+default, including pausing every Dock app that is not an agent app while the
+lid is closed. Start with a short, supervised session on a ventilated surface and
 check the status menu and `~/Library/Logs/Insomnia/insomnia.log` afterward.
 
 ## What happens when the lid closes
@@ -106,8 +107,9 @@ check the status menu and `~/Library/Logs/Insomnia/insomnia.log` afterward.
 </p>
 
 During a session, Insomnia turns the display and keyboard backlight off
-(saving their brightness first), can pause selected background apps, check
-whether Docker Desktop is idle before pausing it, and save then mute audio.
+(saving their brightness first), pauses the apps on the freeze list and, by
+default, every other Dock app that is not an agent app, checks whether Docker
+Desktop is idle before pausing it, and can save then mute audio.
 Reopening the lid attempts to undo those lid actions. **The timer keeps
 counting down while the lid is closed**; only its on-screen redraw pauses.
 
@@ -120,6 +122,14 @@ The defaults are worth knowing:
 
 - **Selected apps:** Slack, WhatsApp, and Discord are on the freeze list.
   Configured agent apps are excluded from this ordinary list.
+- **Every other app:** "Freeze every other app while the lid is closed" is on.
+  Every Dock app that is not an agent app, an Apple app, Docker Desktop or a
+  built-in protected app (editors, AI apps, Tailscale, local model servers) is
+  paused too, so only agents keep running with the lid shut. Menu-bar apps are
+  never picked up automatically; add them to the freeze list if you want them
+  paused. Settings shows a "Would freeze now" line listing what the automatic
+  scope would pause at that moment. Turn the toggle off to pause the freeze
+  list only.
 - **Docker rule:** enabled, with a separate local Docker Desktop idle check.
   Container startup can race that check; disable the rule for important Docker
   workloads where an unexpected pause would be disruptive.
