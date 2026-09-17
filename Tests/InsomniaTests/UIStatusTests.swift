@@ -138,10 +138,11 @@ final class UIStatusTests: XCTestCase {
         XCTAssertEqual(motion.velocity, 0)
         XCTAssertLessThan(Double(steps) * dt, 1.5, "settles well inside a second and a half")
         XCTAssertGreaterThan(Double(steps) * dt, 0.3, "and is not a snap")
-        // A damping ratio of 0.86 overshoots by exp(-0.86 * pi / sqrt(1 - 0.86^2)),
-        // half a percent: one point on this move, which the neighbours do
-        // not register. Pinned so a softer spring cannot slip in unnoticed.
-        XCTAssertLessThan(peak, 240 + 208 * 0.0055, "no visible overshoot")
+        // A damping ratio of 0.92 overshoots by exp(-0.92 * pi / sqrt(1 - 0.92^2)),
+        // about 0.06 %: a tenth of a point on this move, inside the rest band,
+        // so the neighbours never step back. Pinned so a softer spring cannot
+        // slip in unnoticed.
+        XCTAssertLessThan(peak, 240 + 0.25, "no visible overshoot")
 
         // Advancing a settled spring is a no-op, and heading back works the same.
         motion.advance(by: dt)

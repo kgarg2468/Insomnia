@@ -37,7 +37,7 @@ enum Motion {
     /// SwiftUI: slower than `base` and damped almost to critical, so the bar
     /// grows and narrows without a visible overshoot against its neighbours.
     static let widthResponse: TimeInterval = 0.45
-    static let widthDampingRatio = 0.86
+    static let widthDampingRatio = 0.92
     static let widthSpring = Spring(response: widthResponse, dampingRatio: widthDampingRatio)
     /// How long after a retract begins the width starts narrowing: the pills
     /// furthest from the mark are mostly gone by then, so the bar's edge
