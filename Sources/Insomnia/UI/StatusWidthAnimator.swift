@@ -1,130 +1,248 @@
 import AppKit
 import QuartzCore
-import SwiftUI
 
-/// The spring that carries a width from wherever it is to a target. Pure
-/// state stepping with no AppKit in it: `StatusWidthAnimator` drives it from
-/// a display link and the tests step it by hand.
+/// The paced mover that carries a width from wherever it is to a target.
+/// Pure state stepping with no AppKit and no clock in it: `StatusWidthAnimator`
+/// steps it once per display-link callback and the tests step it by hand.
 ///
-/// The curve is SwiftUI's own `Spring`, evaluated in closed form from the
-/// moment of the last retarget. A retarget mid-flight re-bases the spring on
-/// the value and velocity it has right then, so the width bends towards the
-/// new target without a jump in position or speed.
-nonisolated struct WidthSpringMotion {
-    /// Closer than this to the target, and slower than `restVelocity`, the
-    /// motion snaps to the target and stops.
-    static let restDistance: CGFloat = 0.25
-    /// Points per second.
-    static let restVelocity: CGFloat = 1
+/// Frames pace the motion, not time. Control Center relays writes of about
+/// 3 pt per frame frame by frame, but larger writes (which a time-based
+/// curve produces whenever our callback stalls in the render server) can
+/// end in a half-second freeze and one cut to the final layout. So every
+/// callback moves by at most `maxStep`, whatever the elapsed time: a stalled
+/// frame delays the animation by the stall and never produces a jump.
+///
+/// The step is `min(maxStep, ramp, tail)`: the ramp is 1, 2, 3 pt for the
+/// first three callbacks of a flight (and after a reversal), the tail is
+/// `remaining / 6` once fewer than 18 pt remain. The step is never smaller
+/// than one grid unit (`1 / scale`), every applied value is rounded to the
+/// grid toward the target, and the cap is enforced against the previously
+/// applied value after that rounding.
+nonisolated struct WidthPacedMotion: Sendable {
+    /// The most any single write may move the width, in points.
+    static let maxStep: CGFloat = 3
+    /// Points to go below which the step eases down as `remaining / tailDivisor`.
+    static let tailDistance: CGFloat = 6 * maxStep
+    static let tailDivisor: CGFloat = 6
+    /// The step on the n-th callback of a flight is at most `min(n, rampLength)`.
+    static let rampLength = 3
 
-    let spring: Spring
+    /// The last applied (grid-quantized) value.
     private(set) var value: CGFloat
-    /// Points per second.
-    private(set) var velocity: CGFloat = 0
     private(set) var target: CGFloat
+    /// Pixels per point: the grid every applied value sits on.
+    let scale: CGFloat
+    /// Callbacks taken since the flight started or last reversed.
+    private var callbacks = 0
 
-    private var origin: CGFloat
-    private var originVelocity: CGFloat = 0
-    /// Seconds since the last retarget.
-    private var elapsed: TimeInterval = 0
-
-    init(spring: Spring, value: CGFloat) {
-        self.spring = spring
+    /// - Parameters:
+    ///   - value: where the width is now. Off-grid values are quantized
+    ///     toward `target` first, so the first step is measured on the grid.
+    ///   - scale: the backing scale (1 or 2); the grid unit is its inverse.
+    init(value: CGFloat, target: CGFloat, scale: CGFloat) {
+        self.scale = max(scale, 1)
         self.value = value
-        self.target = value
-        self.origin = value
+        self.target = target
+        alignStart()
     }
 
-    var isSettled: Bool { value == target && velocity == 0 }
+    var isSettled: Bool { value == target }
 
-    /// Head for `newTarget` from the current value and velocity.
+    private var unit: CGFloat { 1 / scale }
+
+    /// Head for `newTarget` from the current value. Same direction keeps
+    /// the ramp where it is and the tail follows from the new distance; a
+    /// reversal restarts the ramp, so the width brakes in one frame and
+    /// cannot overshoot. A target equal to the value lands at once.
     mutating func retarget(_ newTarget: CGFloat) {
         guard newTarget != target else { return }
-        origin = value
-        originVelocity = velocity
-        elapsed = 0
+        let wasHeading = heading
         target = newTarget
+        if heading != wasHeading { callbacks = 0 }
+        alignStart()
     }
 
-    /// Move `dt` seconds along the curve. Time-based, not step-based: a
-    /// dropped frame is caught up on the next one rather than slowing the
-    /// motion down.
-    mutating func advance(by dt: TimeInterval) {
-        guard !isSettled else { return }
-        elapsed += max(dt, 0)
-        let span = target - origin
-        value = origin + spring.value(target: span, initialVelocity: originVelocity, time: elapsed)
-        velocity = spring.velocity(target: span, initialVelocity: originVelocity, time: elapsed)
-        if abs(value - target) < Self.restDistance, abs(velocity) < Self.restVelocity {
-            value = target
-            velocity = 0
+    /// One display-link callback. Returns the value to apply, or nil when
+    /// nothing needs writing: already settled, or the quantized value is the
+    /// one already applied.
+    mutating func step() -> CGFloat? {
+        let heading = heading
+        guard heading != 0 else { return nil }
+        let remaining = abs(target - value)
+        let ramp = CGFloat(min(callbacks + 1, Self.rampLength))
+        let tail = remaining < Self.tailDistance ? remaining / Self.tailDivisor : Self.maxStep
+        let step = max(min(Self.maxStep, ramp, tail), unit)
+        callbacks += 1
+
+        var next: CGFloat
+        if remaining <= step {
+            next = target
+        } else {
+            next = Self.quantize(value + heading * step, toward: target, scale: scale)
+            if abs(next - value) > Self.maxStep {
+                next = value + heading * Self.maxStep
+            }
+            if heading * (target - next) <= 0 {
+                next = target
+            }
         }
+        if next == target { callbacks = 0 }
+        guard next != value else { return nil }
+        value = next
+        return next
+    }
+
+    /// +1 growing, -1 narrowing, 0 at rest.
+    private var heading: CGFloat {
+        target > value ? 1 : target < value ? -1 : 0
+    }
+
+    /// Put an off-grid start on the grid, toward the target, unless that
+    /// would reach the target: then the first step lands it with a write.
+    private mutating func alignStart() {
+        let aligned = Self.quantize(value, toward: target, scale: scale)
+        guard aligned != value, heading * (target - aligned) > 0 else { return }
+        value = aligned
+    }
+
+    /// `v` rounded to the grid in the direction of `target`.
+    private static func quantize(_ v: CGFloat, toward target: CGFloat, scale: CGFloat) -> CGFloat {
+        let scaled = v * scale
+        let grid = v < target ? scaled.rounded(.up) : v > target ? scaled.rounded(.down) : scaled
+        return grid / scale
     }
 }
 
-/// Animates `NSStatusItem.length` with a display link.
+/// Animates `NSStatusItem.length` from a display link.
 ///
 /// macOS re-lays out the whole menu bar on every change of a status item's
-/// length, but a measured set costs about 0.5 ms and holds 120 Hz, so the
-/// width is driven here, one set per frame, decoupled from SwiftUI layout:
-/// the content is laid out once at its final width and the item's window
-/// reveals or clips it as the length springs.
+/// length, and Control Center follows small per-frame writes smoothly but
+/// large ones badly (see `WidthPacedMotion`), so the width is driven here,
+/// one paced set per frame, decoupled from SwiftUI layout: the content is
+/// laid out once at its final width and the item's window reveals or clips
+/// it as the length moves.
 ///
-/// The link only runs while a width is in flight; it is invalidated the
-/// moment the spring settles. With `animated: false` (Reduce Motion, or the
-/// very first width) the length is set at once.
+/// Pacing is only verified at 120 Hz. On slower displays, under Reduce
+/// Motion, with `animated: false`, before any width has been set, or when
+/// no link can be made, the length is written once (one-write mode) and the
+/// neighbours jump once, as they do for every Apple item. The mode is
+/// decided when a flight starts, so a display or Low Power Mode change takes
+/// effect on the next flight. The link only runs while a width is in flight.
 @MainActor
 final class StatusWidthAnimator: NSObject {
     typealias LinkFactory = (_ target: AnyObject, _ selector: Selector) -> CADisplayLink?
 
-    private let spring: Spring
+    /// The slowest display pacing is verified on (120 Hz ProMotion).
+    static let pacedMinimumFramesPerSecond = 100
+
     private let backingScale: () -> CGFloat
+    private let maximumFramesPerSecond: () -> Int?
+    private let reduceMotion: () -> Bool
     private let makeLink: LinkFactory
     private let apply: (CGFloat) -> Void
     private var link: CADisplayLink?
-    private var motion: WidthSpringMotion?
-    private var lastTimestamp: CFTimeInterval = 0
+    private var motion: WidthPacedMotion?
+    private var lastApplied: CGFloat?
+    private var completion: (() -> Void)?
+    private nonisolated(unsafe) var reduceMotionObserver: NSObjectProtocol?
 
     /// - Parameters:
-    ///   - backingScale: pixels per point of the screen the item is on; the
-    ///     in-flight width is rounded to it so no frame lands between pixels.
-    ///   - makeLink: a display link for the screen the item is on, or nil
-    ///     when there is none (the width then snaps).
-    ///   - apply: sets the length. Called once per frame while in flight,
-    ///     and once more with the exact target when the spring settles.
+    ///   - backingScale: pixels per point of the screen the item is on; every
+    ///     in-flight width sits on that grid so no frame lands between pixels.
+    ///   - maximumFramesPerSecond: the refresh rate of that screen, or nil
+    ///     when unknown (then one-write).
+    ///   - reduceMotion: the accessibility setting; read when a flight starts
+    ///     and again when the system reports it changed.
+    ///   - makeLink: a display link for that screen, or nil when there is
+    ///     none (then one-write).
+    ///   - apply: sets the length. Called at most once per frame while in
+    ///     flight, the last time with the exact target; never twice with the
+    ///     same value in a row.
     init(
-        spring: Spring = Motion.widthSpring,
         backingScale: @escaping () -> CGFloat,
+        maximumFramesPerSecond: @escaping () -> Int?,
+        reduceMotion: @escaping () -> Bool,
         makeLink: @escaping LinkFactory,
         apply: @escaping (CGFloat) -> Void
     ) {
-        self.spring = spring
         self.backingScale = backingScale
+        self.maximumFramesPerSecond = maximumFramesPerSecond
+        self.reduceMotion = reduceMotion
         self.makeLink = makeLink
         self.apply = apply
+        super.init()
+        reduceMotionObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { self?.accessibilityDisplayOptionsDidChange() }
+            } else {
+                Task { @MainActor in self?.accessibilityDisplayOptionsDidChange() }
+            }
+        }
+    }
+
+    deinit {
+        if let reduceMotionObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(reduceMotionObserver)
+        }
+    }
+
+    /// Whether a flight started now would be paced rather than one-write:
+    /// Reduce Motion off, a display of at least `pacedMinimumFramesPerSecond`,
+    /// and a display link to pace it with. The controller reads this to
+    /// choose its choreography, which must never see "paced" and then get a
+    /// snap: with no link `setTarget` writes at once, which would cut the
+    /// bar across content the paced choreography leaves visible. So a link
+    /// is probed for (made and invalidated, never run) whenever none is in
+    /// flight; the answer is not cached, since the screen can change.
+    var isPaced: Bool {
+        guard pacedConditionsHold else { return false }
+        if link != nil { return true }
+        guard let probe = makeLink(self, #selector(step(_:))) else { return false }
+        probe.invalidate()
+        return true
+    }
+
+    /// The settings half of `isPaced`: Reduce Motion off and a fast display.
+    private var pacedConditionsHold: Bool {
+        !reduceMotion() && (maximumFramesPerSecond() ?? 0) >= Self.pacedMinimumFramesPerSecond
     }
 
     /// The width heading for (or resting at), if one has been set.
     var target: CGFloat? { motion?.target }
-    /// The width the item has right now, if one has been set.
+    /// The width last applied, if one has been set.
     var current: CGFloat? { motion?.value }
     var isAnimating: Bool { link != nil }
 
-    /// Head for `width`. Animated from wherever the width is and however
-    /// fast it is moving, unless `animated` is false or no width has been
-    /// set yet, in which case the width is applied at once.
-    func setTarget(_ width: CGFloat, animated: Bool) {
-        guard animated, var motion else {
-            stop()
-            self.motion = WidthSpringMotion(spring: spring, value: width)
-            apply(width)
+    /// Head for `width`. Paced from wherever the width is when `animated`
+    /// and the flight is paced; otherwise written once. `completion` runs
+    /// once when `width` has landed: synchronously, with no extra write, if
+    /// it already has (or is written at once); after the final write of a
+    /// paced flight otherwise. It replaces any pending completion, which is
+    /// dropped, not called: the caller retargeted, so the old landing never
+    /// happens.
+    ///
+    /// The mode is latched when the flight starts (the link is made) and
+    /// kept through every retarget until it lands or is stopped, so a
+    /// refresh-rate or Reduce Motion reading that changes mid-flight cannot
+    /// snap a flight that began paced. Reduce Motion turning on is the one
+    /// mid-flight override, through the notification, which snaps.
+    func setTarget(_ width: CGFloat, animated: Bool, completion: (() -> Void)? = nil) {
+        self.completion = completion
+        // The settings alone decide here: the link is made below, once, and
+        // its absence snaps (`isPaced` probes for it so the caller knows).
+        guard animated, var motion, isAnimating || pacedConditionsHold else {
+            snap(to: width)
             return
         }
         motion.retarget(width)
         self.motion = motion
         if motion.isSettled {
             stop()
-            apply(width)
+            finish()
             return
         }
         if link == nil {
@@ -132,15 +250,22 @@ final class StatusWidthAnimator: NSObject {
                 snap(to: width)
                 return
             }
-            lastTimestamp = CACurrentMediaTime()
             link.add(to: .main, forMode: .common)
             self.link = link
         }
     }
 
+    /// One-write: land on `width` now.
     private func snap(to width: CGFloat) {
         stop()
-        motion = WidthSpringMotion(spring: spring, value: width)
+        motion = WidthPacedMotion(value: width, target: width, scale: backingScale())
+        write(width)
+        finish()
+    }
+
+    private func write(_ width: CGFloat) {
+        guard width != lastApplied else { return }
+        lastApplied = width
         apply(width)
     }
 
@@ -149,48 +274,31 @@ final class StatusWidthAnimator: NSObject {
         link = nil
     }
 
-    // Diagnostics (temporary): cadence of the frames actually delivered.
-    private var diagFrames = 0
-    private var diagStart: CFTimeInterval = 0
-    private var diagMaxGap: CFTimeInterval = 0
-    private var diagMaxStep: CGFloat = 0
-    private var diagLast: CGFloat = 0
-    private var diagApplyMax: CFTimeInterval = 0
-    private var diagApplyTotal: CFTimeInterval = 0
-    private var diagGaps: [Int] = []
+    private func finish() {
+        let completion = completion
+        self.completion = nil
+        completion?()
+    }
 
-    @objc private func step(_ link: CADisplayLink) {
+    /// Reduce Motion turning on mid-flight ends the flight where it was
+    /// going; turning off changes nothing until the next flight.
+    private func accessibilityDisplayOptionsDidChange() {
+        guard link != nil, reduceMotion(), let target = motion?.target else { return }
+        snap(to: target)
+    }
+
+    /// One frame. Internal so the tests can drive it without a run loop.
+    @objc func step(_ link: CADisplayLink) {
         guard var motion else {
             stop()
             return
         }
-        // The value for the frame about to be shown, not the one just past.
-        let now = link.targetTimestamp
-        let gap = now - lastTimestamp
-        if diagFrames == 0 { diagStart = lastTimestamp; diagMaxGap = 0; diagMaxStep = 0; diagLast = motion.value; diagApplyMax = 0; diagApplyTotal = 0; diagGaps = [] }
-        diagFrames += 1
-        diagMaxGap = max(diagMaxGap, gap)
-        diagGaps.append(Int(gap * 1000))
-        motion.advance(by: gap)
-        lastTimestamp = now
+        let next = motion.step()
         self.motion = motion
-        let t0 = CACurrentMediaTime()
+        if let next { write(next) }
         if motion.isSettled {
             stop()
-            apply(motion.value)
-        } else {
-            let scale = max(backingScale(), 1)
-            apply((motion.value * scale).rounded() / scale)
-        }
-        let dt = CACurrentMediaTime() - t0
-        diagApplyMax = max(diagApplyMax, dt)
-        diagApplyTotal += dt
-        diagMaxStep = max(diagMaxStep, abs(motion.value - diagLast))
-        diagLast = motion.value
-        if motion.isSettled {
-            let total = now - diagStart
-            Log.info(String(format: "width spring: %d frames over %.0f ms to %.0f, max gap %.1f ms, max step %.1f pt, apply max %.2f ms mean %.2f ms, gaps ms %@", diagFrames, total * 1000, motion.target, diagMaxGap * 1000, diagMaxStep, diagApplyMax * 1000, diagApplyTotal / Double(diagFrames) * 1000, diagGaps.map(String.init).joined(separator: " ")))
-            diagFrames = 0
+            finish()
         }
     }
 }

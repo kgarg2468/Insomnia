@@ -234,12 +234,16 @@ live acceptance test, and the one-write layout stays as the fallback.
 `StatusWidthAnimator` keeps its interface (`setTarget(_:animated:)`, display-link factory,
 `apply`) but replaces the spring with a paced mover, `WidthPacedMotion`, plus a mode decision:
 
-- **Mode.** Paced when the display link reports a finite, positive frame duration of at most
-  1/100 s (120 Hz ProMotion) and Reduce Motion is off. Otherwise **one-write**: `setTarget`
-  applies the target immediately (the neighbours jump once, as every Apple item does). Unavailable,
-  zero or non-finite duration information means one-write. The controller reads
-  `widthAnimator.isPaced` to choose its choreography (below). The mode is decided per flight, so
-  a display or Low Power Mode change takes effect on the next flight.
+- **Mode.** Paced when the screen the item is on reports `maximumFramesPerSecond` of at least
+  100 (120 Hz ProMotion), Reduce Motion is off, and a display link can be made for that
+  screen. Otherwise **one-write**: `setTarget`
+  applies the target immediately (the neighbours jump once, as every Apple item does). An
+  unknown rate, or no display link, means one-write. The screen's rate is the signal rather
+  than the link's frame duration because the controller has to choose its choreography before
+  the flight (and so before any link) exists. The controller reads `widthAnimator.isPaced` for
+  that. The mode is latched when a flight starts and held through retargets until it lands, so
+  a display or Low Power Mode change takes effect on the next flight; the one mid-flight
+  override is Reduce Motion turning on, which snaps to the target.
 - **Step.** Each callback moves the value toward the target by at most `maxStep = 3 pt`,
   whatever the elapsed time. Frames pace the motion: a stalled callback delays the animation by
   the stall and never produces a jump. The step is never raised for a late callback.
@@ -282,8 +286,12 @@ the trailing edge: a wipe. The content need not move to look smooth.
 - **Close (Esc, click away).** No early slot removal: the pills stay in their slots and fade to
   opacity 0 over 0.35 s (no scale), the bar retargets immediately to the landing width measured
   at that moment (`widthWithoutSlots`), and the slots leave in one relayout in the width
-  completion. At landing the controller resolves the current phase and width before removing
-  the slots; since the layout then reports the landed width, no further write happens.
+  completion. At landing the controller resolves the current phase before removing the
+  slots. The landing width is the one measured when the close began (re-measured on a session
+  change or when the start/extend call resolves, below); a projected countdown that changes
+  shape from a tick during the close (`10:00:00` to `9:59:59`) is not re-measured, so the
+  layout's report after the slots leave can differ by a few points and the bar takes one paced
+  correction. Otherwise the layout reports the landed width and no further write happens.
 - **Enter.** Same as close but the landing width is the countdown layout's; the eye starts
   opening at Enter (0.95 s, so it is still opening as the bar lands); in the completion the slots
   leave and the projected countdown scales in with its existing transition. Enter while the bar
@@ -296,9 +304,21 @@ the trailing edge: a wipe. The content need not move to look smooth.
   unchanged. Start refused (`reopenAfterFailure`) cancels the close: the pending completion and
   stagger work are invalidated by generation, the input is preserved, the pills fade back in and
   the error label appears, and the bar retargets to that layout's width.
+- **Slots leave after the fade and the landing, whichever is later.** The width completion
+  is the trigger, but if it fires before the pills' 0.35 s fade has run (a short distance) the
+  removal is deferred for the remainder under the same generation, so the bar never cuts
+  across a pill that is still visible. A second close trigger while a paced close is in
+  flight (Settings opened, Esc again) re-aims that close at the new landing under the new
+  generation and keeps the original fade deadline; it never starts a one-write retract over
+  it, whatever the mode signal says now.
 - **Reopen during a close.** The slots are still present; cancel the pending completion and
   stagger work (generation), retarget to the entering width (ramp restart since the direction
-  changes) and fade the pills back in.
+  changes) and fade the pills back in. Clicking the eye during a close is a reopen too: the
+  phase is still `entering` at that point, so the controller routes the click through the
+  reopen path rather than the ordinary entering-state handling.
+- **Start/extend resolving during a close.** When the manager call returns and the projection
+  clears, the controller re-aims the close at the layout that leaves behind (the manager does
+  not always notify: a session that was already live never changes).
 - **One-write mode** (slower display, Reduce Motion, or no link): the bar snaps to the entering
   width at open; on close/Enter the pills retract with the existing `retractSettle` stagger, the
   slots leave, and the bar snaps after the slots leave (never before, so it does not cut across
@@ -351,7 +371,8 @@ Reduce Motion snap; a retarget reuses the link; landing stops it; the completion
 once per landing; no duplicate writes.
 
 Controller: existing tests updated to the new choreography (target count once per open/close
-still holds; slots leave at landing in paced mode and after retraction in one-write mode);
+still holds; slots leave at landing or at the end of the fade, whichever is later, in paced mode and after
+retraction in one-write mode);
 immediate Enter; reopen during a close; refusal; the projection precedence test.
 
 Replaced: the spring tests (`testTheWidthSpringIsTimeBasedNotStepBased` contradicts frame

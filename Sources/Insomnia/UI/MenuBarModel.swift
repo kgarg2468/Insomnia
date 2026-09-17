@@ -73,6 +73,11 @@ final class MenuBarModel {
     /// How many pill slots show their content right now (0...3); stepped for
     /// the stagger. Scale and opacity only: the slots themselves stay put.
     var visiblePills: Int = 0
+    /// The pills are leaving (or coming back) by opacity alone: a paced
+    /// close keeps the slots and wipes the bar over them, so a hidden pill
+    /// keeps its full size instead of shrinking. Cleared when the slots
+    /// leave or the pills are back.
+    var pillsFading: Bool = false
     /// Focus glow fades in once the pills have landed.
     var focusVisible: Bool = false
     /// Countdown text shown while the manager is still starting the session.

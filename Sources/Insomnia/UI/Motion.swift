@@ -33,28 +33,52 @@ enum Motion {
         reduceMotion ? reducedRetractSettleDuration : retractSettleDuration
     }
 
-    /// The status item's width, driven by `StatusWidthAnimator` rather than
-    /// SwiftUI: slower than `base` and damped almost to critical, so the bar
-    /// grows and narrows without a visible overshoot against its neighbours.
-    static let widthResponse: TimeInterval = 0.45
-    static let widthDampingRatio = 0.92
-    static let widthSpring = Spring(response: widthResponse, dampingRatio: widthDampingRatio)
-    /// How long after a retract begins the width starts narrowing: the pills
-    /// furthest from the mark are mostly gone by then, so the bar's edge
-    /// never crosses a pill that is still solid. Not used under Reduce
-    /// Motion, where the width snaps once the slots have left.
-    static let narrowDelay: TimeInterval = 0.10
+    /// A paced close (the width driven by `StatusWidthAnimator`, 3 pt per
+    /// frame) fades the pills where they stand while the bar wipes over
+    /// them, and a reopen under it fades them back: opacity only, no scale.
+    static let closeFadeDuration: TimeInterval = 0.35
 
-    /// The eye's blink. Slow enough that the lid lift and the lash hand-over
-    /// read as a blink rather than a flicker (about 0.6 s to settle).
-    static let blinkResponse: TimeInterval = 0.7
+    /// The eye's blink. The lid and the pupil run on their own curves, and
+    /// each direction has its own, so the lid is seen lifting and the pupil
+    /// is seen arriving: long enough to read as a blink, not a flicker.
+    /// Opening: the lid lifts on a slow spring.
+    static let blinkResponse: TimeInterval = 0.95
     static let blinkDampingFraction = 0.9
     static let blink: Animation = .spring(response: blinkResponse, dampingFraction: blinkDampingFraction)
+    /// Closing: the lid drops a little quicker and nearer critical damping.
+    static let blinkCloseResponse: TimeInterval = 0.8
+    static let blinkCloseDampingFraction = 0.95
+    static let blinkClose: Animation = .spring(response: blinkCloseResponse, dampingFraction: blinkCloseDampingFraction)
+    /// Reduce Motion: the lid and the lashes crossfade instead.
     static let reducedBlinkDuration: TimeInterval = 0.3
     static let reducedBlink: Animation = .easeInOut(duration: reducedBlinkDuration)
 
-    static func blink(reduceMotion: Bool = Motion.reduceMotion) -> Animation {
-        reduceMotion ? reducedBlink : blink
+    /// The pupil arriving behind the lifting lid: a bouncier spring (peak
+    /// scale about 1.04) that starts once the lid is under way. Keyed on
+    /// the eye state, so a close during the delay retargets it rather than
+    /// letting it run late.
+    static let pupilOpenResponse: TimeInterval = 0.5
+    static let pupilOpenDampingFraction = 0.6
+    static let pupilOpenDelay: TimeInterval = 0.2
+    static let pupilOpen: Animation = .spring(response: pupilOpenResponse, dampingFraction: pupilOpenDampingFraction).delay(pupilOpenDelay)
+    /// The pupil shrinking away as the lid drops: no delay, no bounce.
+    static let pupilCloseDuration: TimeInterval = 0.4
+    static let pupilClose: Animation = .easeOut(duration: pupilCloseDuration)
+    /// The pupil's scale in the closed eye; 1 in the open eye and, since it
+    /// never scales, under Reduce Motion.
+    static let pupilClosedScale: CGFloat = 0.6
+
+    /// The lid's blink in one direction; a crossfade under Reduce Motion.
+    static func blink(opening: Bool, reduceMotion: Bool = Motion.reduceMotion) -> Animation {
+        if reduceMotion { return reducedBlink }
+        return opening ? blink : blinkClose
+    }
+
+    /// The pupil's blink in one direction. Under Reduce Motion it does not
+    /// scale at all: only its opacity moves, on the same crossfade as the lid.
+    static func pupil(opening: Bool, reduceMotion: Bool = Motion.reduceMotion) -> Animation {
+        if reduceMotion { return reducedBlink }
+        return opening ? pupilOpen : pupilClose
     }
 
     /// System Reduce Motion setting, read live so toggling it in System

@@ -5,9 +5,9 @@ import SwiftUI
 ///
 /// The layout here changes only on state the controller sets outside any
 /// animation transaction (`slotsPresent`, `phase` and `startError`), and
-/// reports its width once per such change; the controller springs the
+/// reports its width once per such change; the controller paces the
 /// status item's length to it (`StatusWidthAnimator`), decoupled from this
-/// layout. Everything that springs inside (the pills staggering in and out,
+/// layout. Everything that animates inside (the pills staggering in and out,
 /// the focus ring, the countdown and the ring coming and going) is scale and
 /// opacity, anchored at the leading edge so the bar reads as growing out of
 /// the mark, and content on its way out keeps its place while the bar
@@ -44,10 +44,18 @@ struct StatusRootView: View {
     private var eyeOpen: Bool { isRunning || model.phase == .starting }
 
     private var countdownText: String {
-        if !manager.countdownText.isEmpty { return manager.countdownText }
-        if let pending = model.pendingCountdown { return pending }
+        Self.countdownText(pending: model.pendingCountdown, live: manager.countdownText, phase: model.phase)
+    }
+
+    /// What the countdown reads. A projection, when there is one, wins over
+    /// the live text: an extension typed over a running session shows its
+    /// new end at Enter, not when the manager confirms it. Static so the
+    /// precedence can be pinned without a manager.
+    static func countdownText(pending: String?, live: String, phase: MenuBarModel.Phase) -> String {
+        if let pending { return pending }
+        if !live.isEmpty { return live }
         // A start with no projection; should not happen but keeps the view total.
-        return model.phase == .starting ? MenuBarModel.startingText : ""
+        return phase == .starting ? MenuBarModel.startingText : ""
     }
 
     var body: some View {
@@ -105,10 +113,13 @@ struct StatusRootView: View {
 
     /// All three slots are in the layout whenever they are present;
     /// `visiblePills` only scales and fades each slot's content, so the
-    /// stagger never moves the layout.
+    /// stagger never moves the layout. While `pillsFading` (a paced close,
+    /// or a reopen under one) a hidden pill keeps its size: the bar wipes
+    /// over it, and only its opacity moves.
     private var pills: some View {
         ForEach(Array(DurationInput.Field.allCases.enumerated()), id: \.element) { index, field in
             let shown = index < model.visiblePills
+            let fullSize = shown || reduceMotion || model.pillsFading
             PillView(
                 field: field,
                 text: model.input.text(for: field),
@@ -120,7 +131,7 @@ struct StatusRootView: View {
                 reduceMotion: reduceMotion,
                 onTap: { onTapPill(field) }
             )
-            .scaleEffect(shown || reduceMotion ? 1 : Self.hiddenPillScale, anchor: .leading)
+            .scaleEffect(fullSize ? 1 : Self.hiddenPillScale, anchor: .leading)
             .opacity(shown ? 1 : 0)
             .accessibilityHidden(!shown)
             // A slot born already shown (the first pill when its stagger step
