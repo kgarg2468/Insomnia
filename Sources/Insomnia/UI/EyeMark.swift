@@ -1,11 +1,5 @@
 import SwiftUI
 
-extension Color {
-    init(brand rgb: BrandPalette.RGB) {
-        self.init(.sRGB, red: rgb.red, green: rgb.green, blue: rgb.blue, opacity: 1)
-    }
-}
-
 /// The almond lens on its own, for stroking.
 struct EyeLens: Shape {
     func path(in rect: CGRect) -> Path {
