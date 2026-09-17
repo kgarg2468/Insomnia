@@ -277,8 +277,17 @@ final class StatusItemController: NSObject {
                                 self.model.focusVisible = true
                             }
                         }
+                        completion?()
+                    } else {
+                        // The completion snaps the bar to its next width, which
+                        // clips whatever is still drawn: wait for the last pill
+                        // to have faded before the layout changes under it.
+                        let settle = Motion.retractSettle(reduceMotion: self.reduceMotion)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + settle) { [weak self] in
+                            guard let self, self.stageGeneration == generation else { return }
+                            completion?()
+                        }
                     }
-                    completion?()
                 }
             }
         }

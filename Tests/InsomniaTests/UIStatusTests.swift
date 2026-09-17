@@ -363,10 +363,14 @@ final class UIStatusTests: XCTestCase {
         controller.collapse()
         XCTAssertTrue(controller.model.slotsPresent, "the slots stay while the pills retract")
         XCTAssertEqual(controller.model.phase, .entering(.start))
-        try? await Task.sleep(for: .milliseconds(300))
+        // The pills have all started retracting, but the last one is still
+        // fading: the slots must stay until it has settled.
+        try? await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(controller.model.visiblePills, 0)
+        XCTAssertTrue(controller.model.slotsPresent, "the bar must not snap under a pill that is still visible")
+        try? await Task.sleep(for: .milliseconds(Int(Motion.retractSettleDuration * 1000) + 100))
         XCTAssertFalse(controller.model.slotsPresent)
         XCTAssertEqual(controller.model.phase, .idle)
-        XCTAssertEqual(controller.model.visiblePills, 0)
     }
 
     /// The digits are read by a local key monitor, which only sees events sent

@@ -23,6 +23,15 @@ enum Motion {
     static let overshoot: CGFloat = 1.06
     /// Reduce Motion replacement for every spring.
     static let reduced: Animation = .easeInOut(duration: 0.15)
+    /// How long after the last pill starts retracting the bar may change
+    /// width: the base spring has faded it out by then, so the snap clips
+    /// nothing visible.
+    static let retractSettleDuration: TimeInterval = 0.28
+    static let reducedRetractSettleDuration: TimeInterval = 0.15
+
+    static func retractSettle(reduceMotion: Bool = Motion.reduceMotion) -> TimeInterval {
+        reduceMotion ? reducedRetractSettleDuration : retractSettleDuration
+    }
 
     /// System Reduce Motion setting, read live so toggling it in System
     /// Settings takes effect on the next animation.
