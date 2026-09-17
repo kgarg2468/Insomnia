@@ -122,6 +122,92 @@ handling, `Motion` values.
 
 ## Out of scope
 
-Animated status item width (the version that stuttered), moving entry into a
-floating panel (direction A, declined), the lid-close brightness restore
-(tracked separately).
+Moving entry into a floating panel (direction A, declined), the lid-close
+brightness restore (tracked separately). Animating the status item's width
+was out of scope for revision 1 (the earlier version that stuttered
+interpolated the SwiftUI layout); revision 2 below animates it a different
+way.
+
+## Revision 2 (2026-09-17): animated width
+
+### What the first revision looked like on screen
+
+A 60 fps recording of the installed build showed the remaining jank was the
+width itself, not the content: on click the item snapped to its full width
+in one frame, so every neighbouring item teleported left and only then did
+the pills stagger in; on Enter the pills faded, the bar snapped narrower and
+the countdown and the ring appeared at full size in the same frame (the
+`.animation(_:value:)` on the container never reached the branch switch);
+and the eye's blink was over in about six frames.
+
+### Measurement
+
+Setting `NSStatusItem.length` from a `CADisplayLink` costs 0.5 ms mean and
+3.6 ms worst case per call, and held 120 Hz for 241 consecutive frames. The
+earlier stutter came from interpolating the SwiftUI layout (a relayout of
+the hosting view plus a menu bar relayout per frame), not from the length
+set itself. Driving the length alone, once per frame, is affordable.
+
+### Model
+
+- **The width is animated by a spring on the length, decoupled from
+  layout.** `StatusWidthAnimator` runs a `CADisplayLink` that steps
+  `WidthSpringMotion`, a pure closed-form evaluation of SwiftUI's `Spring`
+  (`Motion.widthSpring`: response 0.45, damping ratio 0.86) from the moment
+  of the last retarget, and sets `length` once per frame, rounded to the
+  backing scale. A retarget mid-flight re-bases the spring on the current
+  value and velocity, so Enter landing while the bar is still growing bends
+  the curve without a jump. The link is invalidated the moment the spring
+  is within 0.25 pt of the target with negligible velocity. Under Reduce
+  Motion the length snaps as before.
+- **The hosting view is never laid out per frame.** It no longer tracks the
+  button's width. It is given an explicit frame at the layout's width,
+  anchored at the leading edge, and only ever grows (the widest content it
+  has held); the status item's window reveals or clips it as the length
+  springs, so the content is laid out once per state change and the bar
+  reads as growing out of the mark. Content on its way out keeps its place
+  while the bar narrows over it.
+- **The width target still comes from the layout**, once per state change
+  (`widthTargetChangeCount`, pinned by the tests as before). What changed is
+  that the layout's width is a target, not a set.
+- **Transitions carry their own animation.** The countdown, the ring, the
+  error label and a pill born shown use `AnyTransition.animation(_:)`
+  (`Motion.countdownTransition` and friends), so they run in whatever
+  transaction the branch switch lands in; the container's
+  `.animation(_:value:)` is gone.
+
+### Choreography
+
+- Open: the width starts springing and the pills stagger in (40 ms) at once;
+  a pill born beyond the revealed width is clipped until the bar reaches it.
+- Enter: the pills retract as before and the eye starts opening immediately
+  (it no longer waits for the confirmation; a refusal closes it again with
+  the pills coming back). `Motion.narrowDelay` (0.1 s) into the retract the
+  width retargets to the width of the layout the slots will leave behind,
+  measured on a throwaway host over the same state, so the bar is already
+  narrowing while the last pill fades and its edge never crosses a solid
+  pill. The slots leave the layout when the last pill has faded (the 0.2 s
+  settle, unchanged) and the countdown scales in from the leading edge; the
+  layout's report then lands on the width already in flight.
+- Escape / close: the same, landing on the idle mark or the countdown.
+- End of session: the countdown and the ring scale out, the eye closes and
+  the width springs back, all at once.
+- Reduce Motion: the width snaps once the slots have left (no early narrow),
+  everything else crossfades, as before.
+- The eye's blink runs on `Motion.blink` (spring, response 0.7, damping
+  fraction 0.9; `easeInOut` 0.3 s under Reduce Motion), about 0.6 s, so the
+  lid lift and the lash hand-over are seen. The lash fade ramps are
+  unchanged.
+
+### Testing
+
+- `WidthSpringMotion`: reaches its target and settles in finite steps
+  without visible overshoot; a retarget mid-flight is continuous in value
+  and velocity; the curve is a function of time (two half-steps equal one
+  whole step).
+- `widthTargetChangeCount`: once per open, once per close, as before; the
+  early narrow lands on the same width the layout then reports.
+- `Motion.blink` is slower than `Motion.base`.
+- Live check by the owner: click, type, Enter, hold to end. The bar grows
+  and narrows continuously with the pills, the countdown scales in, the
+  neighbours never jump.

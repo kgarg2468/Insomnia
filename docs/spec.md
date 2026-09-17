@@ -355,24 +355,33 @@ Battery watts are read from `AppleSmartBattery` (`InstantAmperage` ×
   Baseline: `.spring(response: 0.35, dampingFraction: 0.72)`; pill focus
   bounce and chip taps use a snappier `.spring(response: 0.25,
   dampingFraction: 0.6)` with a slight scale overshoot (1.0 → 1.06 → 1.0).
-- The status item's width is never animated: macOS re-lays out the whole
-  menu bar on every change of `NSStatusItem.length`, so the width is set
-  once per open and once per close, from the SwiftUI layout of a custom
-  `NSStatusItem` view. Layout-changing state (the phase, the pill slots, the
-  error label) is set outside any animation transaction; only scale and
-  opacity animate inside the width the bar snapped to.
+- The status item's width is animated, but not by SwiftUI: a display-link
+  spring (`StatusWidthAnimator`, response 0.45, damping ratio 0.86) drives
+  `NSStatusItem.length` once per frame towards a target the SwiftUI layout
+  of a custom `NSStatusItem` view reports once per open and once per close.
+  Layout-changing state (the phase, the pill slots, the error label) is set
+  outside any animation transaction, so the layout is computed once per
+  state; the hosting view is laid out at that width, anchored at the
+  leading edge, and the item's window reveals or clips it as the length
+  springs. Only scale and opacity animate inside. Retargeting mid-flight is
+  continuous; under Reduce Motion the width snaps.
 - Each pill is a fixed slot sized by its placeholder at the typed weight and
   padding, so typing a digit never changes the layout.
 - Pills appear with a staggered scale-and-fade (about 40 ms between pills)
   inside their slots, which are all in the layout from the first frame.
   Collapsing reverses the stagger; the slots leave once the last pill has
   retracted.
-- On Enter the pills retract and the countdown appears as soon as they
-  have retracted (about 0.2 s), with its own scale-from-leading transition,
-  showing the time the session will read once the manager confirms it and
-  ticking at 1 Hz meanwhile; the hold-to-end ring follows the confirmation.
-  (This replaces the earlier pill-to-countdown matched-geometry morph,
-  which animated across the width change.)
+- On Enter the pills retract and the eye starts to open at once; the width
+  starts narrowing about 0.1 s in, while the last pill is still fading, and
+  the countdown scales in from the leading edge once the pills have
+  retracted (about 0.2 s), showing the time the session will read once the
+  manager confirms it and ticking at 1 Hz meanwhile; the hold-to-end ring
+  follows the confirmation. Transitions carry their own animation, so they
+  run whatever transaction the layout change lands in. (This replaces the
+  earlier pill-to-countdown matched-geometry morph, which animated across
+  the width change.)
+- The eye's blink is a slower spring (response 0.7, damping fraction 0.9,
+  about 0.6 s) so the lid lift and the lash hand-over are seen.
 - Typing happens in a non-activating key panel: the app in front stays
   frontmost; only key status moves to the pills while typing, as with
   Spotlight, and it returns when the pills close.
