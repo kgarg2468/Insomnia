@@ -26,7 +26,7 @@ enum Motion {
     /// How long after the last pill starts retracting the bar may change
     /// width: the base spring has faded it out by then, so the snap clips
     /// nothing visible.
-    static let retractSettleDuration: TimeInterval = 0.28
+    static let retractSettleDuration: TimeInterval = 0.20
     static let reducedRetractSettleDuration: TimeInterval = 0.15
 
     static func retractSettle(reduceMotion: Bool = Motion.reduceMotion) -> TimeInterval {
@@ -64,8 +64,9 @@ enum Motion {
         reduceMotion ? 1 : overshoot
     }
 
-    /// Insert/remove transition for a pill: scale-and-fade, or a plain fade
-    /// under Reduce Motion.
+    /// Insertion transition for a pill slot born already shown: scale-and-fade,
+    /// or a plain fade under Reduce Motion. The same shape `StatusRootView`
+    /// drives by hand for the stagger.
     static func pillTransition(reduceMotion: Bool = Motion.reduceMotion) -> AnyTransition {
         if reduceMotion { return .opacity }
         return .scale(scale: 0.55, anchor: .leading).combined(with: .opacity)

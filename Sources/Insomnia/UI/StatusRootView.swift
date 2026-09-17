@@ -44,7 +44,10 @@ struct StatusRootView: View {
     }
 
     /// The layout-changing state. Transitions of what comes and goes with it
-    /// animate off this key, while the HStack outside it snaps.
+    /// animate off this key. The animation is scoped to the `Group` below,
+    /// not the HStack: an animation on the HStack would interpolate its own
+    /// size (and so the reported width) every time the key changes, which is
+    /// the per-frame relayout this view exists to avoid.
     private struct LayoutKey: Equatable {
         let phase: MenuBarModel.Phase
         let slotsPresent: Bool
@@ -74,7 +77,10 @@ struct StatusRootView: View {
             .animation(Motion.base(reduceMotion: reduceMotion), value: layoutKey)
         }
         .padding(.leading, 6)
-        .padding(.trailing, model.slotsPresent ? 8 : 6)
+        // Never animated: `slotsPresent` can land in the same transaction as
+        // a `withAnimation` (a refused start reopens the pills in one turn),
+        // and an interpolated inset would report a width per frame.
+        .animation(nil) { $0.padding(.trailing, model.slotsPresent ? 8 : 6) }
         .frame(height: NSStatusBar.system.thickness)
         .fixedSize()
         .contentShape(Rectangle())
@@ -121,7 +127,14 @@ struct StatusRootView: View {
             .scaleEffect(shown || reduceMotion ? 1 : Self.hiddenPillScale, anchor: .leading)
             .opacity(shown ? 1 : 0)
             .accessibilityHidden(!shown)
-            .transition(.identity)
+            // A slot born already shown (the first pill when its stagger step
+            // lands in the same transaction as the slots, every pill when a
+            // refused start puts them straight back) has no hidden frame to
+            // spring from, so it springs in through the same shape as a
+            // transition. One born hidden must not: its stagger step would
+            // then compound with a transition still in flight. Removal is
+            // instant either way, so a leaving slot never holds the layout.
+            .transition(.asymmetric(insertion: shown ? Motion.pillTransition(reduceMotion: reduceMotion) : .identity, removal: .identity))
             .zIndex(Double(10 - index))
         }
     }

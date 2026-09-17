@@ -62,6 +62,9 @@ final class UIStatusTests: XCTestCase {
         model.input = DurationInput(days: 12, hours: 3, minutes: 45)
         XCTAssertEqual(model.input.text(for: .days), "12")
         XCTAssertEqual(width(), hidden, accuracy: 0.001, "typing never widens a slot")
+        model.input = DurationInput(days: DurationInput.maxDays, hours: DurationInput.maxHours, minutes: DurationInput.maxMinutes)
+        XCTAssertEqual(model.input.text(for: .minutes), "59")
+        XCTAssertEqual(width(), hidden, accuracy: 0.001, "the widest values fit the slots too")
         model.focused = .minutes
         model.focusVisible = true
         XCTAssertEqual(width(), hidden, accuracy: 0.001, "the focus ring is an overlay")
@@ -365,12 +368,59 @@ final class UIStatusTests: XCTestCase {
         XCTAssertEqual(controller.model.phase, .entering(.start))
         // The pills have all started retracting, but the last one is still
         // fading: the slots must stay until it has settled.
-        try? await Task.sleep(for: .milliseconds(200))
+        try? await Task.sleep(for: .milliseconds(120))
         XCTAssertEqual(controller.model.visiblePills, 0)
         XCTAssertTrue(controller.model.slotsPresent, "the bar must not snap under a pill that is still visible")
         try? await Task.sleep(for: .milliseconds(Int(Motion.retractSettleDuration * 1000) + 100))
         XCTAssertFalse(controller.model.slotsPresent)
         XCTAssertEqual(controller.model.phase, .idle)
+    }
+
+    /// The status item's width is set from the SwiftUI layout and is meant to
+    /// change once per open and once per close: the slots arrive with the
+    /// phase, and leave with it once the last pill has settled. Same over a
+    /// live session, where the countdown and the ring swap with the slots.
+    ///
+    /// What is measured is the count of distinct widths the layout reported.
+    /// Animations do not render in this background-only test process (an
+    /// animated layout change reports its end value only), so this pins the
+    /// discrete relayouts; per-frame interpolation of an animated width is
+    /// kept out by setting the layout state outside any animation, which
+    /// this cannot see.
+    @MainActor
+    func testTheStatusItemWidthChangesOncePerOpenAndOncePerClose() async {
+        _ = NSApplication.shared
+        let h = Harness()
+        defer { h.home.destroy() }
+        let manager = h.makeManager()
+        let controller = StatusItemController(manager: manager, status: PlaceholderStatus(), showSettings: {})
+        // Long enough for the stagger and the settle, whatever Reduce Motion says.
+        let landed = Int((Motion.staggerDelay(index: 2, count: 3, reversed: false) + Motion.retractSettle()) * 1000) + 250
+        XCTAssertEqual(controller.widthChangeCount, 1, "installing the host sets the idle width")
+
+        controller.expand(mode: .start)
+        try? await Task.sleep(for: .milliseconds(landed))
+        XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count)
+        XCTAssertEqual(controller.widthChangeCount, 2, "open: one relayout")
+
+        controller.collapse()
+        try? await Task.sleep(for: .milliseconds(landed))
+        XCTAssertEqual(controller.model.phase, .idle)
+        XCTAssertEqual(controller.widthChangeCount, 3, "close: one relayout")
+
+        await manager.start(duration: 3600)
+        try? await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(controller.model.phase, .running)
+        XCTAssertEqual(controller.widthChangeCount, 4, "countdown and ring: one relayout")
+
+        controller.expand(mode: .extend)
+        try? await Task.sleep(for: .milliseconds(landed))
+        XCTAssertEqual(controller.widthChangeCount, 5, "open over a session: one relayout")
+
+        controller.collapse()
+        try? await Task.sleep(for: .milliseconds(landed))
+        XCTAssertEqual(controller.model.phase, .running)
+        XCTAssertEqual(controller.widthChangeCount, 6, "close to the countdown: one relayout")
     }
 
     /// The digits are read by a local key monitor, which only sees events sent

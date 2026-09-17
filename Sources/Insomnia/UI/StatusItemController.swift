@@ -36,6 +36,9 @@ final class StatusItemController: NSObject {
     /// countdown); it must not clear what the newer one is showing.
     private var startGeneration = 0
     private var lastWidth: CGFloat = 0
+    /// How many times the status item's width has been set. The layout is
+    /// meant to change once per open and once per close; tests pin that.
+    private(set) var widthChangeCount = 0
 
     /// Autosave name so macOS remembers where the user drags the item.
     static let autosaveName = "insomnia.status"
@@ -119,6 +122,7 @@ final class StatusItemController: NSObject {
         let w = max(width.rounded(.up), 24)
         guard w != lastWidth else { return }
         lastWidth = w
+        widthChangeCount += 1
         statusItem.length = w
     }
 
@@ -224,7 +228,6 @@ final class StatusItemController: NSObject {
     func collapse() {
         guard model.phase.isEntering else { return }
         removeMonitors()
-        model.startError = nil
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
             model.focusVisible = false
         }
@@ -235,10 +238,11 @@ final class StatusItemController: NSObject {
             // land) in that window, which would make a target captured up
             // front install a countdown for a session that is already over.
             let target = Self.collapseTarget(sessionActive: self.manager.isActive)
-            // Outside any animation: the slots leave and the phase changes in
-            // one relayout, so the status item narrows once; the countdown,
-            // if any, then runs its own transition.
+            // Outside any animation: the slots and the error label leave and
+            // the phase changes in one relayout, so the status item narrows
+            // once; the countdown, if any, then runs its own transition.
             self.model.slotsPresent = false
+            self.model.startError = nil
             self.model.phase = target
         }
     }
@@ -257,7 +261,19 @@ final class StatusItemController: NSObject {
         let current = model.visiblePills
         let steps: [Int] = current < target ? Array((current + 1)...target) : Array((target..<current).reversed())
         guard !steps.isEmpty else {
-            completion?()
+            if target == 0 {
+                // Already retracted, so a retract is settling (Esc, then a
+                // click on the mark): the generation bump above just cancelled
+                // its completion, and the last pill may still be fading. Wait
+                // the settle out again rather than snap under it.
+                let settle = Motion.retractSettle(reduceMotion: reduceMotion)
+                DispatchQueue.main.asyncAfter(deadline: .now() + settle) { [weak self] in
+                    guard let self, self.stageGeneration == generation else { return }
+                    completion?()
+                }
+            } else {
+                completion?()
+            }
             return
         }
         let count = steps.count
@@ -353,6 +369,10 @@ final class StatusItemController: NSObject {
         removeMonitors()
         startGeneration += 1
         let generation = startGeneration
+        // Cleared now, not when the slots leave: the error goes with the
+        // retry, not only with its success (UIStartupTests pins that). On a
+        // retry after a refusal the bar therefore narrows by the label at
+        // Enter and again when the slots leave.
         model.startError = nil
         let now = Date()
         if mode == .extend, let s = manager.session {
