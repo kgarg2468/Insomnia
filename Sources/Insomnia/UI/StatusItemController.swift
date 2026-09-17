@@ -3,14 +3,19 @@ import SwiftUI
 
 /// Owns the NSStatusItem and drives every state change of the menu bar UI.
 ///
-/// The status bar button hosts a SwiftUI view and the item's width is set to
-/// whatever that view fits into; there is no popover, so the status item is
-/// the whole interface apart from a right-click NSMenu.
+/// The status bar button hosts a SwiftUI view and the item's length is
+/// written once to whatever that view fits into (`StatusWidthWriter`); there is no
+/// popover, so the status item is the whole interface apart from a
+/// right-click NSMenu.
 /// Keyboard input never reaches a text field inside a status bar window, so
 /// a local key monitor routes digits / Tab / Enter / Esc / Delete to the
 /// focused pill while the pills are open.
 @MainActor
 final class StatusItemController: NSObject {
+    /// Builds the width writer over `apply` (which sets the item's length);
+    /// tests inject one that records every write.
+    typealias WidthWriterFactory = @MainActor (_ apply: @escaping (CGFloat) -> Void) -> StatusWidthWriter
+
     let manager: SessionManager
     let status: any StatusSource
     let model = MenuBarModel()
@@ -18,18 +23,22 @@ final class StatusItemController: NSObject {
     /// Opens the settings window. Injected because the window is owned by the
     /// app delegate, which outlives any one status item.
     private let showSettings: () -> Void
+    private let makeWidthWriter: WidthWriterFactory?
 
     private let statusItem: NSStatusItem
     private var hostingView: StatusHostingView?
+    private var widthWriter: StatusWidthWriter?
 
     private var keyMonitor: Any?
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
     /// Holds keyboard focus while the pills are open; see `KeyCatcherPanel`.
     private var keyCatcher: KeyCatcherPanel?
-
-    /// Whoever was frontmost before we activated for typing; reactivated on collapse.
-    private var previousApp: NSRunningApplication?
+    /// 1 Hz redraw of the projected countdown while a start is pending, so
+    /// it does not sit frozen for the seconds the recovery agent and pmset
+    /// take and then jump on confirmation.
+    private var pendingTick: Timer?
+    var pendingTickArmed: Bool { pendingTick != nil }
     /// Invalidates in-flight stagger steps when expand/collapse interleave.
     private var stageGeneration = 0
     /// Identifies the run whose completion is allowed to touch the UI. The
@@ -37,15 +46,27 @@ final class StatusItemController: NSObject {
     /// newer run is still pending (extend, then extend again through the
     /// countdown); it must not clear what the newer one is showing.
     private var startGeneration = 0
-    private var lastWidth: CGFloat = 0
+    /// The width the status item is heading for.
+    private(set) var widthTarget: CGFloat = 0
+    /// How many times the width target has changed. The layout is meant to
+    /// change once per open and once per close; tests pin that.
+    private(set) var widthTargetChangeCount = 0
+    /// The width the hosting view is laid out at (the widest content it has held).
+    var hostWidth: CGFloat { hostingView?.frame.width ?? 0 }
 
     /// Autosave name so macOS remembers where the user drags the item.
     static let autosaveName = "insomnia.status"
 
-    init(manager: SessionManager, status: any StatusSource, showSettings: @escaping () -> Void) {
+    init(
+        manager: SessionManager,
+        status: any StatusSource,
+        showSettings: @escaping () -> Void,
+        makeWidthWriter: WidthWriterFactory? = nil
+    ) {
         self.manager = manager
         self.status = status
         self.showSettings = showSettings
+        self.makeWidthWriter = makeWidthWriter
         Self.seedPreferredPositionIfNeeded()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.autosaveName = Self.autosaveName
@@ -69,6 +90,8 @@ final class StatusItemController: NSObject {
 
     private func installHostingView() {
         guard let button = statusItem.button else { return }
+        let apply: (CGFloat) -> Void = { [statusItem] width in statusItem.length = width }
+        widthWriter = makeWidthWriter?(apply) ?? StatusWidthWriter(apply: apply)
         let root = StatusRootView(
             model: model,
             manager: manager,
@@ -81,14 +104,24 @@ final class StatusItemController: NSObject {
         let host = Self.makeHostingView(root)
         host.onRightMouseDown = { [weak self] in self?.showMenu() }
         host.translatesAutoresizingMaskIntoConstraints = true
-        host.autoresizingMask = [.width, .height]
-        host.frame = button.bounds
+        // The height follows the button; the width is set from the layout
+        // (`retargetWidth`) and never from the button, whose width is the
+        // item's length: the content is laid out once at its own width,
+        // anchored at the leading edge, and the item's window reveals or
+        // clips it.
+        host.autoresizingMask = [.height]
+        host.frame = NSRect(x: 0, y: 0, width: 0, height: button.bounds.height)
         button.addSubview(host)
         button.title = ""
         button.image = nil
         // SwiftUI handles the clicks; the cell must not paint a highlight.
         (button.cell as? NSButtonCell)?.highlightsBy = []
         hostingView = host
+        // The layout may already have reported through `onGeometryChange`
+        // while the host was measured above, before `hostingView` was set,
+        // in which case `retargetWidth` treats the fitting width as a
+        // repeat and never grows the frame: size the host here.
+        host.frame.size.width = max(widthTarget, host.fittingSize.width.rounded(.up), 24)
         widthChanged(host.fittingSize.width)
         logFrames("installed")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.logFrames("after 1s") }
@@ -113,15 +146,51 @@ final class StatusItemController: NSObject {
         }
     }
 
-    /// Set the item's width to what SwiftUI just laid out. Deliberately not
-    /// animated: every change of `NSStatusItem.length` forces a full menu bar
-    /// relayout, so interpolating it at display cadence made the whole bar
-    /// stutter. The content animates inside the new width instead.
+    /// The layout reported a new width: send the item to it.
     private func widthChanged(_ width: CGFloat) {
+        retargetWidth(width)
+    }
+
+    /// Set the item's length to `width`, once; a repeat of the current
+    /// target is ignored. The host only ever grows: it is laid out at the
+    /// widest content it has held, so content on its way out always has
+    /// room to finish its transition when the length narrows over it.
+    private func retargetWidth(_ width: CGFloat) {
         let w = max(width.rounded(.up), 24)
-        guard w != lastWidth else { return }
-        lastWidth = w
-        statusItem.length = w
+        guard w != widthTarget else { return }
+        widthTarget = w
+        widthTargetChangeCount += 1
+        if let host = hostingView, host.frame.width < w {
+            host.frame.size.width = w
+        }
+        widthWriter?.write(w)
+    }
+
+    /// Take the pills away and land on `landing()`'s layout, read when the
+    /// last pill has gone: the session can end, or a pending start be
+    /// confirmed, in that window.
+    ///
+    /// The pills fold shut towards the eye with their stagger
+    /// (`pillsCollapsing` picks that shape over the in-place retract), the
+    /// slots leave once the last has gone, and the length is written when
+    /// the layout reports that, never before, so it does not cut across
+    /// collapsing content. Outside any animation: the flag only changes how
+    /// a hidden pill is drawn, and a pill still hidden here (Esc during the
+    /// open stagger) is at zero opacity.
+    private func retract(landing: @escaping @MainActor () -> MenuBarModel.Phase) {
+        model.pillsCollapsing = true
+        stagePills(to: 0) { [weak self] in
+            guard let self else { return }
+            // Outside any animation: the slots and the error label leave
+            // and the phase changes in one relayout; the countdown, if
+            // any, runs its own transition. The collapse ends with the
+            // slots, in the same step, so no hidden pill is ever drawn
+            // in the retract shape.
+            self.model.pillsCollapsing = false
+            self.model.slotsPresent = false
+            self.model.startError = nil
+            self.model.phase = landing()
+        }
     }
 
     private var button: NSStatusBarButton? { statusItem.button }
@@ -147,16 +216,26 @@ final class StatusItemController: NSObject {
 
     private func managerChanged() {
         reminder.sync(endsAt: manager.session?.endsAt)
-        guard let next = Self.phase(forActive: manager.isActive, phase: model.phase) else { return }
-        switch next {
-        case .idle, .running:
-            withAnimation(Motion.base(reduceMotion: reduceMotion)) {
-                model.pendingCountdown = nil
+        if let next = Self.phase(forActive: manager.isActive, phase: model.phase) {
+            switch next {
+            case .idle, .running:
+                // Outside any animation: the phase changes the layout, whose
+                // new width the status item then heads for. What comes and
+                // goes with it (the countdown and the ring at an end, the
+                // ring at a confirmation) runs its own transition.
+                stopPendingTick()
+                // The session can land a hop before its countdown text does;
+                // the projection stays up until the live text is there to
+                // replace it (the run's completion clears it otherwise).
+                if !manager.countdownText.isEmpty {
+                    model.pendingCountdown = nil
+                    model.pendingProjection = nil
+                }
+                model.phase = next
+            case .entering, .starting:
+                // Only the mode of the open pills changes, so nothing to animate.
                 model.phase = next
             }
-        case .entering, .starting:
-            // Only the mode of the open pills changes, so nothing to animate.
-            model.phase = next
         }
     }
 
@@ -190,8 +269,14 @@ final class StatusItemController: NSObject {
         switch model.phase {
         case .idle:
             expand(mode: .start)
-        case .entering:
-            if model.input.total != nil {
+        case let .entering(mode):
+            if model.pillsCollapsing {
+                // A close is in flight (Esc, a click away): the phase is
+                // still `.entering` but the pills are folding and the key
+                // catcher is gone, so there is nothing to commit and nothing
+                // more to collapse. The click brings the pills back.
+                expand(mode: mode)
+            } else if model.input.total != nil {
                 commit()
             } else {
                 collapse()
@@ -207,19 +292,42 @@ final class StatusItemController: NSObject {
     // MARK: Expand / collapse
 
     func expand(mode: MenuBarModel.Mode) {
-        previousApp = NSWorkspace.shared.frontmostApplication
-        // The activation happens in `installMonitors()`, once there is a
-        // window for it to make key.
+        // Reopened under a fold (the generation bump in `stagePills` drops
+        // its landing): end the fold first, before any state below can
+        // change the layout. Clearing the error label, say, can make the
+        // hosting view lay out and report at once, and that report is
+        // written; it must not land under a fold still flagged. A pill
+        // still on its way to the eye slides back to its slot on the
+        // collapse curve while the stagger brings it up; animated, so it
+        // is not seen jumping back.
+        endFoldIfAny()
         model.input = DurationInput()
         model.focused = .hours
         model.focusVisible = false
+        stopPendingTick()
         model.pendingCountdown = nil
+        model.pendingProjection = nil
         model.startError = nil
-        withAnimation(Motion.base(reduceMotion: reduceMotion)) {
-            model.phase = .entering(mode)
-        }
+        // Layout next, outside any animation: the three slots arrive at once
+        // and the status item widens to them. The content staggers in
+        // meanwhile.
+        model.phase = .entering(mode)
+        model.slotsPresent = true
         stagePills(to: DurationInput.Field.allCases.count)
         installMonitors()
+    }
+
+    /// Ends a fold in flight on the collapse curve, so a pill caught
+    /// mid-travel slides back to its slot rather than jumping there.
+    /// Must run before any layout-affecting state changes: the hosting
+    /// view can lay out and report synchronously, and a width write under
+    /// `pillsCollapsing` is the cut across moving content the design
+    /// forbids.
+    private func endFoldIfAny() {
+        guard model.pillsCollapsing else { return }
+        withAnimation(Motion.collapse(reduceMotion: reduceMotion)) {
+            model.pillsCollapsing = false
+        }
     }
 
     /// Collapse to idle, or back to the countdown when a session is running.
@@ -228,20 +336,12 @@ final class StatusItemController: NSObject {
         removeMonitors()
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
             model.focusVisible = false
-            model.startError = nil
         }
-        stagePills(to: 0) { [weak self] in
-            guard let self else { return }
-            // Read the session here, not before the stagger: the pills take a
-            // moment to retract and the session can end (or a restored one can
-            // land) in that window, which would make a target captured up
-            // front install a countdown for a session that is already over.
-            let target = Self.collapseTarget(sessionActive: self.manager.isActive)
-            withAnimation(Motion.base(reduceMotion: self.reduceMotion)) {
-                self.model.phase = target
-            }
-        }
-        restorePreviousApp()
+        // The session is read at landing, not now: the pills take a moment
+        // to leave and the session can end (or a restored one can land) in
+        // that window, which would make a target captured up front install
+        // a countdown for a session that is already over.
+        retract { [manager] in Self.collapseTarget(sessionActive: manager.isActive) }
     }
 
     /// Where the pills land when dismissed. A live session always goes back
@@ -254,19 +354,45 @@ final class StatusItemController: NSObject {
     /// Step `visiblePills` towards `target`, one pill per `Motion.stagger`.
     private func stagePills(to target: Int, completion: (() -> Void)? = nil) {
         stageGeneration += 1
+        // Read once for the whole stage: a Reduce Motion change mid-fold
+        // must not shorten the settle under a pill still on the long curve.
+        let reduceMotion = self.reduceMotion
         let generation = stageGeneration
         let current = model.visiblePills
         let steps: [Int] = current < target ? Array((current + 1)...target) : Array((target..<current).reversed())
         guard !steps.isEmpty else {
-            completion?()
+            if target == 0 {
+                // Already retracted, so a retract is settling (Esc, then a
+                // click on the mark): the generation bump above just cancelled
+                // its completion, and the last pill may still be fading. Wait
+                // the settle out again rather than snap under it.
+                let settle = Motion.retractSettle(reduceMotion: reduceMotion)
+                DispatchQueue.main.asyncAfter(deadline: .now() + settle) { [weak self] in
+                    guard let self, self.stageGeneration == generation else { return }
+                    completion?()
+                }
+            } else {
+                // Already shown: just breathe the focus glow in.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                    guard let self, self.stageGeneration == generation else { return }
+                    withAnimation(Motion.base(reduceMotion: reduceMotion)) {
+                        self.model.focusVisible = true
+                    }
+                }
+                completion?()
+            }
             return
         }
         let count = steps.count
+        // Staging to zero is the close: each pill leaves on the
+        // collapse curve (fixed duration, so the settle below is exact)
+        // rather than the base spring the open uses.
+        let animation = target == 0 ? Motion.collapse(reduceMotion: reduceMotion) : Motion.base(reduceMotion: reduceMotion)
         for (i, value) in steps.enumerated() {
             let delay = Motion.staggerDelay(index: i, count: count, reversed: false, reduceMotion: reduceMotion)
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self, self.stageGeneration == generation else { return }
-                withAnimation(Motion.base(reduceMotion: self.reduceMotion)) {
+                withAnimation(animation) {
                     self.model.visiblePills = value
                 }
                 if i == count - 1 {
@@ -274,25 +400,25 @@ final class StatusItemController: NSObject {
                         // Let the last pill land, then breathe the focus glow in.
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
                             guard let self, self.stageGeneration == generation else { return }
-                            withAnimation(Motion.base(reduceMotion: self.reduceMotion)) {
+                            withAnimation(Motion.base(reduceMotion: reduceMotion)) {
                                 self.model.focusVisible = true
                             }
                         }
+                        completion?()
+                    } else {
+                        // The completion takes the slots out of the layout:
+                        // wait for the last pill's collapse curve to have
+                        // run out (`retractSettle` covers it, plus a frame)
+                        // so nothing visible is removed.
+                        let settle = Motion.retractSettle(reduceMotion: reduceMotion)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + settle) { [weak self] in
+                            guard let self, self.stageGeneration == generation else { return }
+                            completion?()
+                        }
                     }
-                    completion?()
                 }
             }
         }
-    }
-
-    private func restorePreviousApp() {
-        guard NSApp.isActive, !NSApp.windows.contains(where: { $0.isVisible && $0.isKeyWindow && !($0 is NSPanel) }) else { return }
-        if let prev = previousApp, prev.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-            prev.activate()
-        } else {
-            NSApp.deactivate()
-        }
-        previousApp = nil
     }
 
     // MARK: Focus and typing
@@ -340,6 +466,9 @@ final class StatusItemController: NSObject {
     /// starts the default preset; while extending it shakes instead.
     func commit() {
         guard case let .entering(mode) = model.phase else { return }
+        // Nothing to commit once the monitors are down: Enter has already
+        // been pressed (or Esc), and the slots are retracting.
+        guard keyCatcher != nil else { return }
         switch MenuBarModel.commitAction(mode: mode, typed: model.input.total, defaultPreset: manager.config.defaultPreset) {
         case let .run(duration):
             run(mode: mode, duration: duration)
@@ -350,30 +479,42 @@ final class StatusItemController: NSObject {
 
     private func run(mode: MenuBarModel.Mode, duration: TimeInterval) {
         removeMonitors()
-        stageGeneration += 1
         startGeneration += 1
         let generation = startGeneration
-        model.startError = nil
+        // On a retry after a refusal the label goes with the retry, not
+        // only with its success (UIStartupTests pins that), but it is hidden
+        // (`startErrorShown`), not cleared: its text keeps the label's room
+        // in the layout until the slots leave, so the bar is written once,
+        // then, and never under the folding pills.
         let now = Date()
         if mode == .extend, let s = manager.session {
-            // The session is live, so the countdown stays up. Morph now; the
-            // manager catches up (pmset takes a moment). Project the session
-            // so the placeholder already has the final shape.
+            // The session is live, so the countdown stays up. Project the
+            // session so the countdown already has the final shape while the
+            // manager catches up (pmset takes a moment).
             let projected = SessionMath.extended(s, by: duration, now: now, maxDuration: manager.config.maxDuration)
+            model.pendingProjection = nil
             model.pendingCountdown = SessionMath.formatCountdown(remaining: projected.remaining(at: now), shape: projected.countdownShape)
         } else {
             // No session yet: the manager has to arm the recovery agent and
             // disable sleep first, and either can take seconds or refuse. Show
-            // an honest pending state rather than a countdown and an end ring
-            // for a session that may never exist.
-            model.pendingCountdown = nil
+            // the countdown the session will read the moment it is confirmed,
+            // ticking meanwhile; the phase stays pending, so nothing that acts
+            // on a session (the end ring) is drawn until then.
+            let projection = MenuBarModel.projectedStart(now: now, duration: duration, maxDuration: manager.config.maxDuration)
+            model.pendingProjection = projection
+            model.pendingCountdown = projection.countdown(at: now)
         }
+        // The phase flips now, outside any animation, so nothing can act on
+        // the pills again while they leave (and the eye starts opening);
+        // the slots stay in the layout until the last pill has gone, then
+        // leave in one relayout and the countdown scales in. Enter during
+        // the open stagger folds whatever is up.
+        model.phase = mode == .extend && manager.isActive ? .running : .starting
+        if model.phase == .starting { armPendingTick() } else { stopPendingTick() }
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
             model.focusVisible = false
-            model.visiblePills = 0
-            model.phase = mode == .extend && manager.isActive ? .running : .starting
         }
-        restorePreviousApp()
+        retract { [model] in model.phase }
 
         Task { @MainActor in
             switch mode {
@@ -381,15 +522,15 @@ final class StatusItemController: NSObject {
             case .extend: await manager.extend(by: duration)
             }
             guard generation == startGeneration else { return }
+            stopPendingTick()
             model.pendingCountdown = nil
+            model.pendingProjection = nil
             if manager.isActive {
                 // Normally `managerChanged` has already done this; a session
                 // that was live before the start (extend, or a start refused
                 // as "already active") never changes and never fires it.
                 if model.phase == .starting {
-                    withAnimation(Motion.base(reduceMotion: reduceMotion)) {
-                        model.phase = .running
-                    }
+                    model.phase = .running
                 }
             } else if model.phase == .starting {
                 // Start refused: bring the pills back with the value intact
@@ -401,20 +542,58 @@ final class StatusItemController: NSObject {
 
     /// Put the pills straight back, all at once. No stagger: the refusal can
     /// arrive within the same frame the pills were retracting in, and
-    /// replaying the open sequence on top of that half-finished morph is the
-    /// churn the user sees as flicker. One animated retarget instead.
+    /// replaying the open sequence on top of that half-finished retract is
+    /// the churn the user sees as flicker. One animated retarget instead.
     private func reopenAfterFailure(mode: MenuBarModel.Mode) {
         let keep = model.input
-        previousApp = NSWorkspace.shared.frontmostApplication
+        // Cancels a close still in flight: its landing and any stagger
+        // work are dropped by the generation, and the fold ends now, on
+        // its own curve, before the layout below (the hosting view can lay
+        // out and report the label's width as soon as the error is set,
+        // and that report is written: it must not land under a fold still
+        // flagged; and a pill mid-travel slides back rather than jumping).
         stageGeneration += 1
+        endFoldIfAny()
+        // Layout outside any animation (one relayout, whether the slots were
+        // still there or already gone), then the content springs back.
+        model.phase = .entering(mode)
+        model.slotsPresent = true
+        model.startError = MenuBarModel.startFailedText
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
-            model.phase = .entering(mode)
             model.input = keep
             model.visiblePills = DurationInput.Field.allCases.count
             model.focusVisible = true
-            model.startError = MenuBarModel.startFailedText
         }
         installMonitors()
+    }
+
+    // MARK: Projected countdown
+
+    /// 1 Hz redraw of the projected countdown, aligned to whole wall-clock
+    /// seconds like the manager's live one. Runs only while the phase is
+    /// `.starting`; stopped on confirmation, refusal or reopening.
+    private func armPendingTick() {
+        stopPendingTick()
+        let first = SessionMath.nextSecondBoundary(after: Date())
+        let timer = Timer(fire: first, interval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshPendingCountdown() }
+        }
+        timer.tolerance = 0.1
+        RunLoop.main.add(timer, forMode: .common)
+        pendingTick = timer
+    }
+
+    private func stopPendingTick() {
+        pendingTick?.invalidate()
+        pendingTick = nil
+    }
+
+    private func refreshPendingCountdown() {
+        guard model.phase == .starting, let projection = model.pendingProjection else {
+            stopPendingTick()
+            return
+        }
+        model.pendingCountdown = projection.countdown(at: Date())
     }
 
     // MARK: Session actions
@@ -509,12 +688,7 @@ final class StatusItemController: NSObject {
             withAnimation(Motion.base(reduceMotion: reduceMotion)) {
                 model.focusVisible = false
             }
-            stagePills(to: 0) { [weak self] in
-                guard let self else { return }
-                withAnimation(Motion.base(reduceMotion: self.reduceMotion)) {
-                    self.model.phase = self.manager.isActive ? .running : .idle
-                }
-            }
+            retract { [manager] in Self.collapseTarget(sessionActive: manager.isActive) }
         }
     }
 
@@ -522,16 +696,15 @@ final class StatusItemController: NSObject {
 
     private func installMonitors() {
         removeMonitors()
-        // The key monitor below is local, so it only fires while this app
-        // holds keyboard focus, which an accessory app with no window never
-        // does. Put the catcher panel up first and activate onto it: ordering
-        // a window front in an inactive app only makes it key once the app
-        // activates, so the activation has to come second.
+        // The key monitor below is local, so it only fires on events routed
+        // to a key window this app owns, which an accessory app with no
+        // window never has. The catcher panel is non-activating: making it
+        // key moves key status to it without activating this app, so the
+        // app in front stays frontmost and its windows keep their focus.
         let panel = KeyCatcherPanel()
         if let button { panel.move(toStatusButton: button) }
         panel.makeKeyAndOrderFront(nil)
         keyCatcher = panel
-        NSApp.activate(ignoringOtherApps: true)
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             // Local monitors always run on the main thread.
             let consumed = MainActor.assumeIsolated { self?.handleKey(event) ?? false }
@@ -543,7 +716,7 @@ final class StatusItemController: NSObject {
             }
             return event
         }
-        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
             Task { @MainActor in self?.collapse() }
         }
     }
