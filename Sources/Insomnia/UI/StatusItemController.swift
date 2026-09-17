@@ -47,10 +47,12 @@ final class StatusItemController: NSObject {
     /// pills are reopened before the layout has caught up.
     private var layoutWidth: CGFloat = 0
     /// The width the status item is heading for.
-    private var widthTarget: CGFloat = 0
+    private(set) var widthTarget: CGFloat = 0
     /// How many times the width target has changed. The layout is meant to
     /// change once per open and once per close; tests pin that.
     private(set) var widthTargetChangeCount = 0
+    /// The width the hosting view is laid out at (the widest content it has held).
+    var hostWidth: CGFloat { hostingView?.frame.width ?? 0 }
 
     /// Autosave name so macOS remembers where the user drags the item.
     static let autosaveName = "insomnia.status"
@@ -114,6 +116,11 @@ final class StatusItemController: NSObject {
         // SwiftUI handles the clicks; the cell must not paint a highlight.
         (button.cell as? NSButtonCell)?.highlightsBy = []
         hostingView = host
+        // The layout may already have reported through `onGeometryChange`
+        // while the host was measured above, before `hostingView` was set,
+        // in which case `retargetWidth` treats the fitting width as a
+        // repeat and never grows the frame: size the host here.
+        host.frame.size.width = max(widthTarget, host.fittingSize.width.rounded(.up), 24)
         widthChanged(host.fittingSize.width)
         logFrames("installed")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.logFrames("after 1s") }

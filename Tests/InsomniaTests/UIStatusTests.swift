@@ -509,11 +509,14 @@ final class UIStatusTests: XCTestCase {
         // Long enough for the stagger and the settle, whatever Reduce Motion says.
         let landed = Int((Motion.staggerDelay(index: 2, count: 3, reversed: false) + Motion.retractSettle()) * 1000) + 250
         XCTAssertEqual(controller.widthTargetChangeCount, 1, "installing the host sets the idle width")
+        XCTAssertGreaterThanOrEqual(controller.hostWidth, 24, "the host is laid out at the idle width, not left at zero")
+        XCTAssertEqual(controller.hostWidth, controller.widthTarget, "install: the host is as wide as the first target")
 
         controller.expand(mode: .start)
         try? await Task.sleep(for: .milliseconds(landed))
         XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count)
         XCTAssertEqual(controller.widthTargetChangeCount, 2, "open: one relayout")
+        XCTAssertGreaterThanOrEqual(controller.hostWidth, controller.widthTarget, "open: the host grew to the pills' width")
 
         controller.collapse()
         try? await Task.sleep(for: .milliseconds(landed))
