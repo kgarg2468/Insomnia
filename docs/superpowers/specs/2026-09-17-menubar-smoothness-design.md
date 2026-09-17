@@ -219,11 +219,12 @@ set itself. Driving the length alone, once per frame, is affordable.
 Revision 2 sprang `NSStatusItem.length` from a display link. Measured on the live bar
 (neighbour window bounds polled at 2 ms while the length was driven along known curves; data in
 `2026-09-17-menubar-cc-measurements.md`), the neighbours, which Control Center lays out, followed
-writes of about 3 px per frame on every frame, while runs whose writes were 6 px or more ended,
-in most cases, in a pause of about half a second followed by one large relayout. The shipped
-spring produces exactly such writes: 15-17 px per frame at the start, and any stalled callback on
+writes of about 3 pt per frame frame by frame (with occasional two-frame coalescing), while three
+of the eight runs whose writes were 6 pt or more ended in a pause of about half a second followed
+by one large relayout. The shipped
+spring produces exactly such writes: 15-17 pt per frame at the start, and any stalled callback on
 our side (the main thread blocks in the render server's synchronize while the status window is
-resized; 30-46 ms gaps were logged) becomes a 20-28 px write. That is the freeze-then-cut in the
+resized; 30-46 ms gaps were logged) becomes a 20-28 pt write. That is the freeze-then-cut in the
 user's recordings, and why it varies run to run. Whether the mechanism is a Control Center
 step threshold or shared render backpressure is inferred, not proven; the fix below is judged by a
 live acceptance test, and the one-write layout stays as the fallback.
@@ -233,33 +234,41 @@ live acceptance test, and the one-write layout stays as the fallback.
 `StatusWidthAnimator` keeps its interface (`setTarget(_:animated:)`, display-link factory,
 `apply`) but replaces the spring with a paced mover, `WidthPacedMotion`, plus a mode decision:
 
-- **Mode.** Paced when the display link's frame duration is at most 1/100 s (120 Hz ProMotion)
-  and Reduce Motion is off. Otherwise **one-write**: `setTarget` applies the target immediately
-  (the neighbours jump once, as every Apple item does). The controller reads
-  `widthAnimator.isPaced` to choose its choreography (below). The mode is decided per flight,
-  from the link's reported `duration`, so a display or Low Power Mode change takes effect on the
-  next flight; a link that cannot be created means one-write.
+- **Mode.** Paced when the display link reports a finite, positive frame duration of at most
+  1/100 s (120 Hz ProMotion) and Reduce Motion is off. Otherwise **one-write**: `setTarget`
+  applies the target immediately (the neighbours jump once, as every Apple item does). Unavailable,
+  zero or non-finite duration information means one-write. The controller reads
+  `widthAnimator.isPaced` to choose its choreography (below). The mode is decided per flight, so
+  a display or Low Power Mode change takes effect on the next flight.
 - **Step.** Each callback moves the value toward the target by at most `maxStep = 3 pt`,
   whatever the elapsed time. Frames pace the motion: a stalled callback delays the animation by
   the stall and never produces a jump. The step is never raised for a late callback.
-- **Easing and precedence.** The step for a callback is
-  `min(maxStep, rampStep, tailStep)` floored at the grid unit, where `rampStep` is 1, 2, 3 pt for
-  the first three callbacks of a flight (and after a reversal), `tailStep = remaining / 6` once
-  `remaining < 6 * maxStep`, and the grid unit is `1 / backingScale` (0.5 pt at scale 2). If the
-  remaining distance is at most the step, the write lands exactly on the target and the flight
-  ends. Targets are integers (the controller already rounds up), so exact landing is on the grid.
-- **Retarget.** A new target keeps the current value. Same direction: continue at the current
-  step. Reversal: restart the ramp (1, 2, 3 pt) from the current value, which brakes in one
-  frame and never overshoots. Target equal to the current value: land and stop. Target equal to
-  the current target: no-op.
-- **Writes.** A callback that would apply the same rounded value as the last write skips the
+- **Easing and precedence.** The step for a callback is `min(maxStep, rampStep, tailStep)`,
+  where `rampStep` is 1, 2, 3 pt for the first three callbacks of a flight (and after a
+  reversal), and `tailStep = remaining / 6` once `remaining < 6 * maxStep`. The step is then
+  raised to at least one grid unit.
+- **Quantization.** The grid unit is `1 / backingScale` (0.5 pt at scale 2, 1 pt at scale 1).
+  A fractional start value is first quantized toward the target. Each applied value is the
+  computed value rounded to the grid toward the target; the 3 pt cap is enforced against the
+  previously applied (quantized) value, so no applied delta exceeds 3 pt after rounding. If the
+  remaining distance is at most the step, the write lands exactly on the target (targets are
+  integers; the controller rounds up) and the flight ends. The ramp (1, 2, 3) and the tail
+  (18 → 0.5 pt) give about 75 callbacks for 194 pt at scale 2 (pinned by test to 60...85).
+- **Retarget.** A new target keeps the current applied value. Same direction: ramp progress is
+  preserved and the tail is recomputed from the new remaining distance. Reversal: the ramp
+  restarts (1, 2, 3 pt) from the current value, which brakes in one frame and never overshoots.
+  Target equal to the current value: land (complete) without a write. Target equal to the current
+  target: no-op.
+- **Writes.** A callback that would apply the same quantized value as the last write skips the
   write. The link runs only while in flight.
+- **Completion.** `setTarget` takes an optional completion. It is registered before the target
+  is applied; a target that is already landed (including one-write and `animated: false`)
+  completes exactly once, synchronously, without another write; a retarget replaces the pending
+  completion (the old one is dropped, not called). The controller guards completions with its
+  stage generation so an obsolete completion never removes reopened slots.
 - **Reduce Motion mid-flight.** The animator observes
   `NSWorkspace.accessibilityDisplayOptionsDidChangeNotification`; when Reduce Motion turns on
-  during a flight it snaps to the target and stops the link.
-- **Timing at 120 Hz, scale 2.** Idle to entering (194 pt): 3 ramp frames + ~61 cruise + ~8 tail
-  ≈ 72 frames ≈ 0.6 s. Entering to countdown (~116 pt) ≈ 0.4 s; countdown to idle (~78 pt) ≈ 0.3 s.
-  A 46 ms stall adds ~46 ms.
+  during a flight it snaps to the target, stops the link and runs the completion.
 
 ### Choreography under paced width
 
@@ -270,23 +279,34 @@ the trailing edge: a wipe. The content need not move to look smooth.
 - **Open.** Slots arrive in one relayout (unchanged); the pills keep their 0/40/80 ms stagger,
   which completes behind the edge for the later pills; the hours pill is fully revealed about
   0.45 s after the click. Typing before then is accepted and appears when revealed.
-- **Close (Esc, click away, refusal).** No early narrowing and no early slot removal: the pills
-  stay in their slots, fading over the narrowing (opacity only, no scale), the bar narrows toward
-  the idle width immediately (`widthWithoutSlots` at Esc time, not after `narrowDelay`), and the
-  slots leave in one relayout when the animator reports landing (completion callback). Since the
-  layout then reports the same width, no further write happens.
-- **Enter.** Same as close but the bar narrows to the countdown layout's width; the eye starts
-  opening at Enter (0.95 s, so it is still opening as the bar lands); at landing the slots
+- **Close (Esc, click away).** No early slot removal: the pills stay in their slots and fade to
+  opacity 0 over 0.35 s (no scale), the bar retargets immediately to the landing width measured
+  at that moment (`widthWithoutSlots`), and the slots leave in one relayout in the width
+  completion. At landing the controller resolves the current phase and width before removing
+  the slots; since the layout then reports the landed width, no further write happens.
+- **Enter.** Same as close but the landing width is the countdown layout's; the eye starts
+  opening at Enter (0.95 s, so it is still opening as the bar lands); in the completion the slots
   leave and the projected countdown scales in with its existing transition. Enter while the bar
-  is still opening reverses the mover (ramp restart) and follows the same sequence.
-- **Reopen during a close.** The slots are still present; retarget to the entering width (ramp
-  restart), cancel the pending slot removal, and fade the pills back in.
+  is still opening retargets from the current applied width toward the countdown width; the
+  ramp restarts only if the direction changes (it may keep growing if the bar is still narrower
+  than the countdown width).
+- **Session state changes during a close.** If the manager confirms or ends a session while the
+  bar is closing (countdown or ring geometry changes), the controller remeasures the landing
+  width and retargets; "one target per close" holds only while the destination geometry is
+  unchanged. Start refused (`reopenAfterFailure`) cancels the close: the pending completion and
+  stagger work are invalidated by generation, the input is preserved, the pills fade back in and
+  the error label appears, and the bar retargets to that layout's width.
+- **Reopen during a close.** The slots are still present; cancel the pending completion and
+  stagger work (generation), retarget to the entering width (ramp restart since the direction
+  changes) and fade the pills back in.
 - **One-write mode** (slower display, Reduce Motion, or no link): the bar snaps to the entering
   width at open; on close/Enter the pills retract with the existing `retractSettle` stagger, the
   slots leave, and the bar snaps after the slots leave (never before, so it does not cut across
-  retracting content). `narrowAhead` is not used in this mode.
+  retracting content). Under Reduce Motion the slot removal and the snap happen together, with
+  no retracting content on screen.
 
-`Motion.narrowDelay` and `retractSettleDuration` remain for one-write mode only.
+`Motion.narrowDelay` and `narrowAhead` are removed. `retractSettleDuration` remains for one-write
+mode only.
 
 ### Longer, more visible blink
 
@@ -294,11 +314,17 @@ the trailing edge: a wipe. The content need not move to look smooth.
   progress stays unclamped in `animatableData`; the existing geometry clamp
   (`EyeMarkGeometry`) bounds the drawn lid.
 - Pupil: one state value drives it (open → scale 1, opacity 1; closed → scale 0.6, opacity 0),
-  so interruptions retarget without jumps. On open the scale uses a spring 0.5/0.6 delayed
-  0.2 s after the lid (peak ≈ 1.04); on close an ease-out 0.4 s. The pupil is clipped to the lens
-  outline, so overshoot and interrupted-animation peaks can never show outside the lens.
+  so interruptions retarget from the current presentation without jumps. On open the scale uses
+  a spring 0.5/0.6 delayed 0.2 s after the lid (peak ≈ 1.04); on close an ease-out 0.4 s with no
+  delay. Close, reopen and a Reduce Motion change invalidate any pending delayed opening: the
+  pupil animation is value-driven (`.animation(_:value:)` on the eye state), so a state flip
+  during the delay retargets the pending animation rather than letting it run afterwards. The
+  pupil is clipped to the lens outline, so overshoot and interrupted-animation peaks can never
+  show outside the lens.
 - Lashes: unchanged smoothstep hand-over at mid-blink.
-- Reduce Motion: 0.3 s ease-in-out crossfade, no pupil scaling at all.
+- Reduce Motion: 0.3 s ease-in-out crossfade of lid and lashes, no pupil scaling at all (opacity
+  crossfade only); turning Reduce Motion on mid-blink cancels the pending pupil animation and
+  crossfades from the current presentation.
 
 ### Also fixed (found in review)
 
@@ -311,7 +337,7 @@ manager confirms. `pendingCountdown`, when set, takes precedence. Separate commi
 `WidthPacedMotion` (pure, nonisolated):
 - 32→226, 226→32, 116 pt and 78 pt moves: monotonic, no overshoot, exact endpoint, finite;
   advancing after landing does nothing.
-- Every applied delta ≤ 3 pt for callback intervals of 1/120, 1/60, 46 ms and 500 ms; one delayed
+- Every applied delta ≤ 3 pt after quantization for callback intervals of 1/120, 1/60, 46 ms and 500 ms; one delayed
   callback advances once (no catch-up); 194 pt at scale 2 lands in 60...80 callbacks.
 - Ramp 1, 2, 3 for a distant target; tail behaviour for remaining just below, equal to and above
   18 pt; distances 0, 0.5, 1, 2, 3 pt; final landing exact.
@@ -331,8 +357,9 @@ immediate Enter; reopen during a close; refusal; the projection precedence test.
 Replaced: the spring tests (`testTheWidthSpringIsTimeBasedNotStepBased` contradicts frame
 pacing; velocity continuity; overshoot pin) and the blink test's hard-coded 0.7 response.
 
-Live acceptance: five opens, five closes, two Enters with the neighbour probe: no neighbour step
-above 4 px, no relayout later than two frames after the last write.
+Live acceptance (paced mode only, logical points): five opens, five closes, two Enters with the
+neighbour probe: no neighbour step above 4 pt, no relayout later than two frames after the last
+write. If repeated live runs fail this gate, ship one-write mode for all displays.
 
 Temporary diagnostics added during the investigation (`DebugWidthDriver`, `diag ...` timing
 logs, the animator cadence log) are removed before merge.
