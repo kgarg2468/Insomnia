@@ -1,10 +1,13 @@
 import CoreGraphics
+#if canImport(SwiftUI)
+import SwiftUI
+#endif
 
 /// The soft charcoal palette from the approved identity spec, as plain values.
-/// SwiftUI colours are made from these next to the views (EyeMoonMark.swift);
-/// the icon generator compiles this file directly, so nothing here needs
-/// SwiftUI or AppKit. Semantic colours (warning red, system text) are not
-/// branded and stay wherever they are used.
+/// The icon generator compiles this file directly, so the palette itself
+/// needs neither SwiftUI nor AppKit; the `Color` conversion at the bottom is
+/// guarded so it only comes along where SwiftUI exists. Semantic colours
+/// (warning red, system text) are not branded and stay wherever they are used.
 enum BrandPalette {
     struct RGB: Equatable, Sendable {
         let red: CGFloat
@@ -28,6 +31,14 @@ enum BrandPalette {
     static let charcoal = RGB(hex: 0x17191B)
     /// The mark on the app icon: a warm off-white.
     static let moonWhite = RGB(hex: 0xE6E3DD)
-    /// Active state: the blue-grey moon while sleep is held, focus and hold rings.
+    /// Active state: focus and hold rings. The menu bar mark itself stays monochrome.
     static let violet = RGB(hex: 0xA6BBC3)
 }
+
+#if canImport(SwiftUI)
+extension Color {
+    init(brand rgb: BrandPalette.RGB) {
+        self.init(.sRGB, red: rgb.red, green: rgb.green, blue: rgb.blue, opacity: 1)
+    }
+}
+#endif

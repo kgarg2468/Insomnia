@@ -273,7 +273,7 @@ need tmux installed; check skip counts rather than assuming missing integration
 coverage passed. Tests use injected dependencies and temporary fixtures—not
 live installation or power changes on a contributor's machine.
 
-The app icon and menu-bar mark share [vector geometry](Sources/Insomnia/UI/EyeMoonGeometry.swift).
+The app icon keeps the eye-and-moon [vector geometry](Sources/Insomnia/UI/EyeMoonGeometry.swift); the menu bar shows a [closed eye](Sources/Insomnia/UI/EyeMarkGeometry.swift) that opens while a session runs.
 After changing the artwork, run `./scripts/generate-app-icon.sh` to regenerate
 the packaged PNG and ICNS assets. No image-generation service is needed.
 
