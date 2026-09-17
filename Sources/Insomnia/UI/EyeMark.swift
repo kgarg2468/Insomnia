@@ -113,27 +113,17 @@ struct EyeMarkView: View {
                 .stroke(.black, style: stroke)
             EyePupil()
                 .fill(.black)
-            if reduceMotion {
-                // Crossfade the two end states instead of blinking.
-                EyeLid(progress: 0)
-                    .fill(.black)
-                    .opacity(1 - progress)
-                EyeLashes(side: .below)
-                    .stroke(.black, style: stroke)
-                    .opacity(1 - progress)
-                EyeLashes(side: .above)
-                    .stroke(.black, style: stroke)
-                    .opacity(progress)
-            } else {
-                EyeLid(progress: progress)
-                    .fill(.black)
-                EyeLashes(side: .below)
-                    .stroke(.black, style: stroke)
-                    .modifier(EyeLashFade(progress: progress, side: .below))
-                EyeLashes(side: .above)
-                    .stroke(.black, style: stroke)
-                    .modifier(EyeLashFade(progress: progress, side: .above))
-            }
+            // Under Reduce Motion the closed lid crossfades instead of lifting;
+            // the lashes hand over the same way in both modes.
+            EyeLid(progress: reduceMotion ? 0 : progress)
+                .fill(.black)
+                .opacity(reduceMotion ? 1 - progress : 1)
+            EyeLashes(side: .below)
+                .stroke(.black, style: stroke)
+                .modifier(EyeLashFade(progress: progress, side: .below))
+            EyeLashes(side: .above)
+                .stroke(.black, style: stroke)
+                .modifier(EyeLashFade(progress: progress, side: .above))
         }
     }
 }

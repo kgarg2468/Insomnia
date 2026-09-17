@@ -27,9 +27,11 @@ enum EyeMarkGeometry {
     // Lashes: five, at these fractions of the lens width, each starting
     // `lashGap` beyond the lid's centre line along its outward normal and
     // running `lashLength`. Stroked at the outline's weight with round caps.
+    // Gap and length leave the centre lash's cap about half a unit inside
+    // the 24-unit frame, so nothing is clipped by the view's mask.
     static let lashFractions: [CGFloat] = [0.2, 0.35, 0.5, 0.65, 0.8]
-    static let lashGap: CGFloat = 2.5
-    static let lashLength: CGFloat = 3
+    static let lashGap: CGFloat = 2.25
+    static let lashLength: CGFloat = 2.75
 
     // Pupil: a disc with a highlight bitten out of its upper right.
     static let pupilCenter = CGPoint(x: 12, y: 12)
@@ -66,22 +68,31 @@ enum EyeMarkGeometry {
     static func lashes(in rect: CGRect, side: Side) -> CGPath {
         let t = EyeMoonGeometry.gridTransform(in: rect)
         let fold: CGFloat = side == .above ? 1 : -1
-        let lid = upperLid
         let path = CGMutablePath()
-        for fraction in lashFractions {
+        for (start, end) in upperLashes {
+            path.move(to: folded(start, fold), transform: t)
+            path.addLine(to: folded(end, fold), transform: t)
+        }
+        return path
+    }
+
+    /// The upper lashes in grid units, laid out once: each sits on the
+    /// upper lid's outward normal at its fraction of the lens width.
+    private static let upperLashes: [(start: CGPoint, end: CGPoint)] = {
+        let lid = upperLid
+        return lashFractions.map { fraction in
             let s = lid.parameter(atX: lid.p0.x + (lid.p3.x - lid.p0.x) * fraction)
             let base = lid.point(at: s)
             let tangent = lid.tangent(at: s)
             let length = hypot(tangent.x, tangent.y)
             // Outward normal of the upper lid: the tangent turned a quarter turn towards −y.
             let normal = CGPoint(x: tangent.y / length, y: -tangent.x / length)
-            let start = CGPoint(x: base.x + normal.x * lashGap, y: base.y + normal.y * lashGap)
-            let end = CGPoint(x: base.x + normal.x * (lashGap + lashLength), y: base.y + normal.y * (lashGap + lashLength))
-            path.move(to: folded(start, fold), transform: t)
-            path.addLine(to: folded(end, fold), transform: t)
+            return (
+                start: CGPoint(x: base.x + normal.x * lashGap, y: base.y + normal.y * lashGap),
+                end: CGPoint(x: base.x + normal.x * (lashGap + lashLength), y: base.y + normal.y * (lashGap + lashLength))
+            )
         }
-        return path
-    }
+    }()
 
     /// The pupil as one closed subpath, meant to be filled: the disc's rim
     /// runs the long way round from one intersection with the highlight to
@@ -146,11 +157,15 @@ enum EyeMarkGeometry {
 
     /// The lens's two lids, read back from the outline (upper curve left to
     /// right, lower curve right to left) so the mark follows the icon's lens
-    /// without repeating its numbers.
+    /// without repeating its numbers. Should the outline ever stop being two
+    /// cubics, the lids fall back to a symmetric pair fitted to its bounding
+    /// box rather than trapping at first draw; the branding tests pin the
+    /// parse so that fallback never ships unnoticed.
     private static let lids: (upper: Cubic, lower: Cubic) = {
         let grid = CGRect(x: 0, y: 0, width: designSize, height: designSize)
+        let outline = EyeMoonGeometry.eyeOutline(in: grid)
         var points: [CGPoint] = []
-        EyeMoonGeometry.eyeOutline(in: grid).applyWithBlock { element in
+        outline.applyWithBlock { element in
             switch element.pointee.type {
             case .moveToPoint where points.isEmpty:
                 points.append(element.pointee.points[0])
@@ -160,7 +175,20 @@ enum EyeMarkGeometry {
                 break
             }
         }
-        precondition(points.count == 7, "the eye outline should be two cubic lids")
+        assert(points.count == 7, "the eye outline should be two cubic lids")
+        guard points.count == 7 else {
+            // Corners at the box's mid-height; control points a third of the
+            // way in from each corner, at the height that puts the cubic's
+            // apex on the box's edge (apex = (2·corner + 6·control) / 8).
+            let box = outline.boundingBoxOfPath
+            let left = CGPoint(x: box.minX, y: box.midY), right = CGPoint(x: box.maxX, y: box.midY)
+            let x1 = box.minX + box.width / 3, x2 = box.maxX - box.width / 3
+            let topY = (8 * box.minY - 2 * box.midY) / 6, bottomY = (8 * box.maxY - 2 * box.midY) / 6
+            return (
+                upper: Cubic(p0: left, c1: CGPoint(x: x1, y: topY), c2: CGPoint(x: x2, y: topY), p3: right),
+                lower: Cubic(p0: right, c1: CGPoint(x: x2, y: bottomY), c2: CGPoint(x: x1, y: bottomY), p3: left)
+            )
+        }
         return (
             upper: Cubic(p0: points[0], c1: points[1], c2: points[2], p3: points[3]),
             lower: Cubic(p0: points[3], c1: points[4], c2: points[5], p3: points[6])
