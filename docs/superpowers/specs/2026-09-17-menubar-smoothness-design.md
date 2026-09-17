@@ -67,8 +67,12 @@ causes are structural, not tunable with different spring values:
 
 - `KeyCatcherPanel` gains `.nonactivatingPanel` in its style mask. A
   non-activating panel becomes key without activating the app, so key events
-  reach the local key monitor while the user's app stays active and its
-  windows keep focus.
+  reach the local key monitor while the user's app stays frontmost.
+  Measured on 2026-09-17 with a throwaway observer app: the front app keeps
+  its active state (no `didResignActive`, menu bar unchanged) and only its
+  key-window highlight moves to the panel while the pills are open, exactly
+  as with Spotlight. That handoff is unavoidable without Input Monitoring
+  permission and is the native behaviour.
 - `installMonitors()` no longer calls `NSApp.activate`. `restorePreviousApp()`
   and `previousApp` are deleted along with their call sites (`collapse`,
   `run`, `reopenAfterFailure`, `expand`).
