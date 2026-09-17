@@ -3,12 +3,15 @@ import SwiftUI
 /// Everything drawn inside the status item: the mark, the three pill slots
 /// while entering, or the countdown while a session runs or starts.
 ///
-/// The status item cannot animate its width (every change of
-/// `NSStatusItem.length` re-lays out the whole menu bar), so the layout here
-/// changes only on state the controller sets outside any animation
-/// transaction: `slotsPresent`, `phase` and `startError`. Everything that
-/// springs (the pills staggering in and out, the focus ring, the countdown
-/// appearing) is scale and opacity inside a layout that has already snapped.
+/// The layout here changes only on state the controller sets outside any
+/// animation transaction (`slotsPresent`, `phase` and `startError`), and
+/// reports its width once per such change; the controller springs the
+/// status item's length to it (`StatusWidthAnimator`), decoupled from this
+/// layout. Everything that springs inside (the pills staggering in and out,
+/// the focus ring, the countdown and the ring coming and going) is scale and
+/// opacity, anchored at the leading edge so the bar reads as growing out of
+/// the mark, and content on its way out keeps its place while the bar
+/// narrows over it.
 struct StatusRootView: View {
     let model: MenuBarModel
     let manager: SessionManager
@@ -35,6 +38,10 @@ struct StatusRootView: View {
     /// A pending start shows its projected countdown; a confirmed session its
     /// live one.
     private var showsCountdown: Bool { model.phase == .starting || showsRunningControls }
+    /// The eye opens the moment Enter starts a session, not when the manager
+    /// confirms it: the blink is the first thing that answers the keystroke.
+    /// A refused start closes it again with the pills coming back.
+    private var eyeOpen: Bool { isRunning || model.phase == .starting }
 
     private var countdownText: String {
         if !manager.countdownText.isEmpty { return manager.countdownText }
@@ -43,38 +50,25 @@ struct StatusRootView: View {
         return model.phase == .starting ? MenuBarModel.startingText : ""
     }
 
-    /// The layout-changing state. Transitions of what comes and goes with it
-    /// animate off this key. The animation is scoped to the `Group` below,
-    /// not the HStack: an animation on the HStack would interpolate its own
-    /// size (and so the reported width) every time the key changes, which is
-    /// the per-frame relayout this view exists to avoid.
-    private struct LayoutKey: Equatable {
-        let phase: MenuBarModel.Phase
-        let slotsPresent: Bool
-    }
-
-    private var layoutKey: LayoutKey {
-        LayoutKey(phase: model.phase, slotsPresent: model.slotsPresent)
-    }
-
     var body: some View {
         HStack(spacing: 7) {
             icon
-            Group {
-                if model.slotsPresent {
-                    pills
-                    if let error = model.startError {
-                        startError(error)
-                    }
-                } else if showsCountdown {
-                    countdown
-                    if showsRunningControls {
-                        HoldToEndButton(reduceMotion: reduceMotion, action: onHoldEnd)
-                            .transition(reduceMotion ? .opacity : .scale(scale: 0.5).combined(with: .opacity))
-                    }
+            // What comes and goes with the layout carries its own animation
+            // on its transition (`Motion.countdownTransition` and friends):
+            // the branch switches outside any animation, and an
+            // `.animation(_:value:)` on this container did not reach it.
+            if model.slotsPresent {
+                pills
+                if let error = model.startError {
+                    startError(error)
+                }
+            } else if showsCountdown {
+                countdown
+                if showsRunningControls {
+                    HoldToEndButton(reduceMotion: reduceMotion, action: onHoldEnd)
+                        .transition(Motion.ringTransition(reduceMotion: reduceMotion))
                 }
             }
-            .animation(Motion.base(reduceMotion: reduceMotion), value: layoutKey)
         }
         .padding(.leading, 6)
         // Never animated: `slotsPresent` can land in the same transaction as
@@ -89,12 +83,15 @@ struct StatusRootView: View {
         } action: { width in
             onWidthChange(width)
         }
+        // The host is kept as wide as the widest content it has held, so the
+        // content must sit at its leading edge rather than centred in it.
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// A closed eye while idle; it opens while sleep is held, so the app
     /// visibly does something even when Low Power Mode is not showing.
     private var icon: some View {
-        EyeMarkView(isRunning: isRunning, reduceMotion: reduceMotion)
+        EyeMarkView(isRunning: eyeOpen, reduceMotion: reduceMotion)
             .frame(width: 20, height: 20)
             .contentShape(Rectangle())
             .phaseAnimator([CGFloat(1), reduceMotion ? 1 : 0.86, 1], trigger: model.iconBounce) { content, scale in
@@ -150,7 +147,7 @@ struct StatusRootView: View {
             .contentTransition(.numericText(countsDown: true))
             .animation(Motion.tick(reduceMotion: reduceMotion), value: countdownText)
             .padding(.trailing, 1)
-            .transition(reduceMotion ? .opacity : .scale(scale: 0.7, anchor: .leading).combined(with: .opacity))
+            .transition(Motion.countdownTransition(reduceMotion: reduceMotion))
             .contentShape(Rectangle())
             .onTapGesture(perform: onTapCountdown)
             .accessibilityLabel(model.phase == .starting ? "Starting session" : countdownText)
@@ -165,7 +162,7 @@ struct StatusRootView: View {
             .foregroundStyle(Color(brand: BrandPalette.violet))
             .lineLimit(1)
             .fixedSize()
-            .transition(.opacity)
+            .transition(Motion.errorTransition(reduceMotion: reduceMotion))
             .accessibilityLabel("Start failed")
     }
 }

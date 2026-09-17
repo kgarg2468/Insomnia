@@ -101,6 +101,93 @@ final class UIStatusTests: XCTestCase {
         XCTAssertNotEqual(Motion.tick(reduceMotion: false), Motion.base)
     }
 
+    /// The width spring is what the status item's length follows. It has to
+    /// arrive, it has to stop (the display link is invalidated on settle),
+    /// and it must not overshoot enough to be seen against the neighbours.
+    @MainActor
+    func testTheWidthSpringReachesItsTargetAndSettlesInFiniteSteps() {
+        let dt: TimeInterval = 1.0 / 120
+        var motion = WidthSpringMotion(spring: Motion.widthSpring, value: 32)
+        XCTAssertTrue(motion.isSettled)
+        motion.retarget(240)
+        XCTAssertFalse(motion.isSettled)
+        XCTAssertEqual(motion.value, 32, "retargeting alone does not move the width")
+
+        var steps = 0
+        var peak: CGFloat = 0
+        while !motion.isSettled, steps < 1000 {
+            motion.advance(by: dt)
+            peak = max(peak, motion.value)
+            steps += 1
+        }
+        XCTAssertTrue(motion.isSettled, "the spring must come to rest")
+        XCTAssertEqual(motion.value, 240)
+        XCTAssertEqual(motion.velocity, 0)
+        XCTAssertLessThan(Double(steps) * dt, 1.5, "settles well inside a second and a half")
+        XCTAssertGreaterThan(Double(steps) * dt, 0.3, "and is not a snap")
+        // A damping ratio of 0.86 overshoots by exp(-0.86 * pi / sqrt(1 - 0.86^2)),
+        // half a percent: one point on this move, which the neighbours do
+        // not register. Pinned so a softer spring cannot slip in unnoticed.
+        XCTAssertLessThan(peak, 240 + 208 * 0.0055, "no visible overshoot")
+
+        // Advancing a settled spring is a no-op, and heading back works the same.
+        motion.advance(by: dt)
+        XCTAssertEqual(motion.value, 240)
+        motion.retarget(32)
+        steps = 0
+        while !motion.isSettled, steps < 1000 {
+            motion.advance(by: dt)
+            steps += 1
+        }
+        XCTAssertEqual(motion.value, 32)
+        XCTAssertLessThan(steps, 1000)
+    }
+
+    /// Enter can land while the bar is still growing (and a refusal while it
+    /// is narrowing): the spring is re-based on where it is and how fast it
+    /// is moving, so a retarget bends the curve without a jump in either.
+    @MainActor
+    func testRetargetingTheWidthSpringMidFlightIsContinuous() {
+        let dt: TimeInterval = 1.0 / 120
+        var motion = WidthSpringMotion(spring: Motion.widthSpring, value: 32)
+        motion.retarget(240)
+        for _ in 0..<12 { motion.advance(by: dt) }  // 0.1 s in, moving fast
+        let value = motion.value
+        let velocity = motion.velocity
+        XCTAssertGreaterThan(velocity, 100, "mid-flight, not settled")
+
+        motion.retarget(90)
+        XCTAssertEqual(motion.value, value, "position is continuous through the retarget")
+        XCTAssertEqual(motion.velocity, velocity, "and so is velocity")
+        motion.advance(by: dt)
+        // One frame later the width has moved by about one frame's worth of
+        // the velocity it had: no jump, the momentum carries on.
+        XCTAssertEqual(motion.value - value, velocity * dt, accuracy: abs(velocity) * dt * 0.5)
+
+        var steps = 0
+        while !motion.isSettled, steps < 1000 {
+            motion.advance(by: dt)
+            steps += 1
+        }
+        XCTAssertEqual(motion.value, 90)
+        XCTAssertLessThan(steps, 1000)
+    }
+
+    /// A dropped frame is caught up on the next one: the curve is a function
+    /// of time, so two half-steps and one whole step land on the same width.
+    @MainActor
+    func testTheWidthSpringIsTimeBasedNotStepBased() {
+        var whole = WidthSpringMotion(spring: Motion.widthSpring, value: 32)
+        var halves = whole
+        whole.retarget(240)
+        halves.retarget(240)
+        whole.advance(by: 0.1)
+        halves.advance(by: 0.05)
+        halves.advance(by: 0.05)
+        XCTAssertEqual(whole.value, halves.value, accuracy: 0.0001)
+        XCTAssertEqual(whole.velocity, halves.velocity, accuracy: 0.0001)
+    }
+
     func testCountdownShapeIsDerivedFromSessionSpan() {
         let t0 = Date(timeIntervalSince1970: 1_800_000_000)
         XCTAssertEqual(Session(startedAt: t0, endsAt: t0.addingTimeInterval(30 * 60)).countdownShape, .minutes)
@@ -384,19 +471,22 @@ final class UIStatusTests: XCTestCase {
         XCTAssertEqual(controller.model.phase, .idle)
     }
 
-    /// The status item's width is set from the SwiftUI layout and is meant to
-    /// change once per open and once per close: the slots arrive with the
-    /// phase, and leave with it once the last pill has settled. Same over a
-    /// live session, where the countdown and the ring swap with the slots.
+    /// The status item's width target comes from the SwiftUI layout and is
+    /// meant to change once per open and once per close: the slots arrive
+    /// with the phase, and leave with it once the last pill has settled. Same
+    /// over a live session, where the countdown and the ring swap with the
+    /// slots. The early narrow that starts the bar shrinking before the slots
+    /// leave heads for the same width the layout then reports, so it does
+    /// not count twice.
     ///
-    /// What is measured is the count of distinct widths the layout reported.
-    /// Animations do not render in this background-only test process (an
-    /// animated layout change reports its end value only), so this pins the
-    /// discrete relayouts; per-frame interpolation of an animated width is
-    /// kept out by setting the layout state outside any animation, which
-    /// this cannot see.
+    /// What is measured is the count of distinct targets. Animations do not
+    /// render in this background-only test process (an animated layout
+    /// change reports its end value only), so this pins the discrete
+    /// relayouts; per-frame interpolation of an animated layout width is kept
+    /// out by setting the layout state outside any animation, which this
+    /// cannot see. The length itself is animated by the width spring.
     @MainActor
-    func testTheStatusItemWidthChangesOncePerOpenAndOncePerClose() async {
+    func testTheStatusItemWidthTargetChangesOncePerOpenAndOncePerClose() async {
         _ = NSApplication.shared
         let h = Harness()
         defer { h.home.destroy() }
@@ -404,31 +494,31 @@ final class UIStatusTests: XCTestCase {
         let controller = StatusItemController(manager: manager, status: PlaceholderStatus(), showSettings: {})
         // Long enough for the stagger and the settle, whatever Reduce Motion says.
         let landed = Int((Motion.staggerDelay(index: 2, count: 3, reversed: false) + Motion.retractSettle()) * 1000) + 250
-        XCTAssertEqual(controller.widthChangeCount, 1, "installing the host sets the idle width")
+        XCTAssertEqual(controller.widthTargetChangeCount, 1, "installing the host sets the idle width")
 
         controller.expand(mode: .start)
         try? await Task.sleep(for: .milliseconds(landed))
         XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count)
-        XCTAssertEqual(controller.widthChangeCount, 2, "open: one relayout")
+        XCTAssertEqual(controller.widthTargetChangeCount, 2, "open: one relayout")
 
         controller.collapse()
         try? await Task.sleep(for: .milliseconds(landed))
         XCTAssertEqual(controller.model.phase, .idle)
-        XCTAssertEqual(controller.widthChangeCount, 3, "close: one relayout")
+        XCTAssertEqual(controller.widthTargetChangeCount, 3, "close: one relayout")
 
         await manager.start(duration: 3600)
         try? await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(controller.model.phase, .running)
-        XCTAssertEqual(controller.widthChangeCount, 4, "countdown and ring: one relayout")
+        XCTAssertEqual(controller.widthTargetChangeCount, 4, "countdown and ring: one relayout")
 
         controller.expand(mode: .extend)
         try? await Task.sleep(for: .milliseconds(landed))
-        XCTAssertEqual(controller.widthChangeCount, 5, "open over a session: one relayout")
+        XCTAssertEqual(controller.widthTargetChangeCount, 5, "open over a session: one relayout")
 
         controller.collapse()
         try? await Task.sleep(for: .milliseconds(landed))
         XCTAssertEqual(controller.model.phase, .running)
-        XCTAssertEqual(controller.widthChangeCount, 6, "close to the countdown: one relayout")
+        XCTAssertEqual(controller.widthTargetChangeCount, 6, "close to the countdown: one relayout")
     }
 
     /// While the recovery agent and pmset run, the projected countdown ticks

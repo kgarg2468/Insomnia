@@ -3,9 +3,10 @@ import SwiftUI
 
 /// Owns the NSStatusItem and drives every state change of the menu bar UI.
 ///
-/// The status bar button hosts a SwiftUI view and the item's width is set to
-/// whatever that view fits into; there is no popover, so the status item is
-/// the whole interface apart from a right-click NSMenu.
+/// The status bar button hosts a SwiftUI view and the item's width springs
+/// to whatever that view fits into (`StatusWidthAnimator`); there is no
+/// popover, so the status item is the whole interface apart from a
+/// right-click NSMenu.
 /// Keyboard input never reaches a text field inside a status bar window, so
 /// a local key monitor routes digits / Tab / Enter / Esc / Delete to the
 /// focused pill while the pills are open.
@@ -21,6 +22,7 @@ final class StatusItemController: NSObject {
 
     private let statusItem: NSStatusItem
     private var hostingView: StatusHostingView?
+    private var widthAnimator: StatusWidthAnimator?
 
     private var keyMonitor: Any?
     private var localMouseMonitor: Any?
@@ -40,10 +42,15 @@ final class StatusItemController: NSObject {
     /// newer run is still pending (extend, then extend again through the
     /// countdown); it must not clear what the newer one is showing.
     private var startGeneration = 0
-    private var lastWidth: CGFloat = 0
-    /// How many times the status item's width has been set. The layout is
-    /// meant to change once per open and once per close; tests pin that.
-    private(set) var widthChangeCount = 0
+    /// The width the layout last reported. The target can run ahead of it
+    /// while the slots retract (`narrowAhead`), and is put back to it if the
+    /// pills are reopened before the layout has caught up.
+    private var layoutWidth: CGFloat = 0
+    /// The width the status item is heading for.
+    private var widthTarget: CGFloat = 0
+    /// How many times the width target has changed. The layout is meant to
+    /// change once per open and once per close; tests pin that.
+    private(set) var widthTargetChangeCount = 0
 
     /// Autosave name so macOS remembers where the user drags the item.
     static let autosaveName = "insomnia.status"
@@ -75,6 +82,13 @@ final class StatusItemController: NSObject {
 
     private func installHostingView() {
         guard let button = statusItem.button else { return }
+        widthAnimator = StatusWidthAnimator(
+            backingScale: { [weak button] in button?.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2 },
+            makeLink: { [weak button] target, selector in
+                (button?.window?.screen ?? NSScreen.main)?.displayLink(target: target, selector: selector)
+            },
+            apply: { [statusItem] width in statusItem.length = width }
+        )
         let root = StatusRootView(
             model: model,
             manager: manager,
@@ -87,8 +101,13 @@ final class StatusItemController: NSObject {
         let host = Self.makeHostingView(root)
         host.onRightMouseDown = { [weak self] in self?.showMenu() }
         host.translatesAutoresizingMaskIntoConstraints = true
-        host.autoresizingMask = [.width, .height]
-        host.frame = button.bounds
+        // The height follows the button; the width is set from the layout
+        // (`retargetWidth`) and never from the button, whose width is the
+        // animated length: the content is laid out once at its own width,
+        // anchored at the leading edge, and the item's window reveals or
+        // clips it as the length springs.
+        host.autoresizingMask = [.height]
+        host.frame = NSRect(x: 0, y: 0, width: 0, height: button.bounds.height)
         button.addSubview(host)
         button.title = ""
         button.image = nil
@@ -119,16 +138,61 @@ final class StatusItemController: NSObject {
         }
     }
 
-    /// Set the item's width to what SwiftUI just laid out. Deliberately not
-    /// animated: every change of `NSStatusItem.length` forces a full menu bar
-    /// relayout, so interpolating it at display cadence made the whole bar
-    /// stutter. The content animates inside the new width instead.
+    /// The layout reported a new width: spring the item to it.
     private func widthChanged(_ width: CGFloat) {
+        layoutWidth = width
+        retargetWidth(width)
+    }
+
+    /// Spring the item's length to `width` (snap under Reduce Motion). The
+    /// host only ever grows: it is laid out at the widest content it has
+    /// held, so content on its way out always has room to finish its
+    /// transition while the length narrows over it.
+    private func retargetWidth(_ width: CGFloat) {
         let w = max(width.rounded(.up), 24)
-        guard w != lastWidth else { return }
-        lastWidth = w
-        widthChangeCount += 1
-        statusItem.length = w
+        guard w != widthTarget else { return }
+        widthTarget = w
+        widthTargetChangeCount += 1
+        if let host = hostingView, host.frame.width < w {
+            host.frame.size.width = w
+        }
+        widthAnimator?.setTarget(w, animated: !reduceMotion)
+    }
+
+    /// The width the layout will settle at once the slots have left,
+    /// measured on a throwaway host over the same state. Lets the bar start
+    /// narrowing while the last pill is still fading, before the layout
+    /// switches; the layout's own report then lands on the same target.
+    private func widthWithoutSlots(phase: MenuBarModel.Phase) -> CGFloat {
+        let probe = MenuBarModel()
+        probe.phase = phase
+        probe.slotsPresent = false
+        probe.pendingCountdown = model.pendingCountdown
+        probe.pendingProjection = model.pendingProjection
+        let root = StatusRootView(
+            model: probe,
+            manager: manager,
+            onTapIcon: {},
+            onTapPill: { _ in },
+            onTapCountdown: {},
+            onHoldEnd: {},
+            onWidthChange: { _ in }
+        )
+        return Self.makeHostingView(root).fittingSize.width
+    }
+
+    /// Start narrowing the bar `Motion.narrowDelay` into a retract, towards
+    /// the layout the slots leave behind (`landing`, read when the delay is
+    /// up: the session can end meanwhile). Skipped under Reduce Motion, where
+    /// the width snaps and must wait for the slots to have left. Cancelled by
+    /// any new stagger, like the retract's own completion.
+    private func narrowAhead(to landing: @escaping @MainActor () -> MenuBarModel.Phase) {
+        guard !reduceMotion else { return }
+        let generation = stageGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + Motion.narrowDelay) { [weak self] in
+            guard let self, self.stageGeneration == generation, self.model.slotsPresent else { return }
+            self.retargetWidth(self.widthWithoutSlots(phase: landing()))
+        }
     }
 
     private var button: NSStatusBarButton? { statusItem.button }
@@ -157,10 +221,10 @@ final class StatusItemController: NSObject {
         guard let next = Self.phase(forActive: manager.isActive, phase: model.phase) else { return }
         switch next {
         case .idle, .running:
-            // Outside any animation: the phase changes the layout, and the
-            // status item's width has to snap once, not interpolate. The
-            // hold-to-end ring that a confirmation adds still runs its own
-            // transition off the phase change.
+            // Outside any animation: the phase changes the layout, whose new
+            // width the status item then springs to. What comes and goes
+            // with it (the countdown and the ring at an end, the ring at a
+            // confirmation) runs its own transition.
             stopPendingTick()
             // The session can land a hop before its countdown text does; the
             // projection stays up until the live text is there to replace it
@@ -231,9 +295,14 @@ final class StatusItemController: NSObject {
         model.pendingProjection = nil
         model.startError = nil
         // Layout first, outside any animation: the three slots arrive at once
-        // and the status item widens once. Then the content staggers in.
+        // and the status item starts widening. The content staggers in
+        // meanwhile; a pill born beyond the revealed width is clipped until
+        // the bar reaches it.
         model.phase = .entering(mode)
         model.slotsPresent = true
+        // Reopened under a retract that had already started narrowing the
+        // bar: the slots never left, so the layout will not report again.
+        retargetWidth(layoutWidth)
         stagePills(to: DurationInput.Field.allCases.count)
         installMonitors()
     }
@@ -253,12 +322,13 @@ final class StatusItemController: NSObject {
             // front install a countdown for a session that is already over.
             let target = Self.collapseTarget(sessionActive: self.manager.isActive)
             // Outside any animation: the slots and the error label leave and
-            // the phase changes in one relayout, so the status item narrows
-            // once; the countdown, if any, then runs its own transition.
+            // the phase changes in one relayout; the countdown, if any, runs
+            // its own transition, and the width lands on this layout.
             self.model.slotsPresent = false
             self.model.startError = nil
             self.model.phase = target
         }
+        narrowAhead { [manager] in Self.collapseTarget(sessionActive: manager.isActive) }
     }
 
     /// Where the pills land when dismissed. A live session always goes back
@@ -309,9 +379,10 @@ final class StatusItemController: NSObject {
                         }
                         completion?()
                     } else {
-                        // The completion snaps the bar to its next width, which
-                        // clips whatever is still drawn: wait for the last pill
-                        // to have faded before the layout changes under it.
+                        // The completion takes the slots out of the layout:
+                        // wait for the last pill to have faded so nothing
+                        // visible is removed. The bar is already narrowing
+                        // by then (`narrowAhead`).
                         let settle = Motion.retractSettle(reduceMotion: self.reduceMotion)
                         DispatchQueue.main.asyncAfter(deadline: .now() + settle) { [weak self] in
                             guard let self, self.stageGeneration == generation else { return }
@@ -407,9 +478,10 @@ final class StatusItemController: NSObject {
             model.pendingCountdown = projection.countdown(at: now)
         }
         // The phase flips now, outside any animation, so nothing can act on
-        // the pills again while they retract; the slots stay in the layout
-        // until the last one has gone, then leave in one relayout and the
-        // countdown appears in the width the status item snapped to.
+        // the pills again while they retract (and the eye starts opening);
+        // the slots stay in the layout until the last one has gone, then
+        // leave in one relayout and the countdown scales in. The bar starts
+        // narrowing towards that layout while the pills are still fading.
         model.phase = mode == .extend && manager.isActive ? .running : .starting
         if model.phase == .starting { armPendingTick() } else { stopPendingTick() }
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
@@ -418,6 +490,7 @@ final class StatusItemController: NSObject {
         stagePills(to: 0) { [weak self] in
             self?.model.slotsPresent = false
         }
+        narrowAhead { [model] in model.phase }
 
         Task { @MainActor in
             switch mode {
@@ -589,6 +662,7 @@ final class StatusItemController: NSObject {
                 self.model.slotsPresent = false
                 self.model.phase = self.manager.isActive ? .running : .idle
             }
+            narrowAhead { [manager] in Self.collapseTarget(sessionActive: manager.isActive) }
         }
     }
 
