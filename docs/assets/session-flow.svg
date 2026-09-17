@@ -1,14 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1130" height="170" viewBox="0 0 1130 170" role="img" aria-labelledby="sb-title sb-desc">
   <title id="sb-title">Insomnia session in the menu bar</title>
-  <desc id="sb-desc">Three menu bar snapshots side by side. Set a duration: clicking the eye shows three pills labelled Days, Hours and Minutes, with Hours focused. Watch the countdown: the moon inside the eye turns blue-grey and a live countdown of 3:59:41 ticks beside it, followed by a small x. Hold to end: pressing and holding the x fills a ring around it while the countdown reads 3:59:40.</desc>
+  <desc id="sb-desc">Three menu bar snapshots side by side. Set a duration: clicking the closed eye shows three pills labelled Days, Hours and Minutes, with Hours focused. Watch the countdown: the eye opens, showing its pupil, and a live countdown of 3:59:41 ticks beside it, followed by a small x. Hold to end: pressing and holding the x fills a ring around it while the countdown reads 3:59:40.</desc>
   <style>
     svg { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Helvetica, Arial, sans-serif; }
     .bg { fill: #242628; }
     .cap { fill: #E6E3DD; }
     .bar { fill: #1E1F21; stroke: #FFFFFF; stroke-opacity: 0.08; stroke-width: 1.5; }
-    .eye { fill: none; stroke: #FFFFFF; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-    .moon { fill: #FFFFFF; }
-    .moon-on { fill: #A6BBC3; }
+    .mark-line { fill: none; stroke: #FFFFFF; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .mark-fill { fill: #FFFFFF; }
     .pill { fill: #17191B; fill-opacity: 0.92; stroke: #FFFFFF; stroke-opacity: 0.10; stroke-width: 0.9; }
     .pill-ph { fill: #FFFFFF; fill-opacity: 0.42; }
     .focus { fill: none; stroke: #A6BBC3; stroke-width: 2.7; }
@@ -18,9 +17,18 @@
     .x { fill: none; stroke: #FFFFFF; stroke-opacity: 0.85; stroke-width: 2.6; stroke-linecap: round; }
   </style>
   <defs>
-    <!-- EyeMoonGeometry on its 24-unit grid; colour comes from the referencing use element. -->
-    <path id="sb-eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/>
-    <path id="sb-moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/>
+    <!-- EyeMarkGeometry on its 24-unit grid, monochrome. Closed: the lid shades the whole lens, lashes below.
+         Open: lid gone, pupil with its highlight bite showing, lashes above. Paths match docs/mockups/menubar-ux.html. -->
+    <g id="sb-mark-closed">
+      <path class="mark-fill" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/>
+      <path class="mark-line" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/>
+      <path class="mark-line" d="M4.5499 17.8023 L3.1442 20.1659 M8.2636 19.3782 L7.5468 22.0332 M12 19.875 L12 22.625 M15.7364 19.3782 L16.4532 22.0332 M19.4501 17.8023 L20.8558 20.1659"/>
+    </g>
+    <g id="sb-mark-open">
+      <path class="mark-line" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/>
+      <path class="mark-fill" d="M15.3953 9.8853 A4 4 0 1 1 14.1147 8.6047 A1.4 1.4 0 1 0 15.3953 9.8853 Z"/>
+      <path class="mark-line" d="M4.5499 6.1977 L3.1442 3.8341 M8.2636 4.6218 L7.5468 1.9668 M12 4.125 L12 1.375 M15.7364 4.6218 L16.4532 1.9668 M19.4501 6.1977 L20.8558 3.8341"/>
+    </g>
   </defs>
 
   <rect class="bg" x="0" y="0" width="1130" height="170" rx="24"/>
@@ -34,8 +42,7 @@
   <g transform="translate(28 72) scale(1.25)">
     <rect class="bar" x="0" y="0" width="388" height="56" rx="12"/>
     <g transform="translate(14 12.7) scale(1.275)">
-      <use href="#sb-eye" class="eye"/>
-      <use href="#sb-moon" class="moon"/>
+      <use href="#sb-mark-closed"/>
     </g>
     <rect class="pill" x="62" y="11" width="80" height="34" rx="12.6"/>
     <text class="pill-ph" x="102" y="36" font-size="22" text-anchor="middle">Days</text>
@@ -51,8 +58,7 @@
   <g transform="translate(545 72) scale(1.25)">
     <rect class="bar" x="0" y="0" width="210" height="56" rx="12"/>
     <g transform="translate(14 12.7) scale(1.275)">
-      <use href="#sb-eye" class="eye"/>
-      <use href="#sb-moon" class="moon-on"/>
+      <use href="#sb-mark-open"/>
     </g>
     <text class="count" x="62" y="36" font-size="24" font-weight="500">3:59:41</text>
     <g transform="translate(174 28)">
@@ -66,8 +72,7 @@
   <g transform="translate(839.5 72) scale(1.25)">
     <rect class="bar" x="0" y="0" width="210" height="56" rx="12"/>
     <g transform="translate(14 12.7) scale(1.275)">
-      <use href="#sb-eye" class="eye"/>
-      <use href="#sb-moon" class="moon-on"/>
+      <use href="#sb-mark-open"/>
     </g>
     <text class="count" x="62" y="36" font-size="24" font-weight="500">3:59:40</text>
     <g transform="translate(174 28) scale(1.12)">
