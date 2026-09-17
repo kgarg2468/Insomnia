@@ -40,6 +40,8 @@ final class StatusItemController: NSObject {
     /// take and then jump on confirmation.
     private var pendingTick: Timer?
     var pendingTickArmed: Bool { pendingTick != nil }
+    /// DIAG: main-queue stall detector, alive for the controller's lifetime.
+    private var watchdog: MainThreadWatchdog?
 
     /// Invalidates in-flight stagger steps when expand/collapse interleave.
     private var stageGeneration = 0
@@ -95,6 +97,8 @@ final class StatusItemController: NSObject {
         statusItem.autosaveName = Self.autosaveName
         statusItem.behavior = [.terminationOnRemoval]
         super.init()
+        watchdog = MainThreadWatchdog() // DIAG
+        Diag.log("watchdog started; button action none (SwiftUI onTapGesture), sendAction mask not set") // DIAG
         installHostingView()
         observeManager()
     }
@@ -243,6 +247,7 @@ final class StatusItemController: NSObject {
     /// bar lands (paced) or the last pill has settled (one-write): the
     /// session can end, or a pending start be confirmed, in that window.
     private func retract(landing: @escaping @MainActor () -> MenuBarModel.Phase) {
+        Diag.log("retract branch \(pacedClose != nil ? "reaim" : widthAnimator?.isPaced == true ? "paced" : "one-write") phase \(model.phase) visiblePills \(model.visiblePills) widthTarget \(widthTarget)") // DIAG
         if let inFlight = pacedClose {
             // A paced close is already in flight (Esc, then Settings or a
             // click away): re-aim it at the new landing rather than start a
@@ -301,7 +306,10 @@ final class StatusItemController: NSObject {
         // the new one decides again when it lands.
         scheduledSlotRemoval?.cancel()
         scheduledSlotRemoval = nil
-        retargetWidth(widthWithoutSlots(phase: close.landing())) { [weak self] in
+        let measureStart = Diag.nowMs // DIAG
+        let landingWidth = widthWithoutSlots(phase: close.landing())
+        Diag.log(String(format: "widthWithoutSlots %.1f result %.2f", Diag.nowMs - measureStart, landingWidth)) // DIAG
+        retargetWidth(landingWidth) { [weak self] in
             guard let self, self.stageGeneration == close.generation else { return }
             // The slots leave only when both the bar has landed and the
             // pills have had their whole fade: a short landing (a small
@@ -329,6 +337,7 @@ final class StatusItemController: NSObject {
     /// bar is already at, so nothing more is written. `pacedClose` clears
     /// here and not before, so that report is not turned into a target.
     private func removeSlots(landing close: PacedClose) {
+        Diag.log("removeSlots generation \(close.generation) fadeAge \(String(format: "%.0f", Date().timeIntervalSince(close.fadeStartedAt) * 1000)) phase \(model.phase)") // DIAG
         pacedClose = nil
         model.pillsFading = false
         model.slotsPresent = false
@@ -358,6 +367,8 @@ final class StatusItemController: NSObject {
     }
 
     private func managerChanged() {
+        let before = model.phase // DIAG
+        defer { Diag.log("managerChanged isActive \(manager.isActive) countdownEmpty \(manager.countdownText.isEmpty) phase \(before) -> \(model.phase) pacedClose \(pacedClose != nil)") } // DIAG
         reminder.sync(endsAt: manager.session?.endsAt)
         if let next = Self.phase(forActive: manager.isActive, phase: model.phase) {
             switch next {
@@ -413,6 +424,7 @@ final class StatusItemController: NSObject {
     // MARK: Clicks
 
     func iconTapped() {
+        Diag.log("iconTapped phase \(model.phase) pacedClose \(pacedClose != nil) animating \(widthAnimator?.isAnimating ?? false) slotsPresent \(model.slotsPresent) visiblePills \(model.visiblePills) keyCatcher \(keyCatcher != nil) typed \(model.input.total != nil)") // DIAG
         model.iconBounce += 1
         switch model.phase {
         case .idle:
@@ -440,6 +452,7 @@ final class StatusItemController: NSObject {
     // MARK: Expand / collapse
 
     func expand(mode: MenuBarModel.Mode) {
+        Diag.log("expand mode \(mode) phase \(model.phase) reopening \(pacedClose != nil) layoutWidth \(layoutWidth) widthTarget \(widthTarget) animating \(widthAnimator?.isAnimating ?? false)") // DIAG
         model.input = DurationInput()
         model.focused = .hours
         model.focusVisible = false
@@ -476,6 +489,7 @@ final class StatusItemController: NSObject {
 
     /// Collapse to idle, or back to the countdown when a session is running.
     func collapse() {
+        Diag.log("collapse phase \(model.phase) entering \(model.phase.isEntering) pacedClose \(pacedClose != nil) keyCatcher \(keyCatcher != nil)") // DIAG
         guard model.phase.isEntering else { return }
         removeMonitors()
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
@@ -603,6 +617,7 @@ final class StatusItemController: NSObject {
     /// Enter: start or extend with the typed value. With nothing typed it
     /// starts the default preset; while extending it shakes instead.
     func commit() {
+        Diag.log("commit phase \(model.phase) keyCatcher \(keyCatcher != nil) typed \(model.input.total.map { String($0) } ?? "nil") pacedClose \(pacedClose != nil)") // DIAG
         guard case let .entering(mode) = model.phase else { return }
         // Nothing to commit once the monitors are down: Enter has already
         // been pressed (or Esc), and the slots are retracting.
@@ -690,6 +705,7 @@ final class StatusItemController: NSObject {
     /// replaying the open sequence on top of that half-finished retract is
     /// the churn the user sees as flicker. One animated retarget instead.
     private func reopenAfterFailure(mode: MenuBarModel.Mode) {
+        Diag.log("reopenAfterFailure mode \(mode) phase \(model.phase) pacedClose \(pacedClose != nil) slotsPresent \(model.slotsPresent) layoutWidth \(layoutWidth) widthTarget \(widthTarget)") // DIAG
         let keep = model.input
         // Cancels a paced close still in flight: its landing and any
         // stagger work are dropped by the generation.
@@ -864,7 +880,8 @@ final class StatusItemController: NSObject {
             }
             return event
         }
-        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            Diag.log("globalMouse type \(event.type.rawValue) flags \(event.modifierFlags.rawValue)") // DIAG
             Task { @MainActor in self?.collapse() }
         }
     }
@@ -883,6 +900,8 @@ final class StatusItemController: NSObject {
     /// A click anywhere in this app that is not the status item collapses
     /// the pills.
     private func handleLocalMouse(window: NSWindow?) {
+        let which = window == nil ? "nil" : window === button?.window ? "ours" : window === keyCatcher ? "catcher" : "other" // DIAG
+        Diag.log("localMouse window \(which) phase \(model.phase)") // DIAG
         guard model.phase.isEntering else { return }
         // The catcher panel ignores the mouse so it should never be reported
         // here, but it is ours: it must not dismiss the pills either.
@@ -944,10 +963,12 @@ final class StatusHostingView: NSHostingView<StatusRootView> {
     var onRightMouseDown: (() -> Void)?
 
     override func rightMouseDown(with event: NSEvent) {
+        Diag.log("rightMouseDown flags \(event.modifierFlags.rawValue) control \(event.modifierFlags.contains(.control)) clicks \(event.clickCount)") // DIAG
         onRightMouseDown?()
     }
 
     override func mouseDown(with event: NSEvent) {
+        Diag.log("mouseDown flags \(event.modifierFlags.rawValue) control \(event.modifierFlags.contains(.control)) clicks \(event.clickCount)") // DIAG
         if event.modifierFlags.contains(.control) {
             onRightMouseDown?()
             return

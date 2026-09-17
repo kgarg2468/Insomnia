@@ -32,6 +32,9 @@ nonisolated struct WidthPacedMotion: Sendable {
     private(set) var target: CGFloat
     /// Pixels per point: the grid every applied value sits on.
     let scale: CGFloat
+    /// DIAG: the cap this motion steps by; `Self.maxStep` unless the
+    /// tunable (`diagWidthMaxStep`) overrode it for the flight.
+    let maxStep: CGFloat
     /// Callbacks taken since the flight started or last reversed.
     private var callbacks = 0
 
@@ -39,10 +42,12 @@ nonisolated struct WidthPacedMotion: Sendable {
     ///   - value: where the width is now. Off-grid values are quantized
     ///     toward `target` first, so the first step is measured on the grid.
     ///   - scale: the backing scale (1 or 2); the grid unit is its inverse.
-    init(value: CGFloat, target: CGFloat, scale: CGFloat) {
+    ///   - maxStep: DIAG, the per-write cap for this motion (default `Self.maxStep`).
+    init(value: CGFloat, target: CGFloat, scale: CGFloat, maxStep: CGFloat = WidthPacedMotion.maxStep) {
         self.scale = max(scale, 1)
         self.value = value
         self.target = target
+        self.maxStep = maxStep
         alignStart()
     }
 
@@ -70,8 +75,10 @@ nonisolated struct WidthPacedMotion: Sendable {
         guard heading != 0 else { return nil }
         let remaining = abs(target - value)
         let ramp = CGFloat(min(callbacks + 1, Self.rampLength))
-        let tail = remaining < Self.tailDistance ? remaining / Self.tailDivisor : Self.maxStep
-        let step = max(min(Self.maxStep, ramp, tail), unit)
+        // DIAG: instance `maxStep` (tunable per flight) where the static was used.
+        let tailDistance = 6 * maxStep
+        let tail = remaining < tailDistance ? remaining / Self.tailDivisor : maxStep
+        let step = max(min(maxStep, ramp, tail), unit)
         callbacks += 1
 
         var next: CGFloat
@@ -79,8 +86,8 @@ nonisolated struct WidthPacedMotion: Sendable {
             next = target
         } else {
             next = Self.quantize(value + heading * step, toward: target, scale: scale)
-            if abs(next - value) > Self.maxStep {
-                next = value + heading * Self.maxStep
+            if abs(next - value) > maxStep {
+                next = value + heading * maxStep
             }
             if heading * (target - next) <= 0 {
                 next = target
@@ -145,6 +152,8 @@ final class StatusWidthAnimator: NSObject {
     private var lastApplied: CGFloat?
     private var completion: (() -> Void)?
     private nonisolated(unsafe) var reduceMotionObserver: NSObjectProtocol?
+    /// DIAG: when the previous display-link callback ran; nil between flights.
+    private var lastStepAt: CFTimeInterval?
 
     /// - Parameters:
     ///   - backingScale: pixels per point of the screen the item is on; every
@@ -208,7 +217,9 @@ final class StatusWidthAnimator: NSObject {
 
     /// The settings half of `isPaced`: Reduce Motion off and a fast display.
     private var pacedConditionsHold: Bool {
-        !reduceMotion() && (maximumFramesPerSecond() ?? 0) >= Self.pacedMinimumFramesPerSecond
+        // DIAG: `defaults write com.kgarg.insomnia diagOneWrite -bool true` forces one-write mode.
+        if UserDefaults.standard.bool(forKey: "diagOneWrite") { return false }
+        return !reduceMotion() && (maximumFramesPerSecond() ?? 0) >= Self.pacedMinimumFramesPerSecond
     }
 
     /// The width heading for (or resting at), if one has been set.
@@ -235,24 +246,49 @@ final class StatusWidthAnimator: NSObject {
         // The settings alone decide here: the link is made below, once, and
         // its absence snaps (`isPaced` probes for it so the caller knows).
         guard animated, var motion, isAnimating || pacedConditionsHold else {
+            Diag.log(String(format: "setTarget %.2f animated %d mode snap link none step -", width, animated ? 1 : 0)) // DIAG
             snap(to: width)
             return
         }
         motion.retarget(width)
         self.motion = motion
         if motion.isSettled {
+            Diag.log(String(format: "setTarget %.2f animated 1 mode settled link %@ step %.2f", width, link == nil ? "none" : "existing", motion.maxStep)) // DIAG
             stop()
             finish()
             return
         }
         if link == nil {
             guard let link = makeLink(self, #selector(step(_:))) else {
+                Diag.log(String(format: "setTarget %.2f animated 1 mode snap link failed step -", width)) // DIAG
                 snap(to: width)
                 return
             }
+            // ProMotion idles at 24-30 Hz unless something asks for more; a
+            // 3 pt step every 40 ms is visible stepping, so ask for the
+            // full rate for the flight (paced mode only runs on >= 100 Hz).
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
             link.add(to: .main, forMode: .common)
             self.link = link
+            // DIAG: tunable per-write cap, read once per flight. Off the
+            // default the motion is rebuilt with it; identical state
+            // otherwise (a fresh flight has no ramp to keep).
+            let chosen = Self.diagMaxStep()
+            if chosen != WidthPacedMotion.maxStep {
+                self.motion = WidthPacedMotion(value: motion.value, target: motion.target, scale: motion.scale, maxStep: chosen)
+            }
+            Diag.log(String(format: "setTarget %.2f animated 1 mode paced link created step %.2f", width, chosen)) // DIAG
+        } else {
+            Diag.log(String(format: "setTarget %.2f animated 1 mode paced link existing step %.2f", width, motion.maxStep)) // DIAG
         }
+    }
+
+    /// DIAG: `defaults write <bundle id> diagWidthMaxStep -float 5` picks the
+    /// per-write cap for the next flights; anything outside 1...12 (or
+    /// unset) keeps `WidthPacedMotion.maxStep`.
+    private static func diagMaxStep() -> CGFloat {
+        let v = UserDefaults.standard.double(forKey: "diagWidthMaxStep")
+        return (1...12).contains(v) ? CGFloat(v) : WidthPacedMotion.maxStep
     }
 
     /// One-write: land on `width` now.
@@ -265,6 +301,11 @@ final class StatusWidthAnimator: NSObject {
 
     private func write(_ width: CGFloat) {
         guard width != lastApplied else { return }
+        if let last = lastApplied { // DIAG
+            Diag.log(String(format: "width %.2f step %.2f", width, width - last))
+        } else {
+            Diag.log(String(format: "width %.2f step first", width))
+        }
         lastApplied = width
         apply(width)
     }
@@ -272,6 +313,7 @@ final class StatusWidthAnimator: NSObject {
     private func stop() {
         link?.invalidate()
         link = nil
+        lastStepAt = nil // DIAG
     }
 
     private func finish() {
@@ -289,6 +331,14 @@ final class StatusWidthAnimator: NSObject {
 
     /// One frame. Internal so the tests can drive it without a run loop.
     @objc func step(_ link: CADisplayLink) {
+        // DIAG: a callback more than 12 ms after the previous one is a missed
+        // frame at 120 Hz (8.3 ms) and a gap the paced motion will show.
+        let now = CACurrentMediaTime()
+        if let last = lastStepAt {
+            let gap = (now - last) * 1000
+            if gap > 12 { Diag.log(String(format: "frame gap %.1f", gap)) }
+        }
+        lastStepAt = now
         guard var motion else {
             stop()
             return
