@@ -51,8 +51,9 @@
     width: 20px; height: 20px; display: grid; place-items: center; cursor: pointer;
     transition: transform 360ms var(--snappy);
   }
-  /* EyeMoonGeometry on its 24-unit grid: eye outline stroked, crescent filled.
-     The outline never changes; only the moon turns blue-grey while running. */
+  /* The mark on its 24-unit grid. The app draws a closed eye (lens shaded,
+     lashes below) that opens while running (lens clear, pupil, lashes above),
+     all in the label colour; this mock still shows the eye-and-moon glyph. */
   .mark svg { width: 17px; height: 17px; }
   .mark .eye { fill: none; stroke: #fff; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
   .mark .moon { fill: #fff; transition: fill 350ms; }
@@ -168,7 +169,7 @@
     <h2>The four states</h2>
     <div class="frames">
       <div class="frame">
-        <div class="label">Idle<small>Outline eye and moon. Nothing else.</small></div>
+        <div class="label">Idle<small>Closed eye: the lens shaded, lashes below. Nothing else.</small></div>
         <div class="strip"><div class="item"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/></svg></div></div><span class="sys">1:37 PM</span></div>
       </div>
       <div class="frame">
@@ -177,7 +178,7 @@
           <div class="pills"><div class="pill in">Days</div><div class="pill in filled focus">4</div><div class="pill in">Minutes</div></div></div><span class="sys">1:37 PM</span></div>
       </div>
       <div class="frame">
-        <div class="label">Running<small>Pills morph into the countdown. The moon turns blue-grey. ✕ appears.</small></div>
+        <div class="label">Running<small>Pills morph into the countdown. The eye blinks open, still monochrome. ✕ appears.</small></div>
         <div class="strip"><div class="item running"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/></svg></div>
           <div class="count in">3:59:41</div>
           <div class="end in"><svg class="ring" viewBox="0 0 18 18"><circle class="track" cx="9" cy="9" r="8"/></svg><svg class="x" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg></div></div><span class="sys">1:38 PM</span></div>
