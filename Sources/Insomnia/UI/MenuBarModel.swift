@@ -1,8 +1,11 @@
 import Foundation
 import Observation
 
-/// UI state for the status item. The controller mutates it inside
-/// `withAnimation` blocks; the views only read it.
+/// UI state for the status item. The controller mutates it; the views only
+/// read it. Content state (`visiblePills`, `focusVisible`, `focused`,
+/// `input`) is set inside `withAnimation` blocks; layout state (`phase`,
+/// `slotsPresent`, `startError`) outside any animation, so the status item
+/// changes width once per open and once per close instead of on every frame.
 @MainActor
 @Observable
 final class MenuBarModel {
@@ -62,7 +65,12 @@ final class MenuBarModel {
     var startError: String?
     var input = DurationInput()
     var focused: DurationInput.Field = .hours
-    /// How many pills are laid out right now (0...3); stepped for the stagger.
+    /// The three pill slots are in the layout. Set outside any animation, so
+    /// the status item widens once when they arrive and narrows once when the
+    /// last one has retracted; `visiblePills` animates the content inside them.
+    var slotsPresent: Bool = false
+    /// How many pill slots show their content right now (0...3); stepped for
+    /// the stagger. Scale and opacity only: the slots themselves stay put.
     var visiblePills: Int = 0
     /// Focus glow fades in once the pills have landed.
     var focusVisible: Bool = false

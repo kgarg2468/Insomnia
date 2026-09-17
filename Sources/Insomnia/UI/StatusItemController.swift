@@ -150,10 +150,12 @@ final class StatusItemController: NSObject {
         guard let next = Self.phase(forActive: manager.isActive, phase: model.phase) else { return }
         switch next {
         case .idle, .running:
-            withAnimation(Motion.base(reduceMotion: reduceMotion)) {
-                model.pendingCountdown = nil
-                model.phase = next
-            }
+            // Outside any animation: the phase changes the layout, and the
+            // status item's width has to snap once, not interpolate. The
+            // hold-to-end ring that a confirmation adds still runs its own
+            // transition off the phase change.
+            model.pendingCountdown = nil
+            model.phase = next
         case .entering, .starting:
             // Only the mode of the open pills changes, so nothing to animate.
             model.phase = next
@@ -215,9 +217,10 @@ final class StatusItemController: NSObject {
         model.focusVisible = false
         model.pendingCountdown = nil
         model.startError = nil
-        withAnimation(Motion.base(reduceMotion: reduceMotion)) {
-            model.phase = .entering(mode)
-        }
+        // Layout first, outside any animation: the three slots arrive at once
+        // and the status item widens once. Then the content staggers in.
+        model.phase = .entering(mode)
+        model.slotsPresent = true
         stagePills(to: DurationInput.Field.allCases.count)
         installMonitors()
     }
@@ -226,9 +229,9 @@ final class StatusItemController: NSObject {
     func collapse() {
         guard model.phase.isEntering else { return }
         removeMonitors()
+        model.startError = nil
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
             model.focusVisible = false
-            model.startError = nil
         }
         stagePills(to: 0) { [weak self] in
             guard let self else { return }
@@ -237,9 +240,11 @@ final class StatusItemController: NSObject {
             // land) in that window, which would make a target captured up
             // front install a countdown for a session that is already over.
             let target = Self.collapseTarget(sessionActive: self.manager.isActive)
-            withAnimation(Motion.base(reduceMotion: self.reduceMotion)) {
-                self.model.phase = target
-            }
+            // Outside any animation: the slots leave and the phase changes in
+            // one relayout, so the status item narrows once; the countdown,
+            // if any, then runs its own transition.
+            self.model.slotsPresent = false
+            self.model.phase = target
         }
         restorePreviousApp()
     }
@@ -340,6 +345,9 @@ final class StatusItemController: NSObject {
     /// starts the default preset; while extending it shakes instead.
     func commit() {
         guard case let .entering(mode) = model.phase else { return }
+        // Nothing to commit once the monitors are down: Enter has already
+        // been pressed (or Esc), and the slots are retracting.
+        guard keyCatcher != nil else { return }
         switch MenuBarModel.commitAction(mode: mode, typed: model.input.total, defaultPreset: manager.config.defaultPreset) {
         case let .run(duration):
             run(mode: mode, duration: duration)
@@ -350,15 +358,14 @@ final class StatusItemController: NSObject {
 
     private func run(mode: MenuBarModel.Mode, duration: TimeInterval) {
         removeMonitors()
-        stageGeneration += 1
         startGeneration += 1
         let generation = startGeneration
         model.startError = nil
         let now = Date()
         if mode == .extend, let s = manager.session {
-            // The session is live, so the countdown stays up. Morph now; the
-            // manager catches up (pmset takes a moment). Project the session
-            // so the placeholder already has the final shape.
+            // The session is live, so the countdown stays up. Project the
+            // session so the countdown already has the final shape while the
+            // manager catches up (pmset takes a moment).
             let projected = SessionMath.extended(s, by: duration, now: now, maxDuration: manager.config.maxDuration)
             model.pendingCountdown = SessionMath.formatCountdown(remaining: projected.remaining(at: now), shape: projected.countdownShape)
         } else {
@@ -368,10 +375,16 @@ final class StatusItemController: NSObject {
             // for a session that may never exist.
             model.pendingCountdown = nil
         }
+        // The phase flips now, outside any animation, so nothing can act on
+        // the pills again while they retract; the slots stay in the layout
+        // until the last one has gone, then leave in one relayout and the
+        // countdown appears in the width the status item snapped to.
+        model.phase = mode == .extend && manager.isActive ? .running : .starting
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
             model.focusVisible = false
-            model.visiblePills = 0
-            model.phase = mode == .extend && manager.isActive ? .running : .starting
+        }
+        stagePills(to: 0) { [weak self] in
+            self?.model.slotsPresent = false
         }
         restorePreviousApp()
 
@@ -387,9 +400,7 @@ final class StatusItemController: NSObject {
                 // that was live before the start (extend, or a start refused
                 // as "already active") never changes and never fires it.
                 if model.phase == .starting {
-                    withAnimation(Motion.base(reduceMotion: reduceMotion)) {
-                        model.phase = .running
-                    }
+                    model.phase = .running
                 }
             } else if model.phase == .starting {
                 // Start refused: bring the pills back with the value intact
@@ -401,18 +412,21 @@ final class StatusItemController: NSObject {
 
     /// Put the pills straight back, all at once. No stagger: the refusal can
     /// arrive within the same frame the pills were retracting in, and
-    /// replaying the open sequence on top of that half-finished morph is the
-    /// churn the user sees as flicker. One animated retarget instead.
+    /// replaying the open sequence on top of that half-finished retract is
+    /// the churn the user sees as flicker. One animated retarget instead.
     private func reopenAfterFailure(mode: MenuBarModel.Mode) {
         let keep = model.input
         previousApp = NSWorkspace.shared.frontmostApplication
         stageGeneration += 1
+        // Layout outside any animation (one relayout, whether the slots were
+        // still retracting or already gone), then the content springs back.
+        model.phase = .entering(mode)
+        model.slotsPresent = true
+        model.startError = MenuBarModel.startFailedText
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
-            model.phase = .entering(mode)
             model.input = keep
             model.visiblePills = DurationInput.Field.allCases.count
             model.focusVisible = true
-            model.startError = MenuBarModel.startFailedText
         }
         installMonitors()
     }
@@ -511,9 +525,8 @@ final class StatusItemController: NSObject {
             }
             stagePills(to: 0) { [weak self] in
                 guard let self else { return }
-                withAnimation(Motion.base(reduceMotion: self.reduceMotion)) {
-                    self.model.phase = self.manager.isActive ? .running : .idle
-                }
+                self.model.slotsPresent = false
+                self.model.phase = self.manager.isActive ? .running : .idle
             }
         }
     }

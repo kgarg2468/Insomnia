@@ -355,13 +355,22 @@ Battery watts are read from `AppleSmartBattery` (`InstantAmperage` ×
   Baseline: `.spring(response: 0.35, dampingFraction: 0.72)`; pill focus
   bounce and chip taps use a snappier `.spring(response: 0.25,
   dampingFraction: 0.6)` with a slight scale overshoot (1.0 → 1.06 → 1.0).
-- The status item width change is animated too, so the menu bar
-  neighbours slide over smoothly instead of jumping. Implemented as a custom
-  `NSStatusItem` view whose intrinsic width is driven by the SwiftUI layout.
-- Pills appear with a staggered scale-and-fade (about 40 ms between pills).
-  Collapsing reverses the stagger.
-- Pill to countdown uses a matched-geometry morph, so the text visually
-  flows from the field into the countdown rather than cutting.
+- The status item's width is never animated: macOS re-lays out the whole
+  menu bar on every change of `NSStatusItem.length`, so the width is set
+  once per open and once per close, from the SwiftUI layout of a custom
+  `NSStatusItem` view. Layout-changing state (the phase, the pill slots, the
+  error label) is set outside any animation transaction; only scale and
+  opacity animate inside the width the bar snapped to.
+- Each pill is a fixed slot sized by its placeholder at the typed weight and
+  padding, so typing a digit never changes the layout.
+- Pills appear with a staggered scale-and-fade (about 40 ms between pills)
+  inside their slots, which are all in the layout from the first frame.
+  Collapsing reverses the stagger; the slots leave once the last pill has
+  retracted.
+- On Enter the pills retract and the countdown appears with its own
+  scale-from-leading transition once the manager confirms the session.
+  (This replaces the earlier pill-to-countdown matched-geometry morph,
+  which animated across the width change.)
 - Number changes in the countdown use `.contentTransition(.numericText())`.
 - Focus ring is a soft glow that breathes in, not a hard outline.
 - Respect Reduce Motion: springs become short crossfades.

@@ -24,6 +24,49 @@ final class UIStatusTests: XCTestCase {
         XCTAssertGreaterThan(host.fittingSize.height, 0)
     }
 
+    /// The status item cannot animate its width, so the pills must never
+    /// change the layout after the slots have arrived: not while they
+    /// stagger in, and not on a digit, which changes the text, its weight
+    /// and its padding. Each pill is a fixed slot sized by its placeholder.
+    @MainActor
+    func testPillSlotsKeepTheFittingWidthWhileStaggeringAndWhileTyping() {
+        let harness = Harness()
+        defer { harness.home.destroy() }
+        let manager = harness.makeManager()
+        let model = MenuBarModel()
+        model.phase = .entering(.start)
+        model.slotsPresent = true
+        func width() -> CGFloat {
+            let root = StatusRootView(
+                model: model,
+                manager: manager,
+                onTapIcon: {},
+                onTapPill: { _ in },
+                onTapCountdown: {},
+                onHoldEnd: {},
+                onWidthChange: { _ in }
+            )
+            return StatusItemController.makeHostingView(root).fittingSize.width
+        }
+        let idle = MenuBarModel()
+        let idleWidth = StatusItemController.makeHostingView(StatusRootView(
+            model: idle, manager: manager, onTapIcon: {}, onTapPill: { _ in }, onTapCountdown: {}, onHoldEnd: {}, onWidthChange: { _ in }
+        )).fittingSize.width
+
+        model.visiblePills = 0
+        let hidden = width()
+        XCTAssertGreaterThan(hidden, idleWidth, "the slots are in the layout from the first frame")
+        model.visiblePills = DurationInput.Field.allCases.count
+        XCTAssertEqual(width(), hidden, accuracy: 0.001, "the stagger is scale and opacity only")
+
+        model.input = DurationInput(days: 12, hours: 3, minutes: 45)
+        XCTAssertEqual(model.input.text(for: .days), "12")
+        XCTAssertEqual(width(), hidden, accuracy: 0.001, "typing never widens a slot")
+        model.focused = .minutes
+        model.focusVisible = true
+        XCTAssertEqual(width(), hidden, accuracy: 0.001, "the focus ring is an overlay")
+    }
+
     @MainActor
     func testTickAnimationIsShorterThanBaseAndHoldIsSubSecond() {
         XCTAssertEqual(Motion.holdDuration, 0.6, accuracy: 0.0001)
@@ -279,6 +322,34 @@ final class UIStatusTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(400))
 
         XCTAssertFalse(manager.isActive)
+        XCTAssertEqual(controller.model.phase, .idle)
+        XCTAssertEqual(controller.model.visiblePills, 0)
+        XCTAssertFalse(controller.model.slotsPresent)
+    }
+
+    /// Opening puts the three slots in the layout before any pill shows
+    /// (one relayout), and collapsing takes them out only once the last pill
+    /// has retracted (one relayout), never in between.
+    @MainActor
+    func testSlotsArriveOnOpenAndLeaveWithTheLastPill() async throws {
+        try XCTSkipIf(Motion.reduceMotion, "needs a non-zero pill stagger")
+        _ = NSApplication.shared
+        let h = Harness()
+        defer { h.home.destroy() }
+        let controller = StatusItemController(manager: h.makeManager(), status: PlaceholderStatus(), showSettings: {})
+
+        controller.expand(mode: .start)
+        XCTAssertEqual(controller.model.phase, .entering(.start))
+        XCTAssertTrue(controller.model.slotsPresent)
+        XCTAssertEqual(controller.model.visiblePills, 0, "the content staggers in after the slots are laid out")
+        try? await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count)
+
+        controller.collapse()
+        XCTAssertTrue(controller.model.slotsPresent, "the slots stay while the pills retract")
+        XCTAssertEqual(controller.model.phase, .entering(.start))
+        try? await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(controller.model.slotsPresent)
         XCTAssertEqual(controller.model.phase, .idle)
         XCTAssertEqual(controller.model.visiblePills, 0)
     }
