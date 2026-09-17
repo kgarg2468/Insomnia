@@ -369,8 +369,8 @@ Battery watts are read from `AppleSmartBattery` (`InstantAmperage` ×
   retracted.
 - On Enter the pills retract and the countdown appears as soon as they
   have retracted (about 0.2 s), with its own scale-from-leading transition,
-  showing the time the session will read once the manager confirms it;
-  the hold-to-end ring follows the confirmation.
+  showing the time the session will read once the manager confirms it and
+  ticking at 1 Hz meanwhile; the hold-to-end ring follows the confirmation.
   (This replaces the earlier pill-to-countdown matched-geometry morph,
   which animated across the width change.)
 - Typing happens in a non-activating key panel: the app in front stays

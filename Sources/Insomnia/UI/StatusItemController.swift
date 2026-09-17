@@ -27,6 +27,11 @@ final class StatusItemController: NSObject {
     private var globalMouseMonitor: Any?
     /// Holds keyboard focus while the pills are open; see `KeyCatcherPanel`.
     private var keyCatcher: KeyCatcherPanel?
+    /// 1 Hz redraw of the projected countdown while a start is pending, so
+    /// it does not sit frozen for the seconds the recovery agent and pmset
+    /// take and then jump on confirmation.
+    private var pendingTick: Timer?
+    var pendingTickArmed: Bool { pendingTick != nil }
 
     /// Invalidates in-flight stagger steps when expand/collapse interleave.
     private var stageGeneration = 0
@@ -156,7 +161,14 @@ final class StatusItemController: NSObject {
             // status item's width has to snap once, not interpolate. The
             // hold-to-end ring that a confirmation adds still runs its own
             // transition off the phase change.
-            model.pendingCountdown = nil
+            stopPendingTick()
+            // The session can land a hop before its countdown text does; the
+            // projection stays up until the live text is there to replace it
+            // (the run's completion clears it otherwise).
+            if !manager.countdownText.isEmpty {
+                model.pendingCountdown = nil
+                model.pendingProjection = nil
+            }
             model.phase = next
         case .entering, .starting:
             // Only the mode of the open pills changes, so nothing to animate.
@@ -214,7 +226,9 @@ final class StatusItemController: NSObject {
         model.input = DurationInput()
         model.focused = .hours
         model.focusVisible = false
+        stopPendingTick()
         model.pendingCountdown = nil
+        model.pendingProjection = nil
         model.startError = nil
         // Layout first, outside any animation: the three slots arrive at once
         // and the status item widens once. Then the content staggers in.
@@ -380,20 +394,24 @@ final class StatusItemController: NSObject {
             // session so the countdown already has the final shape while the
             // manager catches up (pmset takes a moment).
             let projected = SessionMath.extended(s, by: duration, now: now, maxDuration: manager.config.maxDuration)
+            model.pendingProjection = nil
             model.pendingCountdown = SessionMath.formatCountdown(remaining: projected.remaining(at: now), shape: projected.countdownShape)
         } else {
             // No session yet: the manager has to arm the recovery agent and
             // disable sleep first, and either can take seconds or refuse. Show
-            // the countdown the session will read the moment it is confirmed;
-            // the phase stays pending, so nothing that acts on a session (the
-            // end ring) is drawn until then.
-            model.pendingCountdown = MenuBarModel.projectedStartCountdown(now: now, duration: duration, maxDuration: manager.config.maxDuration)
+            // the countdown the session will read the moment it is confirmed,
+            // ticking meanwhile; the phase stays pending, so nothing that acts
+            // on a session (the end ring) is drawn until then.
+            let projection = MenuBarModel.projectedStart(now: now, duration: duration, maxDuration: manager.config.maxDuration)
+            model.pendingProjection = projection
+            model.pendingCountdown = projection.countdown(at: now)
         }
         // The phase flips now, outside any animation, so nothing can act on
         // the pills again while they retract; the slots stay in the layout
         // until the last one has gone, then leave in one relayout and the
         // countdown appears in the width the status item snapped to.
         model.phase = mode == .extend && manager.isActive ? .running : .starting
+        if model.phase == .starting { armPendingTick() } else { stopPendingTick() }
         withAnimation(Motion.base(reduceMotion: reduceMotion)) {
             model.focusVisible = false
         }
@@ -407,7 +425,9 @@ final class StatusItemController: NSObject {
             case .extend: await manager.extend(by: duration)
             }
             guard generation == startGeneration else { return }
+            stopPendingTick()
             model.pendingCountdown = nil
+            model.pendingProjection = nil
             if manager.isActive {
                 // Normally `managerChanged` has already done this; a session
                 // that was live before the start (extend, or a start refused
@@ -441,6 +461,35 @@ final class StatusItemController: NSObject {
             model.focusVisible = true
         }
         installMonitors()
+    }
+
+    // MARK: Projected countdown
+
+    /// 1 Hz redraw of the projected countdown, aligned to whole wall-clock
+    /// seconds like the manager's live one. Runs only while the phase is
+    /// `.starting`; stopped on confirmation, refusal or reopening.
+    private func armPendingTick() {
+        stopPendingTick()
+        let first = SessionMath.nextSecondBoundary(after: Date())
+        let timer = Timer(fire: first, interval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshPendingCountdown() }
+        }
+        timer.tolerance = 0.1
+        RunLoop.main.add(timer, forMode: .common)
+        pendingTick = timer
+    }
+
+    private func stopPendingTick() {
+        pendingTick?.invalidate()
+        pendingTick = nil
+    }
+
+    private func refreshPendingCountdown() {
+        guard model.phase == .starting, let projection = model.pendingProjection else {
+            stopPendingTick()
+            return
+        }
+        model.pendingCountdown = projection.countdown(at: Date())
     }
 
     // MARK: Session actions

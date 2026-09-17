@@ -80,6 +80,14 @@ final class UIStatusTests: XCTestCase {
         let twoDays = MenuBarModel.projectedStartCountdown(now: now, duration: 2 * 86400, maxDuration: month)
         XCTAssertEqual(twoDays, SessionMath.formatCountdown(remaining: 2 * 86400, shape: .days))
         XCTAssertTrue(twoDays.hasPrefix("2d "))
+        // The projection ticks: eight seconds into the wait it reads eight
+        // seconds less, in the shape it was projected in.
+        let projection = MenuBarModel.projectedStart(now: now, duration: 90 * 60, maxDuration: month)
+        XCTAssertEqual(projection.shape, .hours)
+        XCTAssertEqual(projection.endsAt, now.addingTimeInterval(90 * 60))
+        XCTAssertEqual(projection.countdown(at: now), "1:30:00")
+        XCTAssertEqual(projection.countdown(at: now.addingTimeInterval(8)), "1:29:52")
+        XCTAssertEqual(projection.countdown(at: now.addingTimeInterval(2 * 3600)), "0:00:00")
         // A short start reads in the minutes shape, and the clamp applies.
         XCTAssertEqual(MenuBarModel.projectedStartCountdown(now: now, duration: 30 * 60, maxDuration: month), "30:00")
         XCTAssertEqual(MenuBarModel.projectedStartCountdown(now: now, duration: 5 * 3600, maxDuration: 3600), "1:00:00")
@@ -421,6 +429,49 @@ final class UIStatusTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(landed))
         XCTAssertEqual(controller.model.phase, .running)
         XCTAssertEqual(controller.widthChangeCount, 6, "close to the countdown: one relayout")
+    }
+
+    /// While the recovery agent and pmset run, the projected countdown ticks
+    /// like the live one will, and the tick stops the moment the session is
+    /// confirmed and the live text takes over.
+    @MainActor
+    func testTheProjectedCountdownTicksWhileStartingAndStopsOnConfirmation() async {
+        _ = NSApplication.shared
+        let h = Harness()
+        defer { h.home.destroy() }
+        let manager = h.makeManager()
+        let controller = StatusItemController(manager: manager, status: PlaceholderStatus(), showSettings: {})
+        let gate = AsyncGate()
+        h.backstop.armGate = gate
+        controller.expand(mode: .start)
+        controller.focus(.hours)
+        XCTAssertTrue(controller.model.input.append(digit: 2, to: .hours))
+
+        controller.commit()
+        await gate.waitUntilStarted()
+        XCTAssertEqual(controller.model.phase, .starting)
+        XCTAssertEqual(controller.model.pendingProjection?.shape, .hours)
+        XCTAssertEqual(controller.model.pendingCountdown, "2:00:00")
+        XCTAssertTrue(controller.pendingTickArmed)
+        // Partial seconds round up, so the first whole second can still read
+        // 2:00:00; the second one cannot.
+        let deadline = Date().addingTimeInterval(2.5)
+        while controller.model.pendingCountdown == "2:00:00", Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(controller.model.pendingCountdown, "1:59:59")
+        XCTAssertEqual(controller.model.phase, .starting)
+
+        await gate.open()
+        let confirmBy = Date().addingTimeInterval(2)
+        while controller.model.phase != .running, Date() < confirmBy {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(controller.model.phase, .running)
+        XCTAssertFalse(controller.pendingTickArmed)
+        XCTAssertNil(controller.model.pendingProjection)
+        XCTAssertNil(controller.model.pendingCountdown)
+        XCTAssertEqual(manager.countdownText, "2:00:00")
     }
 
     /// The digits are read by a local key monitor, which only sees events sent

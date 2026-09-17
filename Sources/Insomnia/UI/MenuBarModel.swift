@@ -77,6 +77,9 @@ final class MenuBarModel {
     var focusVisible: Bool = false
     /// Countdown text shown while the manager is still starting the session.
     var pendingCountdown: String?
+    /// The session a pending start will become; the controller ticks
+    /// `pendingCountdown` off it at 1 Hz while the phase is `.starting`.
+    var pendingProjection: StartProjection?
 
     // Animation triggers. Views run a bounce whenever one of these changes.
     var iconBounce: Int = 0
@@ -88,12 +91,29 @@ final class MenuBarModel {
         return nil
     }
 
-    /// The countdown a start pressed at `now` will read once the manager
-    /// confirms it: the same session arithmetic and the same shape the
+    /// The session a start pressed at some moment will become, reduced to
+    /// what the countdown needs: the same deadline and the same shape the
     /// manager will use, so the live text replaces the projection without a
-    /// jump. Pure, so it can be checked without a manager.
-    static func projectedStartCountdown(now: Date, duration: TimeInterval, maxDuration: TimeInterval) -> String {
+    /// jump.
+    struct StartProjection: Equatable, Sendable {
+        let endsAt: Date
+        let shape: CountdownShape
+
+        /// What the countdown reads at `now`.
+        func countdown(at now: Date) -> String {
+            SessionMath.formatCountdown(remaining: SessionMath.remaining(until: endsAt, at: now), shape: shape)
+        }
+    }
+
+    /// Project a start pressed at `now`. Pure, so it can be checked without
+    /// a manager.
+    static func projectedStart(now: Date, duration: TimeInterval, maxDuration: TimeInterval) -> StartProjection {
         let session = SessionMath.newSession(now: now, duration: duration, maxDuration: maxDuration)
-        return SessionMath.formatCountdown(remaining: session.remaining(at: now), shape: session.countdownShape)
+        return StartProjection(endsAt: session.endsAt, shape: session.countdownShape)
+    }
+
+    /// The countdown a start pressed at `now` reads at that moment.
+    static func projectedStartCountdown(now: Date, duration: TimeInterval, maxDuration: TimeInterval) -> String {
+        projectedStart(now: now, duration: duration, maxDuration: maxDuration).countdown(at: now)
     }
 }
