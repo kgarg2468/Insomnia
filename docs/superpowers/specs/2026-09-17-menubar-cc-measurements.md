@@ -14,9 +14,11 @@ Findings (120 Hz built-in display):
    CA::Render::Context::wait_for_synchronize while the status window is resized each frame).
    A time-based spring turns such a gap into a 21-28 pt step in one write.
 
-2. Control Center tracks writes of ~3 px per frame perfectly:
-   linear 0.6 s @120 Hz (3 px/frame), 194 px: 65 relayouts open, 53 close, steps 2-3 px, no
-   pause, no jump, last move within 10 ms of the last write.
+2. Control Center tracks writes of ~3 px per frame: linear 0.6 s @120 Hz (3 px/frame), 194 px:
+   65 relayouts open, 53 close, steps 2-3 px with a handful of coalesced 5-9 px steps (two frames
+   merged), no pause longer than ~25 ms, no deferred flush, last move within 10 ms of the last
+   write. This was the highest write rate tested and the best-tracked, which argues against a
+   pure "too many writes per second" (backpressure) explanation.
 
 3. Larger steps trip a deferral: Control Center stops moving the neighbours and, ~0.5 s after the
    last accepted write, applies the whole remainder in one jump.
@@ -36,7 +38,18 @@ Findings (120 Hz built-in display):
 5. The user's 60 fps video of the shipped build matches (3): neighbours slide for ~200 ms, freeze,
    then cut to the final layout ("jumps into an animation and then cuts off").
 
-Conclusion. Never let a single write move the length by more than ~3 px at 120 Hz, regardless of
-elapsed time; pace by frames, not by the clock, so a stalled frame delays the animation by one
-frame instead of producing a jump. Ease only at the tail (steps shrinking to 0.5 px).
+What is established vs inferred. Established: (a) our own callbacks stall for 30-46 ms at times;
+(b) the shipped spring turns those stalls into 20-28 pt writes; (c) writes of ~3 px per frame at
+120 Hz were relayed frame by frame; (d) runs with 6-17 px writes ended in a pause of roughly
+0.5 s followed by one large relayout, in 5 of 8 such runs. Inferred: that Control Center has a
+step-size threshold and a ~0.5 s deferred flush. An alternative (render-server backpressure that
+delays both our callbacks and Control Center's relayout) is not excluded by these runs alone,
+though (c) being the highest write rate tested argues against it. The acceptance test for any
+fix is therefore live and repeated: five opens and five closes with the probe, no neighbour step
+above 4 px and no relayout later than two frames after the last write.
+
+Conclusion. Never let a single write move the length by more than ~3 pt at 120 Hz, regardless of
+elapsed time; pace by frames, not by the clock, so a stalled frame delays the animation by the
+stall instead of producing a jump. Ease only at the tail. Keep the one-write layout (a single
+neighbour jump) as the fallback where pacing is not verified (slower displays, Reduce Motion).
 Raw runs: /tmp/cctest/p-*.txt (probe), app log lines "debug width ...".
