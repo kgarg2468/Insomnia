@@ -101,6 +101,19 @@ final class UIStatusTests: XCTestCase {
         XCTAssertNotEqual(Motion.tick(reduceMotion: false), Motion.base)
     }
 
+    /// The blink was over in a handful of frames and barely read. It has to
+    /// be slower than the baseline spring so the lid lift and the lash
+    /// hand-over are seen, and slower than the Reduce Motion crossfade too.
+    @MainActor
+    func testTheBlinkIsSlowerThanTheBaseSpring() {
+        XCTAssertGreaterThan(Motion.blinkResponse, Motion.baseResponse)
+        XCTAssertEqual(Motion.blink(reduceMotion: false), .spring(response: 0.7, dampingFraction: 0.9))
+        XCTAssertEqual(Motion.blink(reduceMotion: false), Motion.blink)
+        XCTAssertNotEqual(Motion.blink, Motion.base)
+        XCTAssertEqual(Motion.blink(reduceMotion: true), .easeInOut(duration: 0.3))
+        XCTAssertGreaterThan(Motion.reducedBlinkDuration, 0.15)
+    }
+
     /// The width spring is what the status item's length follows. It has to
     /// arrive, it has to stop (the display link is invalidated on settle),
     /// and it must not overshoot enough to be seen against the neighbours.

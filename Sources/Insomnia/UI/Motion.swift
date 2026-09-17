@@ -45,6 +45,18 @@ enum Motion {
     /// Motion, where the width snaps once the slots have left.
     static let narrowDelay: TimeInterval = 0.10
 
+    /// The eye's blink. Slow enough that the lid lift and the lash hand-over
+    /// read as a blink rather than a flicker (about 0.6 s to settle).
+    static let blinkResponse: TimeInterval = 0.7
+    static let blinkDampingFraction = 0.9
+    static let blink: Animation = .spring(response: blinkResponse, dampingFraction: blinkDampingFraction)
+    static let reducedBlinkDuration: TimeInterval = 0.3
+    static let reducedBlink: Animation = .easeInOut(duration: reducedBlinkDuration)
+
+    static func blink(reduceMotion: Bool = Motion.reduceMotion) -> Animation {
+        reduceMotion ? reducedBlink : blink
+    }
+
     /// System Reduce Motion setting, read live so toggling it in System
     /// Settings takes effect on the next animation.
     static var reduceMotion: Bool {

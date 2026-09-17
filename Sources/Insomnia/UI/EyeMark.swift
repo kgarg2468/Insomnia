@@ -97,7 +97,7 @@ struct EyeMarkView: View {
             .fill(.primary)
             .mask { layers }
             .frame(width: size, height: size)
-            .animation(Motion.base(reduceMotion: reduceMotion), value: progress)
+            .animation(Motion.blink(reduceMotion: reduceMotion), value: progress)
     }
 
     private var layers: some View {
