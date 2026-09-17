@@ -116,8 +116,8 @@ final class BrandingTests: XCTestCase {
     func testLashesAreFiveStrokesThatSwapSidesAndThePupilSitsInsideTheLens() {
         let lens = EyeMarkGeometry.lens(in: grid)
         let axisY = grid.midY
-        let open = EyeMarkGeometry.lashes(in: grid, progress: 1)
-        let closed = EyeMarkGeometry.lashes(in: grid, progress: 0)
+        let open = EyeMarkGeometry.lashes(in: grid, side: .above)
+        let closed = EyeMarkGeometry.lashes(in: grid, side: .below)
         XCTAssertEqual(subpathCount(open), 5)
         XCTAssertEqual(subpathCount(closed), 5)
         for point in points(of: open) {
@@ -144,17 +144,40 @@ final class BrandingTests: XCTestCase {
         XCTAssertTrue(pupil.contains(EyeMarkGeometry.pupilCenter))
         XCTAssertFalse(pupil.contains(EyeMarkGeometry.highlightCenter))
 
-        // The lid shades the whole lens when closed and nothing when open.
+    }
+
+    func testLidShadesTheWholeLensClosedNothingOpenAndLiftsOffThePupilFromTheBottom() {
         let size = 96
         let rect = CGRect(x: 0, y: 0, width: size, height: size)
-        func inked(_ path: CGPath) -> Int {
+        let unit = CGFloat(size) / EyeMoonGeometry.designSize
+        func raster(_ path: CGPath) -> Raster {
             Raster(size: size) { ctx in
                 ctx.addPath(path)
                 ctx.fillPath()
-            }.count { $0.alpha > 0.5 }
+            }
         }
-        XCTAssertEqual(inked(EyeMarkGeometry.lid(in: rect, progress: 1)), 0, "an open lid shades nothing")
-        XCTAssertEqual(inked(EyeMarkGeometry.lid(in: rect, progress: 0)), inked(EyeMarkGeometry.lens(in: rect)), "a closed lid shades the whole lens")
+        func inked(_ path: CGPath) -> Int { raster(path).count { $0.alpha > 0.5 } }
+
+        let closed = inked(EyeMarkGeometry.lid(in: rect, progress: 0))
+        let open = inked(EyeMarkGeometry.lid(in: rect, progress: 1))
+        let half = inked(EyeMarkGeometry.lid(in: rect, progress: 0.5))
+        XCTAssertEqual(open, 0, "an open lid shades nothing")
+        XCTAssertEqual(closed, inked(EyeMarkGeometry.lens(in: rect)), "a closed lid shades the whole lens")
+        XCTAssertGreaterThan(half, open, "half way, some of the lens is shaded")
+        XCTAssertLessThan(half, closed, "half way, some of the lens is clear")
+        XCTAssertEqual(subpathCount(EyeMarkGeometry.lid(in: rect, progress: 0.5)), 1)
+
+        // Half way, the pupil's centre column is covered above the axis and clear below it.
+        let lid = raster(EyeMarkGeometry.lid(in: rect, progress: 0.5))
+        let column = Int(EyeMarkGeometry.pupilCenter.x * unit)
+        let axis = Int(EyeMarkGeometry.pupilCenter.y * unit)
+        let radius = Int(EyeMarkGeometry.pupilRadius * unit)
+        for y in (axis + 1)...(axis + radius) {
+            XCTAssertLessThan(lid.alpha(column, y), 0.5, "the lower pupil is uncovered at row \(y)")
+        }
+        for y in (axis - radius)...(axis - 1) {
+            XCTAssertGreaterThan(lid.alpha(column, y), 0.5, "the upper pupil is still shaded at row \(y)")
+        }
     }
 
     func testPupilStaysClearOfTheOutlineAtSeventeenPoints() {
@@ -224,8 +247,8 @@ final class BrandingTests: XCTestCase {
             let rect = CGRect(x: 0, y: 0, width: size, height: size)
             let eyeBox = EyeMarkGeometry.lens(in: rect).boundingBoxOfPath
             let pupilBox = EyeMarkGeometry.pupil(in: rect).boundingBoxOfPath
-            let aboveBox = EyeMarkGeometry.lashes(in: rect, progress: 1).boundingBoxOfPath
-            let belowBox = EyeMarkGeometry.lashes(in: rect, progress: 0).boundingBoxOfPath
+            let aboveBox = EyeMarkGeometry.lashes(in: rect, side: .above).boundingBoxOfPath
+            let belowBox = EyeMarkGeometry.lashes(in: rect, side: .below).boundingBoxOfPath
             let unit = size / EyeMoonGeometry.designSize
             func px(_ x: CGFloat, _ y: CGFloat) -> (Int, Int) { (Int((x * scale).rounded()), Int((y * scale).rounded())) }
             outline = px(eyeBox.minX + 0.3 * unit, eyeBox.midY)

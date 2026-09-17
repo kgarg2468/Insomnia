@@ -27,17 +27,36 @@ struct EyeLid: Shape {
     }
 }
 
-/// The five lashes, for stroking: above the lens at 1, below it at 0.
+/// The five lashes on one side of the lens, for stroking. They never move.
 struct EyeLashes: Shape {
+    let side: EyeMarkGeometry.Side
+
+    func path(in rect: CGRect) -> Path {
+        Path(EyeMarkGeometry.lashes(in: rect, side: side))
+    }
+}
+
+/// Fades one set of lashes with the blink: the lower set is gone by half
+/// way, the upper set only starts to show from there, so no lash is ever
+/// seen while the lid edge passes its side of the lens. Animatable so the
+/// timing follows the lid's own progress rather than a plain crossfade.
+nonisolated struct EyeLashFade: ViewModifier, Animatable {
     var progress: CGFloat
+    let side: EyeMarkGeometry.Side
 
     var animatableData: CGFloat {
         get { progress }
         set { progress = newValue }
     }
 
-    func path(in rect: CGRect) -> Path {
-        Path(EyeMarkGeometry.lashes(in: rect, progress: progress))
+    private var opacity: CGFloat {
+        let x = side == .above ? (progress - 0.5) * 2 : 1 - progress * 2
+        let t = min(max(x, 0), 1)
+        return t * t * (3 - 2 * t)
+    }
+
+    func body(content: Content) -> some View {
+        content.opacity(opacity)
     }
 }
 
@@ -50,8 +69,9 @@ struct EyePupil: Shape {
 
 /// The mark as it appears in the status item: a closed eye while idle (the
 /// lens shaded, lashes below), which opens while sleep is held (the lens
-/// clear with a pupil, lashes above). The change is a blink: the lid sweeps
-/// across the lens carrying its lashes, or a crossfade under Reduce Motion.
+/// clear with a pupil, lashes above). The change is a blink: the lid lifts
+/// off the pupil while the lashes swap sides, or a crossfade under Reduce
+/// Motion.
 /// Everything is drawn in `.primary`, so the mark follows the light or dark
 /// menu bar and never takes a tint.
 struct EyeMarkView: View {
@@ -94,21 +114,25 @@ struct EyeMarkView: View {
             EyePupil()
                 .fill(.black)
             if reduceMotion {
-                // Crossfade the two end states instead of sweeping.
+                // Crossfade the two end states instead of blinking.
                 EyeLid(progress: 0)
                     .fill(.black)
                     .opacity(1 - progress)
-                EyeLashes(progress: 0)
+                EyeLashes(side: .below)
                     .stroke(.black, style: stroke)
                     .opacity(1 - progress)
-                EyeLashes(progress: 1)
+                EyeLashes(side: .above)
                     .stroke(.black, style: stroke)
                     .opacity(progress)
             } else {
                 EyeLid(progress: progress)
                     .fill(.black)
-                EyeLashes(progress: progress)
+                EyeLashes(side: .below)
                     .stroke(.black, style: stroke)
+                    .modifier(EyeLashFade(progress: progress, side: .below))
+                EyeLashes(side: .above)
+                    .stroke(.black, style: stroke)
+                    .modifier(EyeLashFade(progress: progress, side: .above))
             }
         }
     }

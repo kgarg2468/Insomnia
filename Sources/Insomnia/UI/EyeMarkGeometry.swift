@@ -5,13 +5,21 @@ import CoreGraphics
 /// that lid, and a pupil behind it. Same 24-unit grid and conventions as
 /// `EyeMoonGeometry`; CoreGraphics only.
 ///
-/// `progress` runs from 0 (closed: the lid covers the whole lens and its
-/// lashes hang below) to 1 (open: the lid sits on the upper edge and its
-/// lashes point up). The blink is the upper lid turning about the eye's
-/// axis, seen flat: every offset from the axis is scaled by
-/// cos(π · (1 − progress)), so half way the lid and lashes lie along the
-/// axis and the lashes foreshorten, the way a blink reads from the front.
+/// The lid's `progress` runs from 0 (closed: the whole lens shaded, lashes
+/// below) to 1 (open: nothing shaded, lashes above). The lid's lower edge
+/// is a cubic interpolated between the lens's lower and upper lid curves,
+/// so it lifts like an eyelid and uncovers the pupil from the bottom under a
+/// smooth curve. The lashes themselves never move: each side is a fixed
+/// set, and the view fades one out and the other in.
 enum EyeMarkGeometry {
+    /// Which side of the lens a set of lashes sits on.
+    enum Side {
+        /// Above the upper lid: the open eye.
+        case above
+        /// Below the lower lid: the closed eye.
+        case below
+    }
+
     static let designSize = EyeMoonGeometry.designSize
     /// The eye's horizontal axis, through both corners.
     static let axisY = EyeMoonGeometry.designSize / 2
@@ -35,25 +43,29 @@ enum EyeMarkGeometry {
     }
 
     /// The lid, meant to be filled: the region between the upper edge of the
-    /// lens and the lid's current position. Nothing at progress 1, the whole
-    /// lens at progress 0. One closed subpath.
+    /// lens and the lid's lower edge, which runs from the lower lid curve at
+    /// progress 0 to the upper lid curve at progress 1 (corners fixed,
+    /// control points interpolated). One closed subpath.
     static func lid(in rect: CGRect, progress: CGFloat) -> CGPath {
         let t = EyeMoonGeometry.gridTransform(in: rect)
-        let fold = fold(progress)
-        let lid = upperLid
+        let p = min(max(progress, 0), 1)
+        let upper = upperLid, lower = lowerLid
+        // The lower lid runs right to left, so it is already the return leg.
+        let edge1 = lerp(lower.c1, upper.c2, p)
+        let edge2 = lerp(lower.c2, upper.c1, p)
         let path = CGMutablePath()
-        path.move(to: lid.p0, transform: t)
-        path.addCurve(to: lid.p3, control1: lid.c1, control2: lid.c2, transform: t)
-        path.addCurve(to: lid.p0, control1: folded(lid.c2, fold), control2: folded(lid.c1, fold), transform: t)
+        path.move(to: upper.p0, transform: t)
+        path.addCurve(to: upper.p3, control1: upper.c1, control2: upper.c2, transform: t)
+        path.addCurve(to: upper.p0, control1: edge1, control2: edge2, transform: t)
         path.closeSubpath()
         return path
     }
 
-    /// Five lashes as five open subpaths, meant to be stroked: above the lens
-    /// at progress 1, below it at progress 0.
-    static func lashes(in rect: CGRect, progress: CGFloat) -> CGPath {
+    /// Five lashes as five open subpaths, meant to be stroked. The lower set
+    /// is the upper set mirrored about the axis; neither moves.
+    static func lashes(in rect: CGRect, side: Side) -> CGPath {
         let t = EyeMoonGeometry.gridTransform(in: rect)
-        let fold = fold(progress)
+        let fold: CGFloat = side == .above ? 1 : -1
         let lid = upperLid
         let path = CGMutablePath()
         for fraction in lashFractions {
@@ -132,30 +144,37 @@ enum EyeMarkGeometry {
         }
     }
 
-    /// The lens's upper lid, read back from the outline's first curve so the
-    /// mark follows the icon's lens without repeating its numbers.
-    private static let upperLid: Cubic = {
+    /// The lens's two lids, read back from the outline (upper curve left to
+    /// right, lower curve right to left) so the mark follows the icon's lens
+    /// without repeating its numbers.
+    private static let lids: (upper: Cubic, lower: Cubic) = {
         let grid = CGRect(x: 0, y: 0, width: designSize, height: designSize)
         var points: [CGPoint] = []
         EyeMoonGeometry.eyeOutline(in: grid).applyWithBlock { element in
             switch element.pointee.type {
             case .moveToPoint where points.isEmpty:
                 points.append(element.pointee.points[0])
-            case .addCurveToPoint where points.count == 1:
+            case .addCurveToPoint where points.count == 1 || points.count == 4:
                 points.append(contentsOf: [element.pointee.points[0], element.pointee.points[1], element.pointee.points[2]])
             default:
                 break
             }
         }
-        precondition(points.count == 4, "the eye outline should open with a cubic upper lid")
-        return Cubic(p0: points[0], c1: points[1], c2: points[2], p3: points[3])
+        precondition(points.count == 7, "the eye outline should be two cubic lids")
+        return (
+            upper: Cubic(p0: points[0], c1: points[1], c2: points[2], p3: points[3]),
+            lower: Cubic(p0: points[3], c1: points[4], c2: points[5], p3: points[6])
+        )
     }()
 
-    /// How far the lid has turned about the axis: 1 open, 0 half way, −1 closed.
-    private static func fold(_ progress: CGFloat) -> CGFloat {
-        cos(.pi * (1 - progress))
+    private static var upperLid: Cubic { lids.upper }
+    private static var lowerLid: Cubic { lids.lower }
+
+    private static func lerp(_ a: CGPoint, _ b: CGPoint, _ t: CGFloat) -> CGPoint {
+        CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
     }
 
+    /// Mirrors a point about the axis when `fold` is −1, leaves it at 1.
     private static func folded(_ p: CGPoint, _ fold: CGFloat) -> CGPoint {
         CGPoint(x: p.x, y: axisY + (p.y - axisY) * fold)
     }
