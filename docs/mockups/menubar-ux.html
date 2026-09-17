@@ -59,10 +59,12 @@
   .mark .lashes { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; transition: opacity 175ms; }
   .mark .lid { fill: currentColor; transition: opacity 350ms; }
   .mark .pupil { fill: currentColor; }
-  .mark .above { opacity: 0; transition-delay: 175ms; }
+  /* Whichever lash set is fading in waits for the other to fade out, in both directions. */
+  .mark .above { opacity: 0; }
+  .mark .below { transition-delay: 175ms; }
   .item.running .mark .lid { opacity: 0; }
-  .item.running .mark .below { opacity: 0; }
-  .item.running .mark .above { opacity: 1; }
+  .item.running .mark .below { opacity: 0; transition-delay: 0ms; }
+  .item.running .mark .above { opacity: 1; transition-delay: 175ms; }
   .mark.bounce { animation: bounce 360ms var(--snappy); }
   @keyframes bounce { 0% { transform: scale(1);} 35% { transform: scale(.86);} 100% { transform: scale(1);} }
 
