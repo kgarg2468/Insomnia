@@ -371,6 +371,9 @@ Battery watts are read from `AppleSmartBattery` (`InstantAmperage` ×
   scale-from-leading transition once the manager confirms the session.
   (This replaces the earlier pill-to-countdown matched-geometry morph,
   which animated across the width change.)
+- Typing happens in a non-activating key panel: the app in front stays
+  frontmost; only key status moves to the pills while typing, as with
+  Spotlight, and it returns when the pills close.
 - Number changes in the countdown use `.contentTransition(.numericText())`.
 - Focus ring is a soft glow that breathes in, not a hard outline.
 - Respect Reduce Motion: springs become short crossfades.

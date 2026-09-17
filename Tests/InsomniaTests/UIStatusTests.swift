@@ -356,13 +356,16 @@ final class UIStatusTests: XCTestCase {
 
     /// The digits are read by a local key monitor, which only sees events sent
     /// to a window this app owns. The catcher panel is that window, and the
-    /// whole fix rests on it being able to take key without taking a click.
+    /// whole fix rests on it being able to take key without taking a click,
+    /// and without activating this app: the app in front stays frontmost and
+    /// only key status moves to the pills while they are up.
     @MainActor
-    func testTheKeyCatcherPanelTakesKeyStatusWithoutTakingClicks() {
+    func testTheKeyCatcherPanelTakesKeyStatusWithoutTakingClicksOrActivating() {
         _ = NSApplication.shared
         let panel = KeyCatcherPanel()
 
         XCTAssertTrue(panel.canBecomeKey)
+        XCTAssertTrue(panel.styleMask.contains(.nonactivatingPanel))
         XCTAssertTrue(panel.ignoresMouseEvents)
         XCTAssertEqual(panel.level, .statusBar)
         XCTAssertTrue(panel.collectionBehavior.contains(.canJoinAllSpaces))

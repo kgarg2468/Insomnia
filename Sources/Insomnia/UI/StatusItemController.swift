@@ -28,8 +28,6 @@ final class StatusItemController: NSObject {
     /// Holds keyboard focus while the pills are open; see `KeyCatcherPanel`.
     private var keyCatcher: KeyCatcherPanel?
 
-    /// Whoever was frontmost before we activated for typing; reactivated on collapse.
-    private var previousApp: NSRunningApplication?
     /// Invalidates in-flight stagger steps when expand/collapse interleave.
     private var stageGeneration = 0
     /// Identifies the run whose completion is allowed to touch the UI. The
@@ -209,9 +207,6 @@ final class StatusItemController: NSObject {
     // MARK: Expand / collapse
 
     func expand(mode: MenuBarModel.Mode) {
-        previousApp = NSWorkspace.shared.frontmostApplication
-        // The activation happens in `installMonitors()`, once there is a
-        // window for it to make key.
         model.input = DurationInput()
         model.focused = .hours
         model.focusVisible = false
@@ -246,7 +241,6 @@ final class StatusItemController: NSObject {
             self.model.slotsPresent = false
             self.model.phase = target
         }
-        restorePreviousApp()
     }
 
     /// Where the pills land when dismissed. A live session always goes back
@@ -288,16 +282,6 @@ final class StatusItemController: NSObject {
                 }
             }
         }
-    }
-
-    private func restorePreviousApp() {
-        guard NSApp.isActive, !NSApp.windows.contains(where: { $0.isVisible && $0.isKeyWindow && !($0 is NSPanel) }) else { return }
-        if let prev = previousApp, prev.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-            prev.activate()
-        } else {
-            NSApp.deactivate()
-        }
-        previousApp = nil
     }
 
     // MARK: Focus and typing
@@ -386,7 +370,6 @@ final class StatusItemController: NSObject {
         stagePills(to: 0) { [weak self] in
             self?.model.slotsPresent = false
         }
-        restorePreviousApp()
 
         Task { @MainActor in
             switch mode {
@@ -416,7 +399,6 @@ final class StatusItemController: NSObject {
     /// the churn the user sees as flicker. One animated retarget instead.
     private func reopenAfterFailure(mode: MenuBarModel.Mode) {
         let keep = model.input
-        previousApp = NSWorkspace.shared.frontmostApplication
         stageGeneration += 1
         // Layout outside any animation (one relayout, whether the slots were
         // still retracting or already gone), then the content springs back.
@@ -535,16 +517,15 @@ final class StatusItemController: NSObject {
 
     private func installMonitors() {
         removeMonitors()
-        // The key monitor below is local, so it only fires while this app
-        // holds keyboard focus, which an accessory app with no window never
-        // does. Put the catcher panel up first and activate onto it: ordering
-        // a window front in an inactive app only makes it key once the app
-        // activates, so the activation has to come second.
+        // The key monitor below is local, so it only fires on events routed
+        // to a key window this app owns, which an accessory app with no
+        // window never has. The catcher panel is non-activating: making it
+        // key moves key status to it without activating this app, so the
+        // app in front stays frontmost and its windows keep their focus.
         let panel = KeyCatcherPanel()
         if let button { panel.move(toStatusButton: button) }
         panel.makeKeyAndOrderFront(nil)
         keyCatcher = panel
-        NSApp.activate(ignoringOtherApps: true)
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             // Local monitors always run on the main thread.
             let consumed = MainActor.assumeIsolated { self?.handleKey(event) ?? false }
