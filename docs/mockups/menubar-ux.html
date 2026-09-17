@@ -51,12 +51,20 @@
     width: 20px; height: 20px; display: grid; place-items: center; cursor: pointer;
     transition: transform 360ms var(--snappy);
   }
-  /* EyeMoonGeometry on its 24-unit grid: eye outline stroked, crescent filled.
-     The outline never changes; only the moon turns blue-grey while running. */
-  .mark svg { width: 17px; height: 17px; }
-  .mark .eye { fill: none; stroke: #fff; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-  .mark .moon { fill: #fff; transition: fill 350ms; }
-  .item.running .mark .moon { fill: var(--accent); }
+  /* EyeMarkGeometry on its 24-unit grid, all in currentColor: a closed eye
+     (lens shaded by the lid, lashes below) that opens while running (lid
+     gone, pupil showing, lashes above). Paths generated from the Swift. */
+  .mark svg { width: 17px; height: 17px; color: #fff; }
+  .mark .lens { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .mark .lashes { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; transition: opacity 175ms; }
+  .mark .lid { fill: currentColor; transition: opacity 350ms; }
+  .mark .pupil { fill: currentColor; }
+  /* Whichever lash set is fading in waits for the other to fade out, in both directions. */
+  .mark .above { opacity: 0; }
+  .mark .below { transition-delay: 175ms; }
+  .item.running .mark .lid { opacity: 0; }
+  .item.running .mark .below { opacity: 0; transition-delay: 0ms; }
+  .item.running .mark .above { opacity: 1; transition-delay: 175ms; }
   .mark.bounce { animation: bounce 360ms var(--snappy); }
   @keyframes bounce { 0% { transform: scale(1);} 35% { transform: scale(.86);} 100% { transform: scale(1);} }
 
@@ -144,7 +152,7 @@
     <div class="right">
       <div class="item" id="live">
         <div class="mark" id="mark" title="Click: start / Right-click: menu">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/></svg>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path class="lens" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="pupil" d="M15.3953 9.8853 A4 4 0 1 1 14.1147 8.6047 A1.4 1.4 0 1 0 15.3953 9.8853 Z"/><path class="lid" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="lashes below" d="M4.5499 17.8023 L3.1442 20.1659 M8.2636 19.3782 L7.5468 22.0332 M12 19.875 L12 22.625 M15.7364 19.3782 L16.4532 22.0332 M19.4501 17.8023 L20.8558 20.1659"/><path class="lashes above" d="M4.5499 6.1977 L3.1442 3.8341 M8.2636 4.6218 L7.5468 1.9668 M12 4.125 L12 1.375 M15.7364 4.6218 L16.4532 1.9668 M19.4501 6.1977 L20.8558 3.8341"/></svg>
         </div>
         <div class="pills" id="pills"></div>
         <div class="count" id="count"></div>
@@ -168,29 +176,29 @@
     <h2>The four states</h2>
     <div class="frames">
       <div class="frame">
-        <div class="label">Idle<small>Outline eye and moon. Nothing else.</small></div>
-        <div class="strip"><div class="item"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/></svg></div></div><span class="sys">1:37 PM</span></div>
+        <div class="label">Idle<small>Closed eye: the lens shaded, lashes below. Nothing else.</small></div>
+        <div class="strip"><div class="item"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="lens" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="pupil" d="M15.3953 9.8853 A4 4 0 1 1 14.1147 8.6047 A1.4 1.4 0 1 0 15.3953 9.8853 Z"/><path class="lid" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="lashes below" d="M4.5499 17.8023 L3.1442 20.1659 M8.2636 19.3782 L7.5468 22.0332 M12 19.875 L12 22.625 M15.7364 19.3782 L16.4532 22.0332 M19.4501 17.8023 L20.8558 20.1659"/><path class="lashes above" d="M4.5499 6.1977 L3.1442 3.8341 M8.2636 4.6218 L7.5468 1.9668 M12 4.125 L12 1.375 M15.7364 4.6218 L16.4532 1.9668 M19.4501 6.1977 L20.8558 3.8341"/></svg></div></div><span class="sys">1:37 PM</span></div>
       </div>
       <div class="frame">
         <div class="label">Entering<small>Click the eye → pills spring in, Hours focused. Type digits. No “?” badges.</small></div>
-        <div class="strip"><div class="item open entering"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/></svg></div>
+        <div class="strip"><div class="item open entering"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="lens" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="pupil" d="M15.3953 9.8853 A4 4 0 1 1 14.1147 8.6047 A1.4 1.4 0 1 0 15.3953 9.8853 Z"/><path class="lid" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="lashes below" d="M4.5499 17.8023 L3.1442 20.1659 M8.2636 19.3782 L7.5468 22.0332 M12 19.875 L12 22.625 M15.7364 19.3782 L16.4532 22.0332 M19.4501 17.8023 L20.8558 20.1659"/><path class="lashes above" d="M4.5499 6.1977 L3.1442 3.8341 M8.2636 4.6218 L7.5468 1.9668 M12 4.125 L12 1.375 M15.7364 4.6218 L16.4532 1.9668 M19.4501 6.1977 L20.8558 3.8341"/></svg></div>
           <div class="pills"><div class="pill in">Days</div><div class="pill in filled focus">4</div><div class="pill in">Minutes</div></div></div><span class="sys">1:37 PM</span></div>
       </div>
       <div class="frame">
-        <div class="label">Running<small>Pills morph into the countdown. The moon turns blue-grey. ✕ appears.</small></div>
-        <div class="strip"><div class="item running"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/></svg></div>
+        <div class="label">Running<small>Pills morph into the countdown. The eye blinks open, still monochrome. ✕ appears.</small></div>
+        <div class="strip"><div class="item running"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="lens" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="pupil" d="M15.3953 9.8853 A4 4 0 1 1 14.1147 8.6047 A1.4 1.4 0 1 0 15.3953 9.8853 Z"/><path class="lid" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="lashes below" d="M4.5499 17.8023 L3.1442 20.1659 M8.2636 19.3782 L7.5468 22.0332 M12 19.875 L12 22.625 M15.7364 19.3782 L16.4532 22.0332 M19.4501 17.8023 L20.8558 20.1659"/><path class="lashes above" d="M4.5499 6.1977 L3.1442 3.8341 M8.2636 4.6218 L7.5468 1.9668 M12 4.125 L12 1.375 M15.7364 4.6218 L16.4532 1.9668 M19.4501 6.1977 L20.8558 3.8341"/></svg></div>
           <div class="count in">3:59:41</div>
           <div class="end in"><svg class="ring" viewBox="0 0 18 18"><circle class="track" cx="9" cy="9" r="8"/></svg><svg class="x" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg></div></div><span class="sys">1:38 PM</span></div>
       </div>
       <div class="frame">
         <div class="label">Holding ✕<small>Ring draws over 0.6 s. Let go early and it springs back. Complete it and the session ends.</small></div>
-        <div class="strip"><div class="item running"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/></svg></div>
+        <div class="strip"><div class="item running"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="lens" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="pupil" d="M15.3953 9.8853 A4 4 0 1 1 14.1147 8.6047 A1.4 1.4 0 1 0 15.3953 9.8853 Z"/><path class="lid" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="lashes below" d="M4.5499 17.8023 L3.1442 20.1659 M8.2636 19.3782 L7.5468 22.0332 M12 19.875 L12 22.625 M15.7364 19.3782 L16.4532 22.0332 M19.4501 17.8023 L20.8558 20.1659"/><path class="lashes above" d="M4.5499 6.1977 L3.1442 3.8341 M8.2636 4.6218 L7.5468 1.9668 M12 4.125 L12 1.375 M15.7364 4.6218 L16.4532 1.9668 M19.4501 6.1977 L20.8558 3.8341"/></svg></div>
           <div class="count in">3:59:40</div>
           <div class="end in" style="transform:scale(1.12)"><svg class="ring" viewBox="0 0 18 18"><circle class="track" cx="9" cy="9" r="8"/><circle class="prog" cx="9" cy="9" r="8" style="stroke-dashoffset:17"/></svg><svg class="x" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg></div></div><span class="sys">1:38 PM</span></div>
       </div>
       <div class="frame">
         <div class="label">Right-click<small>Standard macOS menu: read-only status lines, then Settings… and Quit. They live here, and only here.</small></div>
-        <div class="strip" style="position:relative; overflow:visible"><div class="item"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/></svg></div>
+        <div class="strip" style="position:relative; overflow:visible"><div class="item"><div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="lens" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="pupil" d="M15.3953 9.8853 A4 4 0 1 1 14.1147 8.6047 A1.4 1.4 0 1 0 15.3953 9.8853 Z"/><path class="lid" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/><path class="lashes below" d="M4.5499 17.8023 L3.1442 20.1659 M8.2636 19.3782 L7.5468 22.0332 M12 19.875 L12 22.625 M15.7364 19.3782 L16.4532 22.0332 M19.4501 17.8023 L20.8558 20.1659"/><path class="lashes above" d="M4.5499 6.1977 L3.1442 3.8341 M8.2636 4.6218 L7.5468 1.9668 M12 4.125 L12 1.375 M15.7364 4.6218 L16.4532 1.9668 M19.4501 6.1977 L20.8558 3.8341"/></svg></div>
           <div class="ctx show" style="position:static; margin-left:8px"><div class="line">Lid: open · 87%</div><hr><div>Settings…</div><div>Quit Insomnia</div></div></div><span class="sys">1:37 PM</span></div>
       </div>
     </div>
