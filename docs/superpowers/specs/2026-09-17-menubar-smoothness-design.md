@@ -211,3 +211,65 @@ set itself. Driving the length alone, once per frame, is affordable.
 - Live check by the owner: click, type, Enter, hold to end. The bar grows
   and narrows continuously with the pills, the countdown scales in, the
   neighbours never jump.
+
+## Revision 3 (2026-09-17): paced width, longer blink
+
+### What was wrong with revision 2
+
+Revision 2 sprang `NSStatusItem.length` from a display link. Measured on the live bar
+(neighbour window bounds polled at 2 ms while the length was driven along known curves), Control
+Center, which lays out every app's item, tracks a write only when it moves the length by a few
+pixels. Steps of about 6 px or more sometimes make it stop moving the neighbours and, half a
+second after the last write it accepted, apply the remainder in one jump. A time-based spring
+produces exactly those steps: it starts at 15-17 px per frame, and any stalled frame on our side
+(the main thread blocks in the render server's synchronize while the status window is resized;
+30-46 ms gaps were logged) becomes a 20-28 px write. That is the freeze-then-cut in the user's
+recordings, and why it varies run to run. Writes of ~3 px per frame at 120 Hz were tracked on
+every frame, both directions, with no pause and no jump; Control Center's own item-insertion
+animation moves neighbours 1-2 px per frame. Full data: `/tmp/insomnia-lid-plan/cc-measurements.md`
+(copied into the PR description).
+
+### Paced width
+
+`StatusWidthAnimator` keeps its interface (`setTarget(_:animated:)`, display-link factory,
+`apply`) but replaces the spring with a paced mover, `WidthPacedMotion`:
+
+- Each display-link tick moves the value toward the target by at most `maxStep`, whatever the
+  elapsed time. Frames, not the clock, pace the motion: a stalled frame delays the animation by
+  one frame and never produces a jump.
+- `maxStep` is 3 pt when the link's frame duration is at most 1/100 s (120 Hz), else 4 pt.
+- Ease-in over the first three writes (1, 2, 3 pt) and an ease-out tail: once the remaining
+  distance is under `maxStep * 6`, the step is `remaining / 6`, never below 0.5 pt; the final write
+  lands exactly on the target.
+- Values are multiples of 0.5 pt (backing scale 2) so writes never round away.
+- Retargeting mid-flight keeps the current value and continues toward the new target; reversing
+  is allowed and continuous.
+- Reduce Motion, or `animated: false`, snaps as before. The link runs only while in flight.
+- Idle to entering (194 pt) takes ~70 frames at 120 Hz (~0.6 s); entering to countdown (~116 pt)
+  ~0.4 s; countdown to idle (~78 pt) ~0.3 s. This is the pace of Control Center's own relayouts.
+
+The rest of the choreography is unchanged: the host is laid out once at the widest width, the
+slots arrive and leave in one relayout each, the pills stagger, the bar starts narrowing after
+`Motion.narrowDelay`.
+
+### Longer, more visible blink
+
+- Lid: spring response 0.95 s, damping 0.9 (open) and 0.8 s (close); the lid progress is clamped
+  to 0...1 in the shape so overshoot never lifts the lid beyond the outline.
+- Pupil: on open it scales from 0.6 to 1 with a small overshoot (spring 0.5/0.6), starting 0.2 s
+  after the lid so it "arrives" as the lid clears; on close it shrinks to 0.8 and fades under the
+  descending lid.
+- Lashes: unchanged smoothstep hand-over at mid-blink.
+- Reduce Motion: 0.3 s ease-in-out, no pupil overshoot.
+
+### Testing
+
+- `WidthPacedMotion`: no advance ever exceeds `maxStep` for any dt (including 0.5 s); the value
+  reaches the target exactly and stops; 194 pt at 120 Hz takes between 60 and 80 frames; a
+  retarget mid-flight reverses without a discontinuity; every value is a multiple of 0.5.
+- Existing controller tests keep passing (`widthTargetChangeCount`, host width, slots).
+- Live verification: neighbour bounds probe during open/Enter/close, expecting steps ≤ 3 px and
+  no relayout later than one frame after the last write.
+
+Temporary diagnostics added during the investigation (`DebugWidthDriver`, `diag ...` timing logs,
+the animator cadence log) are removed before merge.

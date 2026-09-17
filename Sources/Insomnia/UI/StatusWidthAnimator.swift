@@ -149,6 +149,16 @@ final class StatusWidthAnimator: NSObject {
         link = nil
     }
 
+    // Diagnostics (temporary): cadence of the frames actually delivered.
+    private var diagFrames = 0
+    private var diagStart: CFTimeInterval = 0
+    private var diagMaxGap: CFTimeInterval = 0
+    private var diagMaxStep: CGFloat = 0
+    private var diagLast: CGFloat = 0
+    private var diagApplyMax: CFTimeInterval = 0
+    private var diagApplyTotal: CFTimeInterval = 0
+    private var diagGaps: [Int] = []
+
     @objc private func step(_ link: CADisplayLink) {
         guard var motion else {
             stop()
@@ -156,15 +166,31 @@ final class StatusWidthAnimator: NSObject {
         }
         // The value for the frame about to be shown, not the one just past.
         let now = link.targetTimestamp
-        motion.advance(by: now - lastTimestamp)
+        let gap = now - lastTimestamp
+        if diagFrames == 0 { diagStart = lastTimestamp; diagMaxGap = 0; diagMaxStep = 0; diagLast = motion.value; diagApplyMax = 0; diagApplyTotal = 0; diagGaps = [] }
+        diagFrames += 1
+        diagMaxGap = max(diagMaxGap, gap)
+        diagGaps.append(Int(gap * 1000))
+        motion.advance(by: gap)
         lastTimestamp = now
         self.motion = motion
+        let t0 = CACurrentMediaTime()
         if motion.isSettled {
             stop()
             apply(motion.value)
         } else {
             let scale = max(backingScale(), 1)
             apply((motion.value * scale).rounded() / scale)
+        }
+        let dt = CACurrentMediaTime() - t0
+        diagApplyMax = max(diagApplyMax, dt)
+        diagApplyTotal += dt
+        diagMaxStep = max(diagMaxStep, abs(motion.value - diagLast))
+        diagLast = motion.value
+        if motion.isSettled {
+            let total = now - diagStart
+            Log.info(String(format: "width spring: %d frames over %.0f ms to %.0f, max gap %.1f ms, max step %.1f pt, apply max %.2f ms mean %.2f ms, gaps ms %@", diagFrames, total * 1000, motion.target, diagMaxGap * 1000, diagMaxStep, diagApplyMax * 1000, diagApplyTotal / Double(diagFrames) * 1000, diagGaps.map(String.init).joined(separator: " ")))
+            diagFrames = 0
         }
     }
 }

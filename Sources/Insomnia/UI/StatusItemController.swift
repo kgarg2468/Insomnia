@@ -22,6 +22,7 @@ final class StatusItemController: NSObject {
 
     private let statusItem: NSStatusItem
     private var hostingView: StatusHostingView?
+    private var debugWidthDriver: DebugWidthDriver?
     private var widthAnimator: StatusWidthAnimator?
 
     private var keyMonitor: Any?
@@ -123,6 +124,7 @@ final class StatusItemController: NSObject {
         host.frame.size.width = max(widthTarget, host.fittingSize.width.rounded(.up), 24)
         widthChanged(host.fittingSize.width)
         logFrames("installed")
+        debugWidthDriver = DebugWidthDriver(item: statusItem)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.logFrames("after 1s") }
     }
 
@@ -171,6 +173,8 @@ final class StatusItemController: NSObject {
     /// narrowing while the last pill is still fading, before the layout
     /// switches; the layout's own report then lands on the same target.
     private func widthWithoutSlots(phase: MenuBarModel.Phase) -> CGFloat {
+        let diagT0 = CACurrentMediaTime()
+        defer { Log.info(String(format: "diag widthWithoutSlots took %.2f ms", (CACurrentMediaTime() - diagT0) * 1000)) }
         let probe = MenuBarModel()
         probe.phase = phase
         probe.slotsPresent = false
@@ -294,6 +298,8 @@ final class StatusItemController: NSObject {
     // MARK: Expand / collapse
 
     func expand(mode: MenuBarModel.Mode) {
+        let diagT0 = CACurrentMediaTime()
+        defer { Log.info(String(format: "diag expand took %.2f ms", (CACurrentMediaTime() - diagT0) * 1000)) }
         model.input = DurationInput()
         model.focused = .hours
         model.focusVisible = false
@@ -458,6 +464,8 @@ final class StatusItemController: NSObject {
     }
 
     private func run(mode: MenuBarModel.Mode, duration: TimeInterval) {
+        let diagT0 = CACurrentMediaTime()
+        defer { Log.info(String(format: "diag run took %.2f ms", (CACurrentMediaTime() - diagT0) * 1000)) }
         removeMonitors()
         startGeneration += 1
         let generation = startGeneration
@@ -676,6 +684,8 @@ final class StatusItemController: NSObject {
     // MARK: Event monitors
 
     private func installMonitors() {
+        let diagT0 = CACurrentMediaTime()
+        defer { Log.info(String(format: "diag installMonitors took %.2f ms", (CACurrentMediaTime() - diagT0) * 1000)) }
         removeMonitors()
         // The key monitor below is local, so it only fires on events routed
         // to a key window this app owns, which an accessory app with no
