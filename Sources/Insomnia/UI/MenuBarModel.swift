@@ -64,6 +64,10 @@ final class MenuBarModel {
     /// Concise start failure shown beside the pills; cleared on the next
     /// commit, open or collapse.
     var startError: String?
+    /// The label is drawn only while the pills are up: a retry (Enter)
+    /// hides it at once but keeps its text, and so its room in the layout,
+    /// until the slots leave, so the bar is written once, then.
+    var startErrorShown: Bool { startError != nil && phase.isEntering }
     var input = DurationInput()
     var focused: DurationInput.Field = .hours
     /// The three pill slots are in the layout. Set outside any animation, so
@@ -73,11 +77,11 @@ final class MenuBarModel {
     /// How many pill slots show their content right now (0...3); stepped for
     /// the stagger. Scale and opacity only: the slots themselves stay put.
     var visiblePills: Int = 0
-    /// The pills are leaving (or coming back) by opacity alone: a paced
-    /// close keeps the slots and wipes the bar over them, so a hidden pill
-    /// keeps its full size instead of shrinking. Cleared when the slots
-    /// leave or the pills are back.
-    var pillsFading: Bool = false
+    /// A close is folding the pills shut: a hidden pill travels
+    /// towards the eye, shrinks and fades instead of retracting in place.
+    /// Set when the retract begins; cleared when the slots leave, and by a
+    /// reopen or a refused start, which bring the pills back.
+    var pillsCollapsing: Bool = false
     /// Focus glow fades in once the pills have landed.
     var focusVisible: Bool = false
     /// Countdown text shown while the manager is still starting the session.

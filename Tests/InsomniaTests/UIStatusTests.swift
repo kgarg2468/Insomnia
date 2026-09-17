@@ -349,77 +349,39 @@ final class UIStatusTests: XCTestCase {
 
     // MARK: Width choreography
 
-    /// The width animator a test steps by hand. Paced on a "120 Hz"
-    /// display, one-write on a "60 Hz" one; the display link it hands out
-    /// is paused, so no frame ever runs by itself and every landing is the
-    /// test's doing (`land()`), like `WidthPacedMotionTests` drives the
-    /// animator.
+    /// Records every length write the controller makes, so a test can pin
+    /// when the bar moves: once per open, once per close, never under a
+    /// pill still visible.
     @MainActor
     private final class WidthProbe {
-        /// Read by the animator whenever it decides a mode, so a test can
-        /// change the "display" under a flight in the air.
-        var framesPerSecond: Int
-        var reduceMotion = false
-        /// No display link at all: `isPaced` says one-write, and every
-        /// target is written once and completes before `setTarget` returns.
-        let linkless: Bool
-        private(set) var animator: StatusWidthAnimator?
-        private(set) var link: CADisplayLink?
+        private(set) var writer: StatusWidthWriter?
         private(set) var applied: [CGFloat] = []
+        /// Asked at every write whether the pills are folding; a write
+        /// then is the cut across moving content the design forbids.
+        var isFolding: () -> Bool = { false }
+        private(set) var writesWhileFolding = 0
+        /// What each such write looked like, for the failure message.
+        var describeState: () -> String = { "" }
+        private(set) var foldingWrites: [String] = []
+        /// Asked at every write whether the slots are in the layout, so a
+        /// test can pin that a close is written after they leave, not
+        /// between the fold ending and their removal.
+        var slotsPresent: () -> Bool = { false }
+        private(set) var slotsAtWrite: [Bool] = []
 
-        init(framesPerSecond: Int, linkless: Bool = false) {
-            self.framesPerSecond = framesPerSecond
-            self.linkless = linkless
-        }
-
-        /// The paused link retains the animator as its target; a flight
-        /// left in the air must not keep it alive past the test.
-        func tearDown() {
-            link?.invalidate()
-            link = nil
-        }
-
-        func make(apply: @escaping (CGFloat) -> Void) -> StatusWidthAnimator {
-            let animator = StatusWidthAnimator(
-                backingScale: { 2 },
-                maximumFramesPerSecond: { [weak self] in self?.framesPerSecond },
-                reduceMotion: { [weak self] in self?.reduceMotion ?? false },
-                makeLink: { [weak self] target, selector in
-                    guard self?.linkless != true else { return nil }
-                    let link = NSScreen.main?.displayLink(target: target, selector: selector)
-                    link?.isPaused = true
-                    self?.link = link
-                    return link
-                },
-                apply: { [weak self] width in
-                    self?.applied.append(width)
-                    apply(width)
+        func make(apply: @escaping (CGFloat) -> Void) -> StatusWidthWriter {
+            let writer = StatusWidthWriter { [weak self] width in
+                guard let self else { return }
+                self.applied.append(width)
+                self.slotsAtWrite.append(self.slotsPresent())
+                if self.isFolding() {
+                    self.writesWhileFolding += 1
+                    self.foldingWrites.append("\(width) \(self.describeState())")
                 }
-            )
-            self.animator = animator
-            return animator
-        }
-
-        var isAnimating: Bool { animator?.isAnimating ?? false }
-        var isPaced: Bool { animator?.isPaced ?? false }
-        var target: CGFloat? { animator?.target }
-
-        func frame() throws {
-            guard let animator, let link else {
-                throw XCTSkip("no screen to make a display link from")
+                apply(width)
             }
-            animator.step(link)
-        }
-
-        /// Frames until the flight in progress lands; the count taken.
-        @discardableResult
-        func land() throws -> Int {
-            var frames = 0
-            while isAnimating, frames < 1000 {
-                try frame()
-                frames += 1
-            }
-            return frames
+            self.writer = writer
+            return writer
         }
     }
 
@@ -431,27 +393,32 @@ final class UIStatusTests: XCTestCase {
         let probe: WidthProbe
         let controller: StatusItemController
 
-        init(framesPerSecond: Int, linkless: Bool = false) {
+        init() {
             _ = NSApplication.shared
             h = Harness()
             manager = h.makeManager()
-            let probe = WidthProbe(framesPerSecond: framesPerSecond, linkless: linkless)
+            let probe = WidthProbe()
             self.probe = probe
-            controller = StatusItemController(
+            let controller = StatusItemController(
                 manager: manager,
                 status: PlaceholderStatus(),
                 showSettings: {},
-                makeWidthAnimator: { apply in probe.make(apply: apply) }
+                makeWidthWriter: { apply in probe.make(apply: apply) }
             )
+            self.controller = controller
+            probe.isFolding = { [weak controller] in controller?.model.pillsCollapsing ?? false }
+            probe.slotsPresent = { [weak controller] in controller?.model.slotsPresent ?? false }
+            probe.describeState = { [weak controller] in
+                guard let m = controller?.model else { return "" }
+                return "phase \(m.phase) slots \(m.slotsPresent) visible \(m.visiblePills) error \(m.startError ?? "nil") target \(controller?.widthTarget ?? 0)"
+            }
         }
 
         func tearDown() {
-            probe.tearDown()
             h.home.destroy()
         }
 
         var model: MenuBarModel { controller.model }
-        var paced: Bool { probe.framesPerSecond >= StatusWidthAnimator.pacedMinimumFramesPerSecond }
 
         /// The width the layout has for `phase` with no slots; what a close
         /// must land on.
@@ -469,111 +436,55 @@ final class UIStatusTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(300))
         }
 
-        /// The pills' fade, with slack: a paced close takes the slots out
-        /// only once this has passed since the close began, however soon
-        /// the bar landed.
-        func waitOutTheFade() async {
-            try? await Task.sleep(for: .milliseconds(Int(Motion.closeFadeDuration * 1000) + 100))
-        }
-
-        /// Wait out a close: the flight is landed by hand and the fade
-        /// waited out when paced; the stagger and the settle are waited out
-        /// when one-write. Then the layout's own report of the landed width
-        /// has time to arrive.
-        func settleClose() async throws {
-            if paced {
-                try probe.land()
-                await waitOutTheFade()
-            } else {
-                let landed = Int((Motion.staggerDelay(index: 2, count: 3, reversed: false) + Motion.retractSettle()) * 1000) + 250
-                try? await Task.sleep(for: .milliseconds(landed))
-            }
+        /// Wait out a close: the fold's stagger and settle, then the
+        /// layout's own report of the landed width has time to arrive.
+        func settleClose() async {
+            let landed = Int((Motion.staggerDelay(index: 2, count: 3, reversed: false) + Motion.retractSettle()) * 1000) + 250
+            try? await Task.sleep(for: .milliseconds(landed))
             try? await Task.sleep(for: .milliseconds(100))
         }
     }
 
-    /// The pills take a moment to leave, and the session can end inside
-    /// that window: the deadline fires between the Esc and the landing. The
-    /// target has to be read when the bar lands, so the countdown does not
-    /// come back for a session that is already over; and the landing width
-    /// follows the session, since the layout it is heading for changed.
+    /// The pills take a moment to fold, and the session can end inside
+    /// that window: the deadline fires between the Esc and the slots
+    /// leaving. The landing is read when the slots leave, so the countdown
+    /// does not come back for a session that is already over.
     @MainActor
-    func testCollapseReadsTheSessionWhenTheBarLandsNotWhenThePillsStartLeaving() async throws {
-        try XCTSkipIf(Motion.reduceMotion, "needs animated width flights")
-        let lab = Lab(framesPerSecond: 120)
+    func testCollapseReadsTheSessionWhenTheSlotsLeaveNotWhenThePillsStartFolding() async throws {
+        try XCTSkipIf(Motion.reduceMotion, "needs a non-zero pill stagger")
+        let lab = Lab()
         defer { lab.tearDown() }
         await lab.manager.start(duration: 3600)
         try? await Task.sleep(for: .milliseconds(200))
         XCTAssertEqual(lab.model.phase, .running)
-        try lab.probe.land()
         lab.controller.expand(mode: .extend)
         await lab.settleOpen()
-        try lab.probe.land()
 
         lab.controller.collapse()
-        XCTAssertEqual(lab.probe.target, lab.widthWithoutSlots(phase: .running), "heading for the countdown")
-        // The session ends while the pills are still on screen.
+        XCTAssertTrue(lab.model.pillsCollapsing)
+        // The session ends while the pills are still folding.
         await lab.manager.end(reason: .user)
-        try? await Task.sleep(for: .milliseconds(100))
+        try? await Task.sleep(for: .milliseconds(50))
         XCTAssertTrue(lab.model.slotsPresent, "still closing")
-        XCTAssertEqual(lab.probe.target, lab.widthWithoutSlots(phase: .idle), "re-aimed at the idle layout")
+        XCTAssertEqual(lab.model.phase, .entering(.start), "the ended session turns the extend pills into start pills")
 
-        try lab.probe.land()
-        await lab.waitOutTheFade()
+        await lab.settleClose()
         XCTAssertFalse(lab.manager.isActive)
-        XCTAssertEqual(lab.model.phase, .idle)
+        XCTAssertEqual(lab.model.phase, .idle, "read at the landing: no countdown for a session that is over")
         XCTAssertEqual(lab.model.visiblePills, 0)
         XCTAssertFalse(lab.model.slotsPresent)
     }
 
-    /// Paced: opening puts the three slots in the layout before any pill
-    /// shows (one relayout); closing fades the pills where they stand and
-    /// takes the slots out only when the bar has landed on the idle width
-    /// (one relayout), never in between.
+    /// Opening puts the three slots in the layout before any pill shows
+    /// (one relayout, one write); closing folds the pills with their
+    /// stagger over an unchanged width and the slots leave once the last
+    /// has settled, never before, and the width is written once after
+    /// that, on the layout's report: it must never snap across a pill
+    /// still visible.
     @MainActor
-    func testSlotsArriveOnOpenAndLeaveWhenTheBarLandsWhenPaced() async throws {
-        try XCTSkipIf(Motion.reduceMotion, "needs animated width flights")
-        let lab = Lab(framesPerSecond: 120)
-        defer { lab.tearDown() }
-        let controller = lab.controller
-
-        controller.expand(mode: .start)
-        XCTAssertEqual(controller.model.phase, .entering(.start))
-        XCTAssertTrue(controller.model.slotsPresent)
-        XCTAssertEqual(controller.model.visiblePills, 0, "the content staggers in after the slots are laid out")
-        await lab.settleOpen()
-        XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count)
-        XCTAssertTrue(lab.probe.isAnimating, "the bar is growing to the pills")
-        let opened = try lab.probe.land()
-        XCTAssertGreaterThan(opened, 3)
-        XCTAssertEqual(lab.probe.applied.last, controller.widthTarget)
-
-        controller.collapse()
-        XCTAssertTrue(controller.model.slotsPresent, "the slots stay while the pills fade")
-        XCTAssertTrue(controller.model.pillsFading, "opacity only, no scale")
-        XCTAssertEqual(controller.model.visiblePills, 0)
-        XCTAssertEqual(controller.model.phase, .entering(.start))
-        XCTAssertTrue(lab.probe.isAnimating, "the bar heads for the idle width at once")
-        XCTAssertEqual(lab.probe.target, lab.widthWithoutSlots(phase: .idle))
-        for _ in 0..<10 { try lab.probe.frame() }
-        XCTAssertTrue(controller.model.slotsPresent, "the slots must not leave while the bar is still wiping over them")
-        try? await Task.sleep(for: .milliseconds(Int(Motion.closeFadeDuration * 1000) + 100))
-        XCTAssertTrue(controller.model.slotsPresent, "the fade ending does not take the slots out either")
-
-        try lab.probe.land()
-        XCTAssertFalse(controller.model.slotsPresent, "the landing does")
-        XCTAssertFalse(controller.model.pillsFading)
-        XCTAssertEqual(controller.model.phase, .idle)
-        XCTAssertEqual(lab.probe.applied.last, controller.widthTarget)
-    }
-
-    /// One-write (a 60 Hz display; Reduce Motion takes the same path): the
-    /// pills retract with their stagger and the slots leave once the last
-    /// has settled, never before.
-    @MainActor
-    func testSlotsArriveOnOpenAndLeaveWithTheLastPillWhenOneWrite() async throws {
+    func testSlotsArriveOnOpenAndLeaveWithTheLastPill() async throws {
         try XCTSkipIf(Motion.reduceMotion, "needs a non-zero pill stagger")
-        let lab = Lab(framesPerSecond: 60)
+        let lab = Lab()
         defer { lab.tearDown() }
         let controller = lab.controller
 
@@ -583,12 +494,13 @@ final class UIStatusTests: XCTestCase {
         XCTAssertEqual(controller.model.visiblePills, 0, "the content staggers in after the slots are laid out")
         await lab.settleOpen()
         XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count)
-        XCTAssertFalse(lab.probe.isAnimating, "one-write: the width was written once")
-        XCTAssertEqual(lab.probe.applied.last, controller.widthTarget)
+        XCTAssertEqual(lab.probe.applied.last, controller.widthTarget, "open: written once")
+        let pillsWidth = controller.widthTarget
 
         controller.collapse()
+        XCTAssertEqual(controller.widthTarget, pillsWidth, "the width stays while the pills fold")
         XCTAssertTrue(controller.model.slotsPresent, "the slots stay while the pills retract")
-        XCTAssertFalse(controller.model.pillsFading)
+        XCTAssertTrue(controller.model.pillsCollapsing, "the pills fold towards the eye")
         XCTAssertEqual(controller.model.phase, .entering(.start))
         let written = lab.probe.applied.count
         // The pills have all started retracting, but the last one is still
@@ -596,13 +508,17 @@ final class UIStatusTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(120))
         XCTAssertEqual(controller.model.visiblePills, 0)
         XCTAssertTrue(controller.model.slotsPresent, "the bar must not snap under a pill that is still visible")
+        XCTAssertEqual(controller.widthTarget, pillsWidth)
         XCTAssertEqual(lab.probe.applied.count, written, "no width write before the slots leave")
         try? await Task.sleep(for: .milliseconds(Int(Motion.retractSettleDuration * 1000) + 100))
         XCTAssertFalse(controller.model.slotsPresent)
+        XCTAssertFalse(controller.model.pillsCollapsing, "the fold ends with the slots")
         XCTAssertEqual(controller.model.phase, .idle)
         try? await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(lab.probe.applied.count, written + 1, "the width snaps once the layout reports")
+        XCTAssertEqual(controller.widthTarget, lab.widthWithoutSlots(phase: .idle), "the width moves on the layout's report")
+        XCTAssertEqual(lab.probe.applied.count, written + 1, "one write, after the slots left")
         XCTAssertEqual(lab.probe.applied.last, controller.widthTarget)
+        XCTAssertEqual(lab.probe.writesWhileFolding, 0, lab.probe.foldingWrites.joined(separator: "; "))
     }
 
     /// The status item's width target is meant to change once per open and
@@ -617,10 +533,10 @@ final class UIStatusTests: XCTestCase {
     /// change reports its end value only), so this pins the discrete
     /// relayouts; per-frame interpolation of an animated layout width is kept
     /// out by setting the layout state outside any animation, which this
-    /// cannot see. The length itself is moved by the width animator.
+    /// cannot see.
     @MainActor
-    private func assertTheWidthTargetChangesOncePerOpenAndOncePerClose(framesPerSecond: Int) async throws {
-        let lab = Lab(framesPerSecond: framesPerSecond)
+    func testTheStatusItemWidthTargetChangesOncePerOpenAndOncePerClose() async throws {
+        let lab = Lab()
         defer { lab.tearDown() }
         let controller = lab.controller
         let manager = lab.manager
@@ -630,529 +546,292 @@ final class UIStatusTests: XCTestCase {
 
         controller.expand(mode: .start)
         await lab.settleOpen()
-        try lab.probe.land()
         XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count)
         XCTAssertEqual(controller.widthTargetChangeCount, 2, "open: one relayout")
         XCTAssertGreaterThanOrEqual(controller.hostWidth, controller.widthTarget, "open: the host grew to the pills' width")
 
         controller.collapse()
-        try await lab.settleClose()
+        await lab.settleClose()
         XCTAssertEqual(controller.model.phase, .idle)
         XCTAssertFalse(controller.model.slotsPresent)
         XCTAssertEqual(controller.widthTargetChangeCount, 3, "close: one relayout")
 
         await manager.start(duration: 3600)
         try? await Task.sleep(for: .milliseconds(300))
-        try lab.probe.land()
         XCTAssertEqual(controller.model.phase, .running)
         XCTAssertEqual(controller.widthTargetChangeCount, 4, "countdown and ring: one relayout")
 
         controller.expand(mode: .extend)
         await lab.settleOpen()
-        try lab.probe.land()
         XCTAssertEqual(controller.widthTargetChangeCount, 5, "open over a session: one relayout")
 
         controller.collapse()
-        try await lab.settleClose()
+        await lab.settleClose()
         XCTAssertEqual(controller.model.phase, .running)
         XCTAssertFalse(controller.model.slotsPresent)
         XCTAssertEqual(controller.widthTargetChangeCount, 6, "close to the countdown: one relayout")
-        XCTAssertFalse(lab.probe.isAnimating)
+        XCTAssertEqual(lab.probe.applied.count, 6, "and one write each")
+        XCTAssertEqual(lab.probe.writesWhileFolding, 0, lab.probe.foldingWrites.joined(separator: "; "))
+        XCTAssertEqual(
+            lab.probe.slotsAtWrite, [false, true, false, false, true, false],
+            "opens are written with the slots in, closes only once they are out"
+        )
     }
 
+    /// The close folds the bar shut: the pills travel to the eye
+    /// on a curve of known length, and the slots may only leave once the
+    /// last pill's curve has run out. Under Reduce Motion the pills fade in
+    /// place, a little longer than the general crossfade, with the same
+    /// guarantee.
     @MainActor
-    func testTheStatusItemWidthTargetChangesOncePerOpenAndOncePerCloseWhenPaced() async throws {
-        try XCTSkipIf(Motion.reduceMotion, "needs animated width flights")
-        try await assertTheWidthTargetChangesOncePerOpenAndOncePerClose(framesPerSecond: 120)
+    func testTheCollapseCurveIsCoveredByTheRetractSettle() {
+        XCTAssertEqual(Motion.collapse(reduceMotion: false), .easeInOut(duration: 0.32))
+        XCTAssertEqual(Motion.collapse(reduceMotion: true), .easeInOut(duration: 0.2))
+        XCTAssertEqual(Motion.collapseScale, 0.6)
+        XCTAssertGreaterThan(Motion.retractSettle(reduceMotion: false), Motion.collapseDuration)
+        XCTAssertGreaterThan(Motion.retractSettle(reduceMotion: true), Motion.reducedCollapseDuration)
+        XCTAssertGreaterThan(Motion.reducedCollapseDuration, 0.15)
     }
 
+    /// Esc / click away: the pills fold shut towards the eye
+    /// (`pillsCollapsing`) from the first step, the slots stay in the
+    /// layout for the whole collapse, and the collapse ends in the same
+    /// step that takes the slots out.
     @MainActor
-    func testTheStatusItemWidthTargetChangesOncePerOpenAndOncePerCloseWhenOneWrite() async throws {
-        try await assertTheWidthTargetChangesOncePerOpenAndOncePerClose(framesPerSecond: 60)
+    func testAOneWriteCollapseFoldsThePillsAndEndsWithTheSlots() async throws {
+        try XCTSkipIf(Motion.reduceMotion, "needs a non-zero pill stagger")
+        let lab = Lab()
+        defer { lab.tearDown() }
+        let controller = lab.controller
+
+        controller.expand(mode: .start)
+        XCTAssertFalse(controller.model.pillsCollapsing, "opening is the stagger, not the fold")
+        await lab.settleOpen()
+        XCTAssertFalse(controller.model.pillsCollapsing)
+        XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count)
+
+        let began = Date()
+        controller.collapse()
+        XCTAssertTrue(controller.model.pillsCollapsing, "folding from the first step")
+        XCTAssertTrue(controller.model.slotsPresent)
+        XCTAssertFalse(controller.model.focusVisible, "the glow goes at once")
+        XCTAssertEqual(controller.model.phase, .entering(.start))
+
+        // Every pill has started leaving; the last one's curve is running.
+        try? await Task.sleep(for: .milliseconds(120))
+        XCTAssertEqual(controller.model.visiblePills, 0)
+        XCTAssertTrue(controller.model.pillsCollapsing)
+        XCTAssertTrue(controller.model.slotsPresent, "the slots hold the layout for the whole collapse")
+
+        // Poll for the slots leaving: the flag must be down in that same step.
+        let lastStep = Motion.staggerDelay(index: 2, count: 3, reversed: false)
+        let deadline = began.addingTimeInterval(lastStep + Motion.retractSettle() + 0.5)
+        while controller.model.slotsPresent, Date() < deadline {
+            XCTAssertTrue(controller.model.pillsCollapsing, "still folding while the slots are up")
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertFalse(controller.model.slotsPresent)
+        XCTAssertFalse(controller.model.pillsCollapsing, "cleared with the slots")
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(began), lastStep + Motion.collapseDuration, "not before the last pill's curve has run out")
+        XCTAssertEqual(controller.model.phase, .idle)
+        XCTAssertEqual(controller.model.visiblePills, 0)
     }
 
-    /// Enter before the bar has finished opening: the flight turns from
-    /// wherever it is towards the countdown's width, the slots' own layout
-    /// report (which can arrive after Enter) does not turn it back, and the
-    /// slots leave exactly once, at the landing, with the projected
-    /// countdown showing.
+    /// Enter: the same fold, then the projected countdown once
+    /// the slots have left (it is only in the layout after them, so it can
+    /// never show under the collapsing pills), then the live session.
     @MainActor
-    func testAnImmediateEnterWhileOpeningLandsOnTheCountdownWithTheSlotsRemovedOnce() async throws {
-        try XCTSkipIf(Motion.reduceMotion, "needs animated width flights")
-        let lab = Lab(framesPerSecond: 120)
+    func testAOneWriteEnterFoldsThePillsThenShowsTheCountdown() async throws {
+        try XCTSkipIf(Motion.reduceMotion, "needs a non-zero pill stagger")
+        let lab = Lab()
         defer { lab.tearDown() }
         let controller = lab.controller
         let gate = AsyncGate()
         lab.h.backstop.armGate = gate
 
         controller.expand(mode: .start)
+        await lab.settleOpen()
+        controller.focus(.hours)
+        XCTAssertTrue(controller.model.input.append(digit: 2, to: .hours))
+        let pillsWidth = controller.widthTarget
+        let written = lab.probe.applied.count
+
         controller.commit()
         await gate.waitUntilStarted()
         XCTAssertEqual(controller.model.phase, .starting)
+        XCTAssertTrue(controller.model.pillsCollapsing, "Enter folds the pills the same way")
         XCTAssertTrue(controller.model.slotsPresent)
         XCTAssertNotNil(controller.model.pendingCountdown)
-        let countdownWidth = lab.widthWithoutSlots(phase: .starting)
-        XCTAssertEqual(controller.widthTarget, countdownWidth)
-        XCTAssertEqual(controller.widthTargetChangeCount, 2, "install, then the countdown: the slots never became a target")
-        // The slots' layout report lands now, after Enter.
-        try? await Task.sleep(for: .milliseconds(200))
-        XCTAssertEqual(controller.widthTarget, countdownWidth, "the late report does not turn the bar back")
-        XCTAssertEqual(controller.widthTargetChangeCount, 2)
-        XCTAssertTrue(controller.model.slotsPresent)
+        XCTAssertEqual(controller.widthTarget, pillsWidth, "the width stays while the pills fold")
 
-        try lab.probe.land()
-        await lab.waitOutTheFade()
+        let deadline = Date().addingTimeInterval(Motion.staggerDelay(index: 2, count: 3, reversed: false) + Motion.retractSettle() + 0.5)
+        while controller.model.slotsPresent, Date() < deadline {
+            XCTAssertTrue(controller.model.pillsCollapsing)
+            XCTAssertEqual(lab.probe.applied.count, written, "no width write while the pills fold")
+            try? await Task.sleep(for: .milliseconds(5))
+        }
         XCTAssertFalse(controller.model.slotsPresent)
-        XCTAssertEqual(controller.model.phase, .starting)
+        XCTAssertFalse(controller.model.pillsCollapsing, "cleared with the slots")
+        XCTAssertEqual(controller.model.phase, .starting, "the countdown is the projection until the manager answers")
         XCTAssertEqual(
             StatusRootView.countdownText(pending: controller.model.pendingCountdown, live: lab.manager.countdownText, phase: controller.model.phase),
             controller.model.pendingCountdown
         )
         try? await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(controller.widthTargetChangeCount, 2, "the layout reports the width the bar landed on")
-        XCTAssertFalse(lab.probe.isAnimating)
+        XCTAssertEqual(controller.widthTarget, lab.widthWithoutSlots(phase: .starting), "the width snaps once, after the slots left")
+        XCTAssertEqual(lab.probe.applied.count, written + 1)
+        XCTAssertEqual(lab.probe.writesWhileFolding, 0, lab.probe.foldingWrites.joined(separator: "; "))
 
         await gate.open()
-        let deadline = Date().addingTimeInterval(2)
-        while controller.model.phase != .running, Date() < deadline {
+        let confirmBy = Date().addingTimeInterval(2)
+        while controller.model.phase != .running, Date() < confirmBy {
             try? await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertEqual(controller.model.phase, .running)
         XCTAssertFalse(controller.model.slotsPresent)
+        XCTAssertFalse(controller.model.pillsCollapsing)
     }
 
-    /// The countdown is clicked while the bar is still closing on it: the
-    /// slots never left, the pending landing is dropped, the pills fade
-    /// back and the bar turns round to the pills' width.
+    /// Reopened while the pills are still folding: the fold is
+    /// dropped, the slots never left, the pills stagger back in, and the
+    /// dropped collapse's completion never takes the slots out.
     @MainActor
-    func testReopeningDuringACloseKeepsTheSlotsAndFadesThePillsBack() async throws {
-        try XCTSkipIf(Motion.reduceMotion, "needs animated width flights")
-        let lab = Lab(framesPerSecond: 120)
-        defer { lab.tearDown() }
-        let controller = lab.controller
-
-        controller.expand(mode: .start)
-        await lab.settleOpen()
-        try lab.probe.land()
-        let pillsWidth = controller.widthTarget
-
-        controller.collapse()
-        for _ in 0..<10 { try lab.probe.frame() }
-        XCTAssertTrue(controller.model.slotsPresent)
-        XCTAssertEqual(controller.model.visiblePills, 0)
-        let turned = lab.probe.applied.last!
-        XCTAssertLessThan(turned, pillsWidth)
-
-        controller.expand(mode: .start)
-        XCTAssertTrue(controller.model.slotsPresent, "never left")
-        XCTAssertEqual(controller.model.phase, .entering(.start))
-        XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count, "faded back, no stagger")
-        XCTAssertFalse(controller.model.pillsFading)
-        XCTAssertEqual(lab.probe.target, pillsWidth, "back to the pills' width")
-        try lab.probe.frame()
-        XCTAssertEqual(lab.probe.applied.last, turned + 1, "the reversal brakes and restarts the ramp")
-
-        try lab.probe.land()
-        XCTAssertTrue(controller.model.slotsPresent, "the dropped landing never removes the slots")
-        XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count)
-        XCTAssertEqual(lab.probe.applied.last, pillsWidth)
-        try? await Task.sleep(for: .milliseconds(300))
-        XCTAssertTrue(controller.model.slotsPresent)
-        XCTAssertTrue(controller.model.focusVisible, "the focus glow comes back after the pills")
-        XCTAssertEqual(controller.model.phase, .entering(.start))
-        controller.collapse()
-    }
-
-    /// The bar can land before the last pill has faded (a short distance,
-    /// or a stalled fade): the slots stay until the fade has had its whole
-    /// `closeFadeDuration`, then leave in one relayout, and the layout's
-    /// report of the landed width is not a new target.
-    @MainActor
-    func testSlotsWaitForTheFadeWhenTheBarLandsFirst() async throws {
-        try XCTSkipIf(Motion.reduceMotion, "needs animated width flights")
-        let lab = Lab(framesPerSecond: 120)
-        defer { lab.tearDown() }
-        let controller = lab.controller
-
-        controller.expand(mode: .start)
-        await lab.settleOpen()
-        try lab.probe.land()
-        let changes = controller.widthTargetChangeCount
-
-        controller.collapse()
-        try lab.probe.land()   // by hand, at once: the fade has barely begun
-        XCTAssertFalse(lab.probe.isAnimating)
-        XCTAssertEqual(lab.probe.applied.last, lab.widthWithoutSlots(phase: .idle))
-        XCTAssertTrue(controller.model.slotsPresent, "landed, but the pills are still fading")
-        XCTAssertTrue(controller.model.pillsFading)
-        XCTAssertEqual(controller.model.phase, .entering(.start))
-        XCTAssertEqual(controller.widthTargetChangeCount, changes + 1)
-        try? await Task.sleep(for: .milliseconds(150))
-        XCTAssertTrue(controller.model.slotsPresent, "mid-fade: still there")
-        XCTAssertEqual(controller.model.phase, .entering(.start))
-
-        try? await Task.sleep(for: .milliseconds(Int(Motion.closeFadeDuration * 1000) - 150 + 100))
-        XCTAssertFalse(controller.model.slotsPresent, "gone once the fade has run out")
-        XCTAssertFalse(controller.model.pillsFading)
-        XCTAssertEqual(controller.model.phase, .idle)
-        try? await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(controller.widthTargetChangeCount, changes + 1, "the layout reports the width the bar landed on")
-        XCTAssertEqual(lab.probe.applied.last, controller.widthTarget)
-        XCTAssertFalse(lab.probe.isAnimating)
-    }
-
-    /// No display link at all (a fast display, Reduce Motion off): every
-    /// width is written once, so `isPaced` says one-write and the close
-    /// takes the one-write path. The pills retract with their stagger over
-    /// an unchanged width, the slots leave once the last has settled, and
-    /// the width moves only after that, on the layout's report: it must
-    /// never snap across pills still visible.
-    @MainActor
-    func testWithoutALinkTheCloseIsOneWriteAndTheWidthMovesOnlyAfterTheSlotsLeave() async throws {
+    func testReopeningDuringAOneWriteCollapseDropsTheFoldAndBringsThePillsBack() async throws {
         try XCTSkipIf(Motion.reduceMotion, "needs a non-zero pill stagger")
-        let lab = Lab(framesPerSecond: 120, linkless: true)
+        let lab = Lab()
         defer { lab.tearDown() }
         let controller = lab.controller
-        XCTAssertFalse(lab.probe.isPaced, "no link: one-write")
 
         controller.expand(mode: .start)
         await lab.settleOpen()
-        XCTAssertFalse(lab.probe.isAnimating, "no link: written once")
-        XCTAssertEqual(lab.probe.applied.last, controller.widthTarget)
         let pillsWidth = controller.widthTarget
         let written = lab.probe.applied.count
-        let changes = controller.widthTargetChangeCount
 
         controller.collapse()
-        XCTAssertEqual(controller.widthTarget, pillsWidth, "the width stays while the pills retract")
-        XCTAssertEqual(lab.probe.applied.count, written, "no snap inside collapse()")
-        XCTAssertTrue(controller.model.slotsPresent, "the slots stay while the pills retract")
-        XCTAssertFalse(controller.model.pillsFading, "one-write: the pills retract, they do not fade in place")
-        XCTAssertEqual(controller.model.phase, .entering(.start))
-        // The pills have all started retracting, but the last one is still
-        // settling: the slots and the width must wait for it.
-        try? await Task.sleep(for: .milliseconds(120))
-        XCTAssertEqual(controller.model.visiblePills, 0)
-        XCTAssertTrue(controller.model.slotsPresent, "the last pill is still settling")
-        XCTAssertEqual(controller.widthTarget, pillsWidth)
-        XCTAssertEqual(lab.probe.applied.count, written, "no width write before the slots leave")
-        try? await Task.sleep(for: .milliseconds(Int(Motion.retractSettleDuration * 1000) + 100))
-        XCTAssertFalse(controller.model.slotsPresent, "gone once the last pill has settled")
-        XCTAssertEqual(controller.model.phase, .idle)
+        XCTAssertTrue(controller.model.pillsCollapsing)
         try? await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(controller.widthTarget, lab.widthWithoutSlots(phase: .idle), "the width moves on the layout's report")
-        XCTAssertEqual(controller.widthTargetChangeCount, changes + 1)
-        XCTAssertEqual(lab.probe.applied.count, written + 1, "one write, after the slots left")
-        XCTAssertEqual(lab.probe.applied.last, controller.widthTarget)
-        XCTAssertFalse(lab.probe.isAnimating)
+        XCTAssertEqual(controller.model.visiblePills, 0, "every pill on its way to the eye")
+        XCTAssertTrue(controller.model.slotsPresent)
+
+        controller.expand(mode: .start)
+        XCTAssertFalse(controller.model.pillsCollapsing, "the fold is dropped at once")
+        XCTAssertTrue(controller.model.slotsPresent, "never left")
+        XCTAssertEqual(controller.model.phase, .entering(.start))
+        XCTAssertEqual(controller.widthTarget, pillsWidth)
+        await lab.settleOpen()
+        XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count, "staggered back in")
+        XCTAssertTrue(controller.model.focusVisible)
+        XCTAssertFalse(controller.model.pillsCollapsing)
+
+        // Past when the dropped collapse would have taken the slots out.
+        try? await Task.sleep(for: .milliseconds(Int(Motion.retractSettleDuration * 1000) + 100))
+        XCTAssertTrue(controller.model.slotsPresent, "the dropped completion never fires")
+        XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count)
+        XCTAssertEqual(controller.model.phase, .entering(.start))
+        XCTAssertEqual(lab.probe.applied.count, written, "the width never moved")
+        controller.collapse()
     }
 
-    /// A click on the eye while a paced close is still in flight: the phase
-    /// is still `.entering`, but the key catcher is gone and the pills are
-    /// fading, so there is nothing to commit and nothing more to collapse.
-    /// The click reopens the pills, whether or not something was typed.
+    /// A click on the eye while the pills are folding: the phase is still
+    /// `.entering`, but the key catcher is gone, so there is nothing to
+    /// commit and nothing more to collapse. The click reopens the pills,
+    /// whether or not something was typed.
     @MainActor
-    func testClickingTheEyeDuringAPacedCloseReopensThePills() async throws {
-        try XCTSkipIf(Motion.reduceMotion, "needs animated width flights")
-        let lab = Lab(framesPerSecond: 120)
+    func testClickingTheEyeDuringACollapseReopensThePills() async throws {
+        try XCTSkipIf(Motion.reduceMotion, "needs a non-zero pill stagger")
+        let lab = Lab()
         defer { lab.tearDown() }
         let controller = lab.controller
 
         controller.expand(mode: .start)
         await lab.settleOpen()
-        try lab.probe.land()
         let pillsWidth = controller.widthTarget
+        let written = lab.probe.applied.count
 
-        // Nothing typed: without a close in flight the click would collapse.
+        // Nothing typed: without a fold in flight the click would collapse.
         controller.collapse()
-        for _ in 0..<10 { try lab.probe.frame() }
-        XCTAssertLessThan(lab.probe.applied.last!, pillsWidth)
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(controller.model.pillsCollapsing)
         controller.iconTapped()
+        XCTAssertFalse(controller.model.pillsCollapsing, "the fold is dropped at once")
         XCTAssertEqual(controller.model.phase, .entering(.start))
         XCTAssertTrue(controller.model.slotsPresent)
-        XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count, "faded back")
-        XCTAssertFalse(controller.model.pillsFading)
-        XCTAssertEqual(lab.probe.target, pillsWidth, "back to the pills' width")
-        try lab.probe.land()
-        await lab.waitOutTheFade()
-        XCTAssertTrue(controller.model.slotsPresent, "the dropped landing never takes the slots out")
-        XCTAssertEqual(controller.model.phase, .entering(.start))
-        XCTAssertEqual(lab.probe.applied.last, pillsWidth)
+        await lab.settleOpen()
+        XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count, "staggered back in")
 
-        // Something typed: without a close in flight the click would commit.
+        // Something typed: without a fold in flight the click would commit.
         controller.focus(.hours)
         XCTAssertTrue(controller.model.input.append(digit: 2, to: .hours))
         controller.collapse()
-        for _ in 0..<10 { try lab.probe.frame() }
-        XCTAssertTrue(controller.model.pillsFading)
+        try? await Task.sleep(for: .milliseconds(100))
         controller.iconTapped()
         XCTAssertEqual(controller.model.phase, .entering(.start), "reopened, not committed")
         XCTAssertNil(controller.model.pendingCountdown)
-        XCTAssertTrue(controller.model.slotsPresent)
-        XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count)
-        XCTAssertFalse(controller.model.pillsFading)
-        XCTAssertEqual(lab.probe.target, pillsWidth)
         XCTAssertNil(controller.model.input.total, "the reopen path starts fresh")
-        try lab.probe.land()
-        await lab.waitOutTheFade()
-        XCTAssertTrue(controller.model.slotsPresent)
-        XCTAssertEqual(controller.model.phase, .entering(.start))
+        await lab.settleClose()
+        XCTAssertTrue(controller.model.slotsPresent, "the dropped folds never take the slots out")
+        XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count)
+        XCTAssertEqual(controller.widthTarget, pillsWidth)
+        XCTAssertEqual(lab.probe.applied.count, written, "the width never moved")
         controller.collapse()
     }
 
     /// Over a live session the same click reopens the pills in extend mode.
     @MainActor
-    func testClickingTheEyeDuringAPacedCloseOverASessionReopensTheExtendPills() async throws {
-        try XCTSkipIf(Motion.reduceMotion, "needs animated width flights")
-        let lab = Lab(framesPerSecond: 120)
+    func testClickingTheEyeDuringACollapseOverASessionReopensTheExtendPills() async throws {
+        try XCTSkipIf(Motion.reduceMotion, "needs a non-zero pill stagger")
+        let lab = Lab()
         defer { lab.tearDown() }
         let controller = lab.controller
         await lab.manager.start(duration: 3600)
         try? await Task.sleep(for: .milliseconds(200))
         XCTAssertEqual(controller.model.phase, .running)
-        try lab.probe.land()
 
         controller.expand(mode: .extend)
         await lab.settleOpen()
-        try lab.probe.land()
-        let pillsWidth = controller.widthTarget
-
         controller.collapse()
-        for _ in 0..<10 { try lab.probe.frame() }
-        XCTAssertEqual(lab.probe.target, lab.widthWithoutSlots(phase: .running), "heading for the countdown")
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(controller.model.pillsCollapsing)
         controller.iconTapped()
         XCTAssertEqual(controller.model.phase, .entering(.extend))
         XCTAssertTrue(controller.model.slotsPresent)
+        await lab.settleClose()
+        XCTAssertTrue(controller.model.slotsPresent, "the dropped fold never takes the slots out")
         XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count)
-        XCTAssertEqual(lab.probe.target, pillsWidth)
-        try lab.probe.land()
-        await lab.waitOutTheFade()
-        XCTAssertTrue(controller.model.slotsPresent)
         XCTAssertEqual(controller.model.phase, .entering(.extend))
         controller.collapse()
     }
 
-    /// Enter over a live session projects the extended countdown and the
-    /// close heads for that layout. When the extend call resolves the
-    /// projection clears; the manager may never notify (here the backstop
-    /// refuses, so the session is unchanged), so the close itself has to
-    /// re-aim at the layout the cleared projection leaves behind, before it
-    /// lands, and the layout's report then lands on that same width.
+    /// The manager refuses the start while the pills are folding (the
+    /// backstop is held until the fold is under way): the fold is
+    /// cancelled, the pills come back at once with the value and the error
+    /// label, and the cancelled fold never takes the slots out. A retry
+    /// then hides the label but keeps its room until the slots leave, so
+    /// the bar is written once, after them.
     @MainActor
-    func testTheCloseReAimsWhenTheExtendResolvesAndTheProjectionClears() async throws {
-        try XCTSkipIf(Motion.reduceMotion, "needs animated width flights")
-        let lab = Lab(framesPerSecond: 120)
+    func testARefusedStartDuringACollapseRestoresThePillsAndDropsTheLanding() async throws {
+        try XCTSkipIf(Motion.reduceMotion, "needs a non-zero pill stagger")
+        let lab = Lab()
         defer { lab.tearDown() }
         let controller = lab.controller
-        await lab.manager.start(duration: 3600)
-        try? await Task.sleep(for: .milliseconds(200))
-        XCTAssertEqual(controller.model.phase, .running)
-        try lab.probe.land()
-        let liveWidth = lab.widthWithoutSlots(phase: .running)
-
-        controller.expand(mode: .extend)
-        await lab.settleOpen()
-        try lab.probe.land()
-        controller.focus(.days)
-        XCTAssertTrue(controller.model.input.append(digit: 2, to: .days))
-        lab.h.backstop.failArm = true
-
-        controller.commit()
-        XCTAssertEqual(controller.model.phase, .running)
-        XCTAssertNotNil(controller.model.pendingCountdown)
-        let projectedWidth = lab.widthWithoutSlots(phase: .running)
-        XCTAssertNotEqual(projectedWidth, liveWidth, "the projection has the days shape")
-        XCTAssertEqual(lab.probe.target, projectedWidth, "heading for the projected countdown")
-        let changes = controller.widthTargetChangeCount
-        for _ in 0..<5 { try lab.probe.frame() }
-
-        let deadline = Date().addingTimeInterval(2)
-        while controller.model.pendingCountdown != nil, Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertNil(controller.model.pendingCountdown, "the extend resolved")
-        XCTAssertTrue(lab.manager.isActive)
-        XCTAssertEqual(lab.manager.countdownText, "1:00:00", "refused: the session is unchanged")
-        XCTAssertTrue(controller.model.slotsPresent, "still closing")
-        XCTAssertEqual(controller.model.phase, .running)
-        XCTAssertEqual(lab.probe.target, liveWidth, "re-aimed at the live countdown")
-        XCTAssertEqual(controller.widthTargetChangeCount, changes + 1)
-
-        try lab.probe.land()
-        await lab.waitOutTheFade()
-        XCTAssertFalse(controller.model.slotsPresent)
-        XCTAssertEqual(controller.model.phase, .running)
-        XCTAssertEqual(lab.probe.applied.last, liveWidth)
-        try? await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(controller.widthTargetChangeCount, changes + 1, "the layout reports the width the bar landed on")
-        XCTAssertFalse(lab.probe.isAnimating)
-    }
-
-    /// A second close while a paced close is in flight (Esc, then Settings
-    /// or a click away) after the display stopped qualifying for pacing (a
-    /// window move, Low Power Mode): the close in flight is re-aimed, never
-    /// covered by a one-write retract. That retract would take the slots
-    /// out after its shorter settle, under pills still fading, leave the
-    /// fade flag up and the close pending, and the pending close would then
-    /// swallow every layout report. Here: the slots stay past the settle,
-    /// leave once the fade has run out and the bar has landed, the fade
-    /// ends, and the next layout change is followed again.
-    @MainActor
-    func testASecondCloseAfterTheDisplaySlowedReAimsThePacedCloseInsteadOfRetractingOverIt() async throws {
-        try XCTSkipIf(Motion.reduceMotion, "needs animated width flights")
-        let lab = Lab(framesPerSecond: 120)
-        defer { lab.tearDown() }
-        let controller = lab.controller
-
-        controller.expand(mode: .start)
-        await lab.settleOpen()
-        try lab.probe.land()
-        let idleWidth = lab.widthWithoutSlots(phase: .idle)
-
-        controller.collapse()
-        XCTAssertTrue(controller.model.pillsFading)
-        XCTAssertTrue(lab.probe.isAnimating, "paced close in flight")
-        XCTAssertEqual(lab.probe.target, idleWidth)
-        for _ in 0..<5 { try lab.probe.frame() }
-        let changes = controller.widthTargetChangeCount
-
-        lab.probe.framesPerSecond = 60
-        XCTAssertFalse(lab.probe.isPaced, "a flight started now would be one-write")
-        XCTAssertEqual(controller.model.phase, .entering(.start), "still closing")
-        controller.collapse()
-        XCTAssertTrue(controller.model.slotsPresent)
-        XCTAssertTrue(controller.model.pillsFading)
-        XCTAssertEqual(controller.model.visiblePills, 0)
-        XCTAssertTrue(lab.probe.isAnimating, "the flight in the air goes on")
-        XCTAssertEqual(lab.probe.target, idleWidth, "same landing")
-        XCTAssertEqual(controller.widthTargetChangeCount, changes, "one target per close")
-
-        try lab.probe.land()
-        XCTAssertEqual(lab.probe.applied.last, idleWidth)
-        XCTAssertTrue(controller.model.slotsPresent, "landed, but the pills are still fading")
-        // Past the one-write settle, short of the fade: a retract started
-        // over the close would have taken the slots out by now.
-        try? await Task.sleep(for: .milliseconds(Int(Motion.retractSettleDuration * 1000) + 50))
-        XCTAssertTrue(controller.model.slotsPresent, "the slots wait out the whole fade")
-        XCTAssertTrue(controller.model.pillsFading)
-        XCTAssertEqual(controller.model.phase, .entering(.start))
-        await lab.waitOutTheFade()
-        XCTAssertFalse(controller.model.slotsPresent, "gone once the fade has run out")
-        XCTAssertFalse(controller.model.pillsFading, "the fade ended")
-        XCTAssertEqual(controller.model.phase, .idle)
-        try? await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(controller.widthTargetChangeCount, changes, "the layout reports the width the bar landed on")
-        XCTAssertFalse(lab.probe.isAnimating)
-
-        // The close is over: a layout change (a session landing, so the
-        // countdown and the ring arrive) is followed again.
-        await lab.manager.start(duration: 3600)
-        try? await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(controller.model.phase, .running)
-        XCTAssertEqual(controller.widthTarget, lab.widthWithoutSlots(phase: .running), "the layout's report is followed")
-        XCTAssertEqual(controller.widthTargetChangeCount, changes + 1)
-        XCTAssertFalse(controller.model.slotsPresent, "the slots left once, at the close")
-        XCTAssertFalse(controller.model.pillsFading)
-    }
-
-    /// The bar lands on the projected countdown before the pills have
-    /// faded, so the slots' removal is queued on the fade's remainder; then
-    /// the extend resolves (refused here, so the projection clears and the
-    /// live countdown has another shape) during that wait. The queued
-    /// removal belongs to the old landing and is cancelled: the slots stay
-    /// until the replacement flight lands on the live width, then leave
-    /// once.
-    @MainActor
-    func testAReAimDuringTheFadeWaitCancelsTheQueuedRemovalAndTheSlotsLeaveWithTheNewLanding() async throws {
-        try XCTSkipIf(Motion.reduceMotion, "needs animated width flights")
-        let lab = Lab(framesPerSecond: 120)
-        defer { lab.tearDown() }
-        let controller = lab.controller
-        await lab.manager.start(duration: 3600)
-        try? await Task.sleep(for: .milliseconds(200))
-        XCTAssertEqual(controller.model.phase, .running)
-        try lab.probe.land()
-        let liveWidth = lab.widthWithoutSlots(phase: .running)
-
-        controller.expand(mode: .extend)
-        await lab.settleOpen()
-        try lab.probe.land()
-        controller.focus(.days)
-        XCTAssertTrue(controller.model.input.append(digit: 2, to: .days))
         let gate = AsyncGate()
         lab.h.backstop.armGate = gate
         lab.h.backstop.failArm = true
 
-        controller.commit()
-        await gate.waitUntilStarted()
-        XCTAssertEqual(controller.model.phase, .running)
-        let projectedWidth = lab.widthWithoutSlots(phase: .running)
-        XCTAssertNotEqual(projectedWidth, liveWidth, "the projection has the days shape")
-        XCTAssertEqual(lab.probe.target, projectedWidth)
-        let changes = controller.widthTargetChangeCount
-
-        try lab.probe.land()   // by hand, at once: the fade has barely begun
-        XCTAssertFalse(lab.probe.isAnimating)
-        XCTAssertEqual(lab.probe.applied.last, projectedWidth)
-        XCTAssertTrue(controller.model.slotsPresent, "landed, but the pills are still fading: removal queued")
-        XCTAssertTrue(controller.model.pillsFading)
-
-        // The extend resolves inside that wait: the projection clears and
-        // the close re-aims at the live countdown's width.
-        await gate.open()
-        let deadline = Date().addingTimeInterval(2)
-        while controller.model.pendingCountdown != nil, Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertNil(controller.model.pendingCountdown, "the extend resolved")
-        XCTAssertEqual(lab.manager.countdownText, "1:00:00", "refused: the session is unchanged")
-        XCTAssertTrue(controller.model.slotsPresent, "still closing")
-        XCTAssertTrue(controller.model.pillsFading)
-        XCTAssertEqual(lab.probe.target, liveWidth, "re-aimed at the live countdown")
-        XCTAssertTrue(lab.probe.isAnimating, "the replacement flight is in the air")
-        XCTAssertEqual(controller.widthTargetChangeCount, changes + 1)
-
-        // The fade runs out with the replacement flight still in the air:
-        // the queued removal was cancelled, so the slots stay.
-        await lab.waitOutTheFade()
-        XCTAssertTrue(controller.model.slotsPresent, "the cancelled removal never fires; the bar has not landed")
-        XCTAssertTrue(controller.model.pillsFading)
-        XCTAssertEqual(controller.model.phase, .running)
-        XCTAssertTrue(lab.probe.isAnimating)
-
-        try lab.probe.land()
-        XCTAssertFalse(controller.model.slotsPresent, "gone at the replacement landing")
-        XCTAssertFalse(controller.model.pillsFading)
-        XCTAssertEqual(controller.model.phase, .running)
-        XCTAssertEqual(lab.probe.applied.last, liveWidth)
-        try? await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(controller.widthTargetChangeCount, changes + 1, "the layout reports the width the bar landed on")
-        XCTAssertFalse(lab.probe.isAnimating)
-    }
-
-    /// The manager refuses the start while the bar is closing on the
-    /// countdown: the close is cancelled, the pills come back with the
-    /// value and the error label, and the pending landing never fires.
-    @MainActor
-    func testARefusedStartDuringACloseRestoresThePillsAndDropsTheLanding() async throws {
-        try XCTSkipIf(Motion.reduceMotion, "needs animated width flights")
-        let lab = Lab(framesPerSecond: 120)
-        defer { lab.tearDown() }
-        let controller = lab.controller
-        lab.h.backstop.failArm = true
-
         controller.expand(mode: .start)
         await lab.settleOpen()
-        try lab.probe.land()
         let pillsWidth = controller.widthTarget
         controller.focus(.hours)
         XCTAssertTrue(controller.model.input.append(digit: 2, to: .hours))
 
         controller.commit()
+        await gate.waitUntilStarted()
         XCTAssertEqual(controller.model.phase, .starting)
-        XCTAssertTrue(controller.model.pillsFading)
-        for _ in 0..<5 { try lab.probe.frame() }
-        XCTAssertLessThan(lab.probe.applied.last!, pillsWidth, "closing on the countdown")
+        XCTAssertTrue(controller.model.pillsCollapsing)
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(controller.model.visiblePills, 0, "every pill on its way to the eye")
+        XCTAssertTrue(controller.model.slotsPresent, "mid-fold")
+        await gate.open()
 
         let deadline = Date().addingTimeInterval(2)
         while !controller.model.phase.isEntering, Date() < deadline {
@@ -1160,23 +839,148 @@ final class UIStatusTests: XCTestCase {
         }
         XCTAssertEqual(controller.model.phase, .entering(.start))
         XCTAssertTrue(controller.model.slotsPresent)
+        XCTAssertFalse(controller.model.pillsCollapsing)
         XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count)
-        XCTAssertFalse(controller.model.pillsFading)
         XCTAssertTrue(controller.model.focusVisible)
         XCTAssertEqual(controller.model.input.text(for: .hours), "2")
         XCTAssertEqual(controller.model.startError, MenuBarModel.startFailedText)
-        XCTAssertGreaterThanOrEqual(lab.probe.target ?? 0, pillsWidth, "turned back to the pills, and the label on top")
 
-        try lab.probe.land()
-        XCTAssertTrue(controller.model.slotsPresent, "the landing of the cancelled close never fires")
+        await lab.settleClose()
+        XCTAssertTrue(controller.model.slotsPresent, "the cancelled fold never takes the slots out")
         XCTAssertEqual(controller.model.startError, MenuBarModel.startFailedText)
+        XCTAssertTrue(controller.model.startErrorShown)
         XCTAssertEqual(controller.model.phase, .entering(.start))
-        try? await Task.sleep(for: .milliseconds(100))
-        try lab.probe.land()
-        XCTAssertTrue(controller.model.slotsPresent)
-        XCTAssertGreaterThan(controller.widthTarget, pillsWidth, "the layout reported the label's extra")
-        XCTAssertEqual(lab.probe.applied.last, controller.widthTarget)
+        let withLabel = controller.widthTarget
+        XCTAssertGreaterThan(withLabel, pillsWidth, "the layout reported the label's extra")
+        XCTAssertEqual(lab.probe.applied.last, withLabel)
+        XCTAssertEqual(lab.probe.writesWhileFolding, 0, lab.probe.foldingWrites.joined(separator: "; "))
+
+        // Retry: the label hides at once, its room stays until the slots go.
+        lab.h.backstop.armGate = nil
+        lab.h.backstop.failArm = false
+        let written = lab.probe.applied.count
+        controller.commit()
+        XCTAssertEqual(controller.model.phase, .starting)
+        XCTAssertFalse(controller.model.startErrorShown, "hidden with the retry")
+        XCTAssertNotNil(controller.model.startError, "but its room is kept")
+        XCTAssertEqual(controller.widthTarget, withLabel, "no narrowing under the fold")
+        await lab.settleClose()
+        XCTAssertFalse(controller.model.slotsPresent)
+        XCTAssertNil(controller.model.startError, "cleared with the slots")
+        XCTAssertEqual(lab.probe.applied.count, written + 1, "one write, after the slots left")
+        XCTAssertEqual(lab.probe.writesWhileFolding, 0, lab.probe.foldingWrites.joined(separator: "; "))
+        let confirmBy = Date().addingTimeInterval(2)
+        while controller.model.phase != .running, Date() < confirmBy {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(controller.model.phase, .running)
+    }
+
+    /// After a refused start the error label is in the layout. Esc folds
+    /// the pills with the label still up; an eye click mid-fold reopens
+    /// them, and must end the fold before it clears the label: clearing
+    /// the label changes the layout, the hosting view can report at once,
+    /// and that report must never be written under the fold.
+    @MainActor
+    func testClickingTheEyeDuringACollapseAfterARefusalEndsTheFoldBeforeTheLabelGoes() async throws {
+        try XCTSkipIf(Motion.reduceMotion, "needs a non-zero pill stagger")
+        let lab = Lab()
+        defer { lab.tearDown() }
+        let controller = lab.controller
+        lab.h.backstop.failArm = true
+
+        controller.expand(mode: .start)
+        await lab.settleOpen()
+        let pillsWidth = controller.widthTarget
+        controller.focus(.hours)
+        XCTAssertTrue(controller.model.input.append(digit: 2, to: .hours))
+        controller.commit()
+        let refusedBy = Date().addingTimeInterval(2)
+        while !controller.model.phase.isEntering, Date() < refusedBy {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(controller.model.phase, .entering(.start))
+        await lab.settleClose()
+        XCTAssertEqual(controller.model.startError, MenuBarModel.startFailedText)
+        let withLabel = controller.widthTarget
+        XCTAssertGreaterThan(withLabel, pillsWidth)
+
+        // Esc, then the eye a moment into the fold.
         controller.collapse()
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(controller.model.pillsCollapsing)
+        XCTAssertNotNil(controller.model.startError, "the label keeps its room through the fold")
+        let written = lab.probe.applied.count
+        controller.iconTapped()
+        XCTAssertFalse(controller.model.pillsCollapsing, "the fold is dropped at once")
+        XCTAssertNil(controller.model.startError, "the label goes with the reopen")
+        XCTAssertEqual(controller.model.phase, .entering(.start))
+        XCTAssertTrue(controller.model.slotsPresent)
+        XCTAssertEqual(lab.probe.writesWhileFolding, 0, lab.probe.foldingWrites.joined(separator: "; "))
+
+        await lab.settleClose()
+        XCTAssertTrue(controller.model.slotsPresent, "the dropped fold never takes the slots out")
+        XCTAssertEqual(controller.model.visiblePills, DurationInput.Field.allCases.count)
+        XCTAssertEqual(controller.widthTarget, pillsWidth, "back to the pills' width without the label")
+        XCTAssertLessThanOrEqual(lab.probe.applied.count - written, 1, "the label's room went in one write")
+        XCTAssertEqual(lab.probe.writesWhileFolding, 0, lab.probe.foldingWrites.joined(separator: "; "))
+        controller.collapse()
+    }
+
+    /// Esc or Enter before the open stagger has finished: whatever is up
+    /// folds, the slots leave exactly once, and the bar ends on the idle
+    /// width or the projected countdown.
+    @MainActor
+    func testAnEarlyEscOrEnterFoldsWhateverIsUpAndTakesTheSlotsOutOnce() async throws {
+        try XCTSkipIf(Motion.reduceMotion, "needs a non-zero pill stagger")
+        let lab = Lab()
+        defer { lab.tearDown() }
+        let controller = lab.controller
+
+        // Esc as soon as the first pill is up, well inside the stagger.
+        controller.expand(mode: .start)
+        let firstPillBy = Date().addingTimeInterval(1)
+        while controller.model.visiblePills == 0, Date() < firstPillBy {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        XCTAssertTrue(controller.model.slotsPresent)
+        XCTAssertGreaterThan(controller.model.visiblePills, 0, "the stagger has begun")
+        XCTAssertLessThan(controller.model.visiblePills, DurationInput.Field.allCases.count, "and has not finished")
+        controller.collapse()
+        XCTAssertTrue(controller.model.pillsCollapsing)
+        XCTAssertEqual(controller.model.phase, .entering(.start))
+        await lab.settleClose()
+        XCTAssertFalse(controller.model.slotsPresent)
+        XCTAssertFalse(controller.model.pillsCollapsing)
+        XCTAssertEqual(controller.model.phase, .idle)
+        XCTAssertEqual(controller.model.visiblePills, 0)
+        XCTAssertEqual(lab.probe.applied.last, controller.widthTarget)
+        XCTAssertEqual(controller.widthTarget, lab.widthWithoutSlots(phase: .idle))
+
+        // Enter at once, before the layout has even reported the slots.
+        let gate = AsyncGate()
+        lab.h.backstop.armGate = gate
+        let changes = controller.widthTargetChangeCount
+        controller.expand(mode: .start)
+        controller.commit()
+        await gate.waitUntilStarted()
+        XCTAssertEqual(controller.model.phase, .starting)
+        XCTAssertTrue(controller.model.slotsPresent)
+        XCTAssertTrue(controller.model.pillsCollapsing)
+        XCTAssertNotNil(controller.model.pendingCountdown)
+        await lab.settleClose()
+        XCTAssertFalse(controller.model.slotsPresent, "left once")
+        XCTAssertFalse(controller.model.pillsCollapsing)
+        XCTAssertEqual(controller.model.phase, .starting)
+        XCTAssertEqual(controller.widthTarget, lab.widthWithoutSlots(phase: .starting))
+        XCTAssertLessThanOrEqual(controller.widthTargetChangeCount - changes, 2, "at most the slots' report and the countdown")
+        await gate.open()
+        let confirmBy = Date().addingTimeInterval(2)
+        while controller.model.phase != .running, Date() < confirmBy {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(controller.model.phase, .running)
+        XCTAssertFalse(controller.model.slotsPresent)
     }
 
     /// While the recovery agent and pmset run, the projected countdown ticks

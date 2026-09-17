@@ -384,3 +384,73 @@ write. If repeated live runs fail this gate, ship one-write mode for all display
 
 Temporary diagnostics added during the investigation (`DebugWidthDriver`, `diag ...` timing
 logs, the animator cadence log) are removed before merge.
+
+## Revision 4 (2026-09-17): one width write, content animates in-window
+
+### What was wrong with revision 3
+
+Revision 3's paced width (3 pt per display-link callback) was built, reviewed and run live, and
+was worse than the spring: opens took most of a second and closes stalled mid-blink. Sampling the
+main thread during those flights (`/usr/bin/sample`, diag streams and samples under
+`/tmp/insomnia-lid-plan`) showed where the time went: after every `NSStatusItem.length` write the
+app's next Core Animation commit blocks in `CABackingStoreUpdate → CA::Context::synchronize →
+CA::Render::Context::wait_for_synchronize` while Control Center re-lays out the menu bar. That
+wait is 8 ms on a good pass, 33–42 ms on a bad one, and 106–133 ms once at a session end; in one
+second of a slow open 240–380 ms was spent in it. Nothing of Insomnia's own code appeared in the
+samples, and asking the display link for the full rate (`preferredFrameRateRange` 80–120 Hz) made
+no difference: the stalls are window-server waits per write, not a frame-rate problem. So no
+per-frame width write can be smooth on this machine, whatever the step. Apple's own items never
+resize per frame; they write once and animate inside their window.
+
+### Decision
+
+`NSStatusItem.length` is written exactly once per layout change: once per open, once per close,
+once per session change. `StatusWidthWriter` replaces `StatusWidthAnimator`: it writes the target
+when it differs from the last write and nothing else. `WidthPacedMotion`, the display link, the
+mode decision (refresh rate, Reduce Motion, link probe) and the paced close (`PacedClose`, re-aim,
+fade wait, `pillsFading`) are removed. Everything that moves does so inside the item's window.
+
+### Choreography as shipped (`Motion.swift`)
+
+- **Open.** The slots enter the layout and the width is written when the layout reports; the
+  pills stagger in inside their slots (scale from 0.55 at the leading edge and opacity, base
+  spring 0.35 s / 0.72), 0, 40 and 80 ms apart; the focus glow breathes in 120 ms after the
+  last pill's stagger step (about 200 ms after the click).
+- **Close (Esc, click away) and Enter.** The pills fold toward the eye: each hidden pill is
+  offset left by the widths of the slots before it plus the 7 pt gaps, scaled to 0.6 from its
+  leading edge and faded to zero opacity, on one `easeInOut` curve of 0.32 s, farthest pill first,
+  40 ms apart (`pillsCollapsing` selects this shape over the in-place retract the open starts
+  from). Each pill slides under its neighbour (`zIndex`), so the pills still up always run
+  unbroken from the eye. The slots leave the layout `retractSettle` (0.36 s: the curve plus a
+  0.04 s margin) after the last pill's step, that is about 440 ms after Esc, in one relayout
+  together with the phase change and the error label; the layout reports and the width is
+  written then, never before, so the bar never cuts across a visible pill. On Enter the projected
+  countdown is in the layout only after the slots, so it scales in (from 0.7 at the leading edge)
+  after the fold; the eye starts opening at Enter.
+- **Reopen during an Esc fold** (eye click or countdown click): the fold's landing is dropped by
+  the stagger generation, the slots never leave, a pill still travelling slides back to its slot
+  on the collapse curve and the stagger brings the pills up. The fold is ended before any
+  layout-affecting state changes (the error label, the phase): the hosting view can lay out and
+  report synchronously, and that report is written, so it must never land under a fold still
+  flagged. A refused start does the same at once, with the value and the error label. During an
+  Enter fold the pending start owns the bar: an eye click does nothing until the manager
+  answers.
+- **Session end, extend confirmation, reconcile:** the phase changes outside any animation, one
+  relayout, one write; the countdown and the ring run their own transitions.
+- **Reduce Motion:** the fold is opacity only, in place, 0.2 s, and the settle is 0.24 s; every
+  spring is a 0.15 s crossfade (the blink 0.3 s); the stagger is zero. The setting is read once
+  per stage, so a change mid-fold cannot shorten the settle under a pill on the long curve.
+- **Retry after a refused start:** Enter hides the error label at once but keeps its text, and
+  so its room in the layout, until the slots leave, so the bar is still written once, then.
+
+### Testing
+
+`UIStatusTests`: one relayout and one write per open, close, session start and close-over-a-
+session; the slots stay for the whole fold and the width is unchanged until they leave; the fold
+flag ends in the same step as the slots; Enter folds then shows the projection; the landing is
+read when the slots leave (a session ending mid-fold lands idle); reopening during a fold drops
+it and never takes the slots out (eye click, with and without a value, and over a session in
+extend mode); a refused start restores the pills and drops the landing; the collapse curve is
+covered by the settle. The paced tests and `WidthPacedMotionTests` are gone with the code. The
+temporary diagnostics (`Diag`, `MainThreadWatchdog`, the `diagOneWrite` and `diagWidthMaxStep`
+defaults) are removed.

@@ -5,13 +5,13 @@ import SwiftUI
 ///
 /// The layout here changes only on state the controller sets outside any
 /// animation transaction (`slotsPresent`, `phase` and `startError`), and
-/// reports its width once per such change; the controller paces the
-/// status item's length to it (`StatusWidthAnimator`), decoupled from this
-/// layout. Everything that animates inside (the pills staggering in and out,
-/// the focus ring, the countdown and the ring coming and going) is scale and
-/// opacity, anchored at the leading edge so the bar reads as growing out of
-/// the mark, and content on its way out keeps its place while the bar
-/// narrows over it.
+/// reports its width once per such change; the controller writes the
+/// status item's length to it once (`StatusWidthWriter`), decoupled from
+/// this layout. Everything that animates inside (the pills staggering in and out,
+/// the focus ring, the countdown and the ring coming and going) is scale,
+/// offset and opacity, anchored at the leading edge so the bar reads as
+/// growing out of the mark; the bar narrows only once the content on its
+/// way out has gone.
 struct StatusRootView: View {
     let model: MenuBarModel
     let manager: SessionManager
@@ -27,6 +27,11 @@ struct StatusRootView: View {
     /// `Motion.pillTransition`, driven by `visiblePills` instead of by
     /// inserting and removing the pill (which would move the layout).
     private static let hiddenPillScale: CGFloat = 0.55
+    /// Gap between the mark and the slots, and between the slots.
+    private static let slotSpacing: CGFloat = 7
+    /// Each slot's laid-out width, for the distance a collapsing pill
+    /// travels; a fixed slot's width never changes once measured.
+    @State private var pillWidths: [DurationInput.Field: CGFloat] = [:]
 
     private var reduceMotion: Bool { reduceMotionEnv || Motion.reduceMotion }
     /// Sleep is held right now (journal-backed), independent of the UI phase.
@@ -59,7 +64,7 @@ struct StatusRootView: View {
     }
 
     var body: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: Self.slotSpacing) {
             icon
             // What comes and goes with the layout carries its own animation
             // on its transition (`Motion.countdownTransition` and friends):
@@ -69,6 +74,8 @@ struct StatusRootView: View {
                 pills
                 if let error = model.startError {
                     startError(error)
+                        .opacity(model.startErrorShown ? 1 : 0)
+                        .animation(Motion.base(reduceMotion: reduceMotion), value: model.startErrorShown)
                 }
             } else if showsCountdown {
                 countdown
@@ -112,14 +119,23 @@ struct StatusRootView: View {
     }
 
     /// All three slots are in the layout whenever they are present;
-    /// `visiblePills` only scales and fades each slot's content, so the
-    /// stagger never moves the layout. While `pillsFading` (a paced close,
-    /// or a reopen under one) a hidden pill keeps its size: the bar wipes
-    /// over it, and only its opacity moves.
+    /// `visiblePills` only scales, moves and fades each slot's content, so
+    /// the stagger never moves the layout. A hidden pill has two shapes:
+    /// retracted in place (the open stagger's starting point, scaled down
+    /// from its leading edge), and while `pillsCollapsing` (a close)
+    /// folded towards the eye: shifted left by its own distance from the
+    /// first slot, so all three converge on the mark, and shrunk to
+    /// `Motion.collapseScale`. The farthest pill leaves first (the stagger
+    /// steps `visiblePills` down), so the pills still up always run
+    /// unbroken from the eye and each one slides under its neighbour
+    /// (`zIndex`) as the bar folds shut. Reduce Motion: opacity only.
     private var pills: some View {
         ForEach(Array(DurationInput.Field.allCases.enumerated()), id: \.element) { index, field in
             let shown = index < model.visiblePills
-            let fullSize = shown || reduceMotion || model.pillsFading
+            let collapsing = !shown && model.pillsCollapsing && !reduceMotion
+            let fullSize = shown || reduceMotion
+            let scale: CGFloat = collapsing ? Motion.collapseScale : (fullSize ? 1 : Self.hiddenPillScale)
+            let travel: CGFloat = collapsing ? collapseTravel(index: index) : 0
             PillView(
                 field: field,
                 text: model.input.text(for: field),
@@ -131,7 +147,13 @@ struct StatusRootView: View {
                 reduceMotion: reduceMotion,
                 onTap: { onTapPill(field) }
             )
-            .scaleEffect(fullSize ? 1 : Self.hiddenPillScale, anchor: .leading)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { width in
+                pillWidths[field] = width
+            }
+            .scaleEffect(scale, anchor: .leading)
+            .offset(x: -travel)
             .opacity(shown ? 1 : 0)
             .accessibilityHidden(!shown)
             // A slot born already shown (the first pill when its stagger step
@@ -144,6 +166,16 @@ struct StatusRootView: View {
             .transition(.asymmetric(insertion: shown ? Motion.pillTransition(reduceMotion: reduceMotion) : .identity, removal: .identity))
             .zIndex(Double(10 - index))
         }
+    }
+
+    /// How far the pill in slot `index` travels to put its leading edge on
+    /// the first slot's: the slots before it and the gaps between. Zero for
+    /// the first slot, which shrinks and fades where it is (its leading
+    /// edge already abuts the mark). A slot not yet measured contributes
+    /// nothing, so the pill still shrinks and fades in place.
+    private func collapseTravel(index: Int) -> CGFloat {
+        let before = DurationInput.Field.allCases.prefix(index).reduce(CGFloat(0)) { $0 + (pillWidths[$1] ?? 0) }
+        return before + Self.slotSpacing * CGFloat(index)
     }
 
     /// The live countdown while running, or the projected one while a start

@@ -3,8 +3,11 @@ import SwiftUI
 
 /// Single source of truth for every animation in the menu bar UI (spec 11).
 ///
-/// Springs only. The one non-spring curve lives behind Reduce Motion, where
-/// every movement collapses into a short crossfade with no scale.
+/// Springs, with three exceptions: the fold that closes the pills runs on a
+/// fixed-duration ease, so the moment the last pill is gone is known and
+/// the slots can leave right after it; the pupil shrinking away as the lid
+/// drops is a plain ease-out, no bounce; and behind Reduce Motion every
+/// movement collapses into a short crossfade with no scale.
 @MainActor
 enum Motion {
     static let baseResponse: TimeInterval = 0.35
@@ -23,20 +26,38 @@ enum Motion {
     static let overshoot: CGFloat = 1.06
     /// Reduce Motion replacement for every spring.
     static let reduced: Animation = .easeInOut(duration: 0.15)
-    /// How long after the last pill starts retracting the slots leave the
-    /// layout: the base spring has faded it out by then, so nothing visible
-    /// is removed.
-    static let retractSettleDuration: TimeInterval = 0.20
-    static let reducedRetractSettleDuration: TimeInterval = 0.15
+
+    /// A close folds the bar shut: each pill travels towards the
+    /// eye by its own distance from the first slot (so all three converge
+    /// on it, the farthest travelling farthest) while shrinking to
+    /// `collapseScale` from its leading edge and fading out. One curve for
+    /// all three, `stagger` apart, farthest first. A fixed-duration curve
+    /// rather than a spring, so the moment the last pill is gone is known
+    /// exactly and the slots can leave right after it.
+    static let collapseDuration: TimeInterval = 0.32
+    static let collapse: Animation = .easeInOut(duration: collapseDuration)
+    static let collapseScale: CGFloat = 0.6
+    /// Reduce Motion: opacity only, in place, a little longer than `reduced`
+    /// so the pills are seen to leave rather than blink off.
+    static let reducedCollapseDuration: TimeInterval = 0.2
+    static let reducedCollapse: Animation = .easeInOut(duration: reducedCollapseDuration)
+
+    static func collapse(reduceMotion: Bool = Motion.reduceMotion) -> Animation {
+        reduceMotion ? reducedCollapse : collapse
+    }
+
+    /// How long after the last pill starts collapsing the slots leave the
+    /// layout: the whole collapse curve, plus a frame or two so the frame
+    /// that draws the pill at zero opacity has been rendered before the
+    /// slot under it is removed. The settle timer starts with the last
+    /// pill's step, after its stagger delay, so the delay is already counted.
+    static let collapseSettleMargin: TimeInterval = 0.04
+    static let retractSettleDuration: TimeInterval = collapseDuration + collapseSettleMargin
+    static let reducedRetractSettleDuration: TimeInterval = reducedCollapseDuration + collapseSettleMargin
 
     static func retractSettle(reduceMotion: Bool = Motion.reduceMotion) -> TimeInterval {
         reduceMotion ? reducedRetractSettleDuration : retractSettleDuration
     }
-
-    /// A paced close (the width driven by `StatusWidthAnimator`, 3 pt per
-    /// frame) fades the pills where they stand while the bar wipes over
-    /// them, and a reopen under it fades them back: opacity only, no scale.
-    static let closeFadeDuration: TimeInterval = 0.35
 
     /// The eye's blink. The lid and the pupil run on their own curves, and
     /// each direction has its own, so the lid is seen lifting and the pupil

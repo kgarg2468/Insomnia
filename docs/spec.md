@@ -351,39 +351,41 @@ Battery watts are read from `AppleSmartBattery` (`InstantAmperage` ×
 
 **Motion and feel.** This is a hard requirement, not polish.
 
-- Everything animates with springs, never linear or ease curves.
+- Everything animates with springs, except the fold that closes the pills
+  (a fixed-duration ease, so the slots can leave the moment the last pill
+  is gone), the pupil shrinking away as the lid drops (a 0.4 s ease-out,
+  no bounce) and the Reduce Motion crossfades.
   Baseline: `.spring(response: 0.35, dampingFraction: 0.72)`; pill focus
   bounce and chip taps use a snappier `.spring(response: 0.25,
   dampingFraction: 0.6)` with a slight scale overshoot (1.0 → 1.06 → 1.0).
-- The status item's width is animated, but not by SwiftUI: a display-link
-  pacer (`StatusWidthAnimator`) moves `NSStatusItem.length` by at most 3 pt
-  per frame (ramping in over 1, 2, 3 pt and easing over the last 18 pt)
-  towards a target the SwiftUI layout of a custom `NSStatusItem` view
-  reports once per open and once per close. Pacing runs only on a 120 Hz
-  display with Reduce Motion off; otherwise the length is written once
-  (one-write), as every Apple item does. Layout-changing state (the phase,
-  the pill slots, the error label) is set outside any animation
+- The status item's width is never animated: `NSStatusItem.length` is
+  written once per layout change (`StatusWidthWriter`), to the width the
+  SwiftUI layout of a custom `NSStatusItem` view reports once per open and
+  once per close, as every Apple item does. (Every length write makes
+  Control Center re-lay out the menu bar and blocks the app's next render
+  commit for 8–130 ms, so any per-frame width animation stutters; see the
+  menu bar smoothness design spec, revision 4.) Layout-changing state (the
+  phase, the pill slots, the error label) is set outside any animation
   transaction, so the layout is computed once per state; the hosting view
   is laid out at that width, anchored at the leading edge, and the item's
-  window reveals or clips it as the length moves. Only scale and opacity
-  animate inside. Retargeting mid-flight is continuous.
+  window reveals or clips it. Only scale, offset and opacity animate inside.
 - Each pill is a fixed slot sized by its placeholder at the typed weight and
   padding, so typing a digit never changes the layout.
 - Pills appear with a staggered scale-and-fade (about 40 ms between pills)
   inside their slots, which are all in the layout from the first frame.
-  Collapsing reverses the stagger; the slots leave once the last pill has
-  retracted.
-- On Enter (and on Esc) under pacing the pills fade where they stand
-  (0.35 s, no scale) and the eye starts to open at once; the bar wipes over
-  them towards the countdown's width, and when it lands the slots leave in
-  one relayout and the countdown scales in from the leading edge, showing
-  the time the session will read once the manager confirms it and ticking
-  at 1 Hz meanwhile; the hold-to-end ring follows the confirmation. In
-  one-write mode the pills retract with the stagger, the slots leave once
-  the last has settled (about 0.2 s), and the width snaps then. Transitions carry their own animation, so they
-  run whatever transaction the layout change lands in. (This replaces the
-  earlier pill-to-countdown matched-geometry morph, which animated across
-  the width change.)
+- On Esc and on Enter the pills fold toward the eye: each one slides left
+  by the slots before it, shrinks to 0.6 from its leading edge and fades,
+  on one 0.32 s ease curve, farthest pill first, 40 ms apart, sliding under
+  its neighbour. The slots leave in one relayout 0.36 s after the last
+  pill's step, and the width is written then, never across a visible pill.
+  On Enter the eye starts to open at once and the countdown scales in from
+  the leading edge after the slots have left, showing the time the session
+  will read once the manager confirms it and ticking at 1 Hz meanwhile;
+  the hold-to-end ring follows the confirmation. A click on the eye during
+  an Esc fold brings the pills back; during an Enter fold the pending start
+  owns the bar and the click does nothing until the manager answers.
+  Transitions carry their own animation,
+  so they run whatever transaction the layout change lands in.
 - The eye's blink is a slower spring (response 0.95, damping fraction 0.9
   opening; 0.8 / 0.95 closing) so the lid lift and the lash hand-over are
   seen; the pupil scales in from 0.6 on its own bouncier spring 0.2 s later
@@ -393,7 +395,9 @@ Battery watts are read from `AppleSmartBattery` (`InstantAmperage` ×
   Spotlight, and it returns when the pills close.
 - Number changes in the countdown use `.contentTransition(.numericText())`.
 - Focus ring is a soft glow that breathes in, not a hard outline.
-- Respect Reduce Motion: springs become short crossfades.
+- Respect Reduce Motion: springs become short crossfades (0.15 s; the
+  blink 0.3 s), the fold is opacity only in place (0.2 s), the stagger is
+  zero.
 - Rendering matches the reference: dark rounded pills with a subtle
   material, system font, SF Symbols icon, no custom images.
 

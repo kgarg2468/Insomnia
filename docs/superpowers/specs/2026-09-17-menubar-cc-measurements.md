@@ -1,5 +1,10 @@
 # Menu bar width animation: what Control Center does with per-frame length writes (2026-09-17)
 
+> Superseded by revision 4 of `2026-09-17-menubar-smoothness-design.md`: the paced writes
+> recommended below were built and measured to stall the app's main thread on every write
+> (`CA::Render::Context::wait_for_synchronize`, 8–130 ms), so the length is now written once per
+> layout change. The neighbour measurements here still stand; the recommendation does not.
+
 Method. The real Insomnia status item (autosave position 40, between the AirPods/Wi-Fi items and a
 third-party item) had its `NSStatusItem.length` driven by a display link along known curves
 (temporary in-app driver, distributed-notification trigger). A separate process polled

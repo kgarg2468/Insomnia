@@ -202,12 +202,17 @@ final class UIStartupTests: XCTestCase {
 
         rig.h.backstop.failArm = false
         rig.controller.commit()
-        // The error leaves with the retry, not only on success.
-        XCTAssertNil(rig.model.startError)
+        // The label leaves with the retry, not only on success; its text
+        // keeps the label's room in the layout until the slots leave.
+        XCTAssertFalse(rig.model.startErrorShown)
+        XCTAssertNotNil(rig.model.startError)
         ok = await waitUntil { rig.model.phase == .running }
         XCTAssertTrue(ok)
         XCTAssertTrue(rig.manager.isActive)
-        XCTAssertNil(rig.model.startError)
+        // The session can land before the fold ends; the text goes with the slots.
+        ok = await waitUntil { rig.model.startError == nil }
+        XCTAssertTrue(ok)
+        XCTAssertFalse(rig.model.slotsPresent)
         XCTAssertEqual(rig.manager.countdownText, "1d 0:00:00")
     }
 
