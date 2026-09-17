@@ -67,6 +67,21 @@ final class UIStatusTests: XCTestCase {
         XCTAssertEqual(width(), hidden, accuracy: 0.001, "the focus ring is an overlay")
     }
 
+    /// The countdown a start will read is projected from the same session
+    /// arithmetic the manager uses, in the shape that session will keep.
+    @MainActor
+    func testProjectedStartCountdownMatchesTheSessionShape() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let month: TimeInterval = 30 * 24 * 3600
+        XCTAssertEqual(MenuBarModel.projectedStartCountdown(now: now, duration: 90 * 60, maxDuration: month), "1:30:00")
+        let twoDays = MenuBarModel.projectedStartCountdown(now: now, duration: 2 * 86400, maxDuration: month)
+        XCTAssertEqual(twoDays, SessionMath.formatCountdown(remaining: 2 * 86400, shape: .days))
+        XCTAssertTrue(twoDays.hasPrefix("2d "))
+        // A short start reads in the minutes shape, and the clamp applies.
+        XCTAssertEqual(MenuBarModel.projectedStartCountdown(now: now, duration: 30 * 60, maxDuration: month), "30:00")
+        XCTAssertEqual(MenuBarModel.projectedStartCountdown(now: now, duration: 5 * 3600, maxDuration: 3600), "1:00:00")
+    }
+
     @MainActor
     func testTickAnimationIsShorterThanBaseAndHoldIsSubSecond() {
         XCTAssertEqual(Motion.holdDuration, 0.6, accuracy: 0.0001)

@@ -355,9 +355,10 @@ final class StatusItemController: NSObject {
         } else {
             // No session yet: the manager has to arm the recovery agent and
             // disable sleep first, and either can take seconds or refuse. Show
-            // an honest pending state rather than a countdown and an end ring
-            // for a session that may never exist.
-            model.pendingCountdown = nil
+            // the countdown the session will read the moment it is confirmed;
+            // the phase stays pending, so nothing that acts on a session (the
+            // end ring) is drawn until then.
+            model.pendingCountdown = MenuBarModel.projectedStartCountdown(now: now, duration: duration, maxDuration: manager.config.maxDuration)
         }
         // The phase flips now, outside any animation, so nothing can act on
         // the pills again while they retract; the slots stay in the layout

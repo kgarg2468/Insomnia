@@ -38,8 +38,8 @@ final class MenuBarModel {
         case entering(Mode)
         /// Enter was pressed on the start pills and the manager has not yet
         /// confirmed a session (the recovery agent can take seconds to
-        /// answer, or refuse). Shows `startingText` and nothing that acts on
-        /// a session.
+        /// answer, or refuse). Shows the projected countdown
+        /// (`pendingCountdown`) and nothing that acts on a session.
         case starting
         case running
 
@@ -53,7 +53,8 @@ final class MenuBarModel {
         var showsRunningControls: Bool { self == .running }
     }
 
-    /// What the item reads while a start is pending.
+    /// What the item reads while a start is pending and there is no
+    /// projected countdown to show.
     static let startingText = "Starting\u{2026}"
     /// What the item reads next to the pills after the manager refused a
     /// start. Short on purpose: the full reason is in the right-click menu.
@@ -85,5 +86,14 @@ final class MenuBarModel {
     var mode: Mode? {
         if case let .entering(m) = phase { return m }
         return nil
+    }
+
+    /// The countdown a start pressed at `now` will read once the manager
+    /// confirms it: the same session arithmetic and the same shape the
+    /// manager will use, so the live text replaces the projection without a
+    /// jump. Pure, so it can be checked without a manager.
+    static func projectedStartCountdown(now: Date, duration: TimeInterval, maxDuration: TimeInterval) -> String {
+        let session = SessionMath.newSession(now: now, duration: duration, maxDuration: maxDuration)
+        return SessionMath.formatCountdown(remaining: session.remaining(at: now), shape: session.countdownShape)
     }
 }

@@ -367,10 +367,11 @@ Battery watts are read from `AppleSmartBattery` (`InstantAmperage` ×
   inside their slots, which are all in the layout from the first frame.
   Collapsing reverses the stagger; the slots leave once the last pill has
   retracted.
-- On Enter the pills retract and the countdown appears with its own
-  scale-from-leading transition once the manager confirms the session.
-  (This replaces the earlier pill-to-countdown matched-geometry morph,
-  which animated across the width change.)
+- On Enter the pills retract and the countdown appears immediately with its
+  own scale-from-leading transition, showing the time the session will
+  read once the manager confirms it; the hold-to-end ring follows the
+  confirmation. (This replaces the earlier pill-to-countdown
+  matched-geometry morph, which animated across the width change.)
 - Typing happens in a non-activating key panel: the app in front stays
   frontmost; only key status moves to the pills while typing, as with
   Spotlight, and it returns when the pills close.

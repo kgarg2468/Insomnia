@@ -94,7 +94,9 @@ final class UIStartupTests: XCTestCase {
         XCTAssertFalse(rig.manager.isActive)
         XCTAssertEqual(rig.model.phase, .starting)
         XCTAssertFalse(rig.model.phase.showsRunningControls)
-        XCTAssertNil(rig.model.pendingCountdown)
+        // The countdown the session will read is projected the moment Enter
+        // is pressed; the live one replaces it on confirmation.
+        XCTAssertEqual(rig.model.pendingCountdown, "1d 0:00:00")
         XCTAssertEqual(MenuBarModel.startingText, "Starting\u{2026}")
         XCTAssertNil(rig.model.startError)
         // The typed value survives the wait, in case the start is refused.

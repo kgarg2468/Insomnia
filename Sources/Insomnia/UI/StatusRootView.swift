@@ -32,10 +32,15 @@ struct StatusRootView: View {
     /// session ends, and that window must not offer an end ring and a
     /// countdown for a session that is already gone.
     private var showsRunningControls: Bool { model.phase.showsRunningControls && isRunning }
+    /// A pending start shows its projected countdown; a confirmed session its
+    /// live one.
+    private var showsCountdown: Bool { model.phase == .starting || showsRunningControls }
 
     private var countdownText: String {
         if !manager.countdownText.isEmpty { return manager.countdownText }
-        return model.pendingCountdown ?? ""
+        if let pending = model.pendingCountdown { return pending }
+        // A start with no projection; should not happen but keeps the view total.
+        return model.phase == .starting ? MenuBarModel.startingText : ""
     }
 
     /// The layout-changing state. Transitions of what comes and goes with it
@@ -58,12 +63,12 @@ struct StatusRootView: View {
                     if let error = model.startError {
                         startError(error)
                     }
-                } else if model.phase == .starting {
-                    starting
-                } else if showsRunningControls {
+                } else if showsCountdown {
                     countdown
-                    HoldToEndButton(reduceMotion: reduceMotion, action: onHoldEnd)
-                        .transition(reduceMotion ? .opacity : .scale(scale: 0.5).combined(with: .opacity))
+                    if showsRunningControls {
+                        HoldToEndButton(reduceMotion: reduceMotion, action: onHoldEnd)
+                            .transition(reduceMotion ? .opacity : .scale(scale: 0.5).combined(with: .opacity))
+                    }
                 }
             }
             .animation(Motion.base(reduceMotion: reduceMotion), value: layoutKey)
@@ -121,6 +126,11 @@ struct StatusRootView: View {
         }
     }
 
+    /// The live countdown while running, or the projected one while a start
+    /// is pending: the manager has to arm the recovery agent and disable
+    /// sleep first, and either can take seconds. The projection is what the
+    /// session will read once confirmed, so the live text replaces it
+    /// without a jump; the hold-to-end ring waits for the confirmation.
     private var countdown: some View {
         Text(countdownText)
             .font(.system(size: 13, weight: .medium, design: .rounded))
@@ -131,19 +141,7 @@ struct StatusRootView: View {
             .transition(reduceMotion ? .opacity : .scale(scale: 0.7, anchor: .leading).combined(with: .opacity))
             .contentShape(Rectangle())
             .onTapGesture(perform: onTapCountdown)
-    }
-
-    /// Enter was pressed and the manager is still arming the recovery agent
-    /// and disabling sleep. Deliberately not a countdown: it stands in for
-    /// nothing that exists yet, and it must stay legible if the start is
-    /// refused a frame later.
-    private var starting: some View {
-        Text(MenuBarModel.startingText)
-            .font(.system(size: 13, weight: .medium, design: .rounded))
-            .foregroundStyle(.secondary)
-            .padding(.trailing, 1)
-            .transition(.opacity)
-            .accessibilityLabel("Starting session")
+            .accessibilityLabel(model.phase == .starting ? "Starting session" : countdownText)
     }
 
     /// The manager refused the start: say so next to the pills the value is
