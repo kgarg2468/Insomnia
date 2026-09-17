@@ -66,8 +66,8 @@ final class BrandingTests: XCTestCase {
 
     @MainActor
     func testIdleMarkIsAShadedClosedEyeWithLashesBelowInLightAndDark() throws {
-        for scheme in [ColorScheme.light, .dark] {
-            let view = EyeMarkView(isRunning: false, reduceMotion: true, size: 17)
+        for (scheme, reduceMotion) in product([ColorScheme.light, .dark], [true, false]) {
+            let view = EyeMarkView(isRunning: false, reduceMotion: reduceMotion, size: 17)
             let px = try Raster.render(view, scheme: scheme, scale: 2)
             let ink = px.count { $0.alpha > 0.5 }
             XCTAssertGreaterThan(ink, 150, "\(scheme): too little ink for a shaded lens at 17pt")
@@ -93,9 +93,9 @@ final class BrandingTests: XCTestCase {
     @MainActor
     func testRunningMarkIsAnOpenEyeWithAPupilAndLashesAboveAndStaysMonochrome() throws {
         let probes = Probes(size: 17, scale: 2)
-        for scheme in [ColorScheme.light, .dark] {
-            let idle = try Raster.render(EyeMarkView(isRunning: false, reduceMotion: true), scheme: scheme, scale: 2)
-            let active = try Raster.render(EyeMarkView(isRunning: true, reduceMotion: true), scheme: scheme, scale: 2)
+        for (scheme, reduceMotion) in product([ColorScheme.light, .dark], [true, false]) {
+            let idle = try Raster.render(EyeMarkView(isRunning: false, reduceMotion: reduceMotion), scheme: scheme, scale: 2)
+            let active = try Raster.render(EyeMarkView(isRunning: true, reduceMotion: reduceMotion), scheme: scheme, scale: 2)
 
             XCTAssertLessThan(active.alpha(probes.interior), 0.05, "\(scheme): the open lens is clear between pupil and outline at \(probes.interior)")
             XCTAssertGreaterThan(active.alpha(probes.pupil), 0.7, "\(scheme): pupil missing at \(probes.pupil)")
@@ -162,7 +162,14 @@ final class BrandingTests: XCTestCase {
         let open = inked(EyeMarkGeometry.lid(in: rect, progress: 1))
         let half = inked(EyeMarkGeometry.lid(in: rect, progress: 0.5))
         XCTAssertEqual(open, 0, "an open lid shades nothing")
-        XCTAssertEqual(closed, inked(EyeMarkGeometry.lens(in: rect)), "a closed lid shades the whole lens")
+        // Pixel for pixel, the closed lid is the filled lens.
+        let closedLid = raster(EyeMarkGeometry.lid(in: rect, progress: 0))
+        let lens = raster(EyeMarkGeometry.lens(in: rect))
+        var mismatches = 0
+        for y in 0..<size {
+            for x in 0..<size where (closedLid.alpha(x, y) > 0.5) != (lens.alpha(x, y) > 0.5) { mismatches += 1 }
+        }
+        XCTAssertEqual(mismatches, 0, "a closed lid shades exactly the lens")
         XCTAssertGreaterThan(half, open, "half way, some of the lens is shaded")
         XCTAssertLessThan(half, closed, "half way, some of the lens is clear")
         XCTAssertEqual(subpathCount(EyeMarkGeometry.lid(in: rect, progress: 0.5)), 1)
@@ -178,6 +185,21 @@ final class BrandingTests: XCTestCase {
         for y in (axis - radius)...(axis - 1) {
             XCTAssertGreaterThan(lid.alpha(column, y), 0.5, "the upper pupil is still shaded at row \(y)")
         }
+    }
+
+    func testStrokedLensAndLashesFitInsideTheSeventeenPointFrame() {
+        let frame = CGRect(x: 0, y: 0, width: 17, height: 17)
+        let width = EyeMoonGeometry.lineWidth(for: frame.width)
+        let stroked = CGMutablePath()
+        for path in [EyeMarkGeometry.lens(in: frame), EyeMarkGeometry.lashes(in: frame, side: .above), EyeMarkGeometry.lashes(in: frame, side: .below)] {
+            stroked.addPath(path.copy(strokingWithWidth: width, lineCap: .round, lineJoin: .round, miterLimit: 10))
+        }
+        let box = stroked.boundingBoxOfPath
+        XCTAssertTrue(frame.contains(box), "the view's frame clips the mark: \(box)")
+        // Enough headroom that a sub-pixel rasteriser does not clip the caps.
+        let headroom = 0.4 * frame.width / EyeMoonGeometry.designSize
+        XCTAssertGreaterThanOrEqual(box.minY - frame.minY, headroom, "upper lashes too close to the edge: \(box)")
+        XCTAssertLessThanOrEqual(box.maxY, frame.maxY - headroom, "lower lashes too close to the edge: \(box)")
     }
 
     func testPupilStaysClearOfTheOutlineAtSeventeenPoints() {
@@ -205,6 +227,10 @@ final class BrandingTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    private func product<A, B>(_ a: [A], _ b: [B]) -> [(A, B)] {
+        a.flatMap { x in b.map { (x, $0) } }
+    }
 
     private func subpathCount(_ path: CGPath) -> Int {
         var moves = 0
