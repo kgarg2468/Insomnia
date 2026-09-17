@@ -60,7 +60,7 @@ struct StatusRootView: View {
     /// held, so the app visibly does something even when Low Power Mode is
     /// not showing.
     private var icon: some View {
-        EyeMoonMarkView(isRunning: isRunning, reduceMotion: reduceMotion)
+        EyeMarkView(isRunning: isRunning, reduceMotion: reduceMotion)
             .frame(width: 20, height: 20)
             .contentShape(Rectangle())
             .phaseAnimator([CGFloat(1), reduceMotion ? 1 : 0.86, 1], trigger: model.iconBounce) { content, scale in
