@@ -94,7 +94,9 @@ final class UIStartupTests: XCTestCase {
         XCTAssertFalse(rig.manager.isActive)
         XCTAssertEqual(rig.model.phase, .starting)
         XCTAssertFalse(rig.model.phase.showsRunningControls)
-        XCTAssertNil(rig.model.pendingCountdown)
+        // The countdown the session will read is projected the moment Enter
+        // is pressed; the live one replaces it on confirmation.
+        XCTAssertEqual(rig.model.pendingCountdown, "1d 0:00:00")
         XCTAssertEqual(MenuBarModel.startingText, "Starting\u{2026}")
         XCTAssertNil(rig.model.startError)
         // The typed value survives the wait, in case the start is refused.
@@ -200,12 +202,17 @@ final class UIStartupTests: XCTestCase {
 
         rig.h.backstop.failArm = false
         rig.controller.commit()
-        // The error leaves with the retry, not only on success.
-        XCTAssertNil(rig.model.startError)
+        // The label leaves with the retry, not only on success; its text
+        // keeps the label's room in the layout until the slots leave.
+        XCTAssertFalse(rig.model.startErrorShown)
+        XCTAssertNotNil(rig.model.startError)
         ok = await waitUntil { rig.model.phase == .running }
         XCTAssertTrue(ok)
         XCTAssertTrue(rig.manager.isActive)
-        XCTAssertNil(rig.model.startError)
+        // The session can land before the fold ends; the text goes with the slots.
+        ok = await waitUntil { rig.model.startError == nil }
+        XCTAssertTrue(ok)
+        XCTAssertFalse(rig.model.slotsPresent)
         XCTAssertEqual(rig.manager.countdownText, "1d 0:00:00")
     }
 

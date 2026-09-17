@@ -12,7 +12,8 @@
     .a { fill: #536D78; }
     .ln { fill: none; stroke: #536D78; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
     .ic { fill: none; stroke: #292D30; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-    .hdr-moon { fill: #292D30; }
+    .mark-line { fill: none; stroke: #292D30; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .mark-fill { fill: #292D30; }
     .warn { fill: #A85A00; }
     .warn-ic { fill: none; stroke: #A85A00; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
     @media (prefers-color-scheme: dark) {
@@ -25,14 +26,25 @@
       .a { fill: #A6BBC3; }
       .ln { stroke: #A6BBC3; }
       .ic { stroke: #E6E3DD; }
-      .hdr-moon { fill: #E6E3DD; }
+      .mark-line { stroke: #E6E3DD; }
+      .mark-fill { fill: #E6E3DD; }
       .warn { fill: #F2A854; }
       .warn-ic { stroke: #F2A854; }
     }
   </style>
   <defs>
-    <path id="rf-eye" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/>
-    <path id="rf-moon" d="M13.3625 8.1877 A4.2 4.2 0 1 0 13.3625 15.8123 A3.85 3.85 0 0 1 13.3625 8.1877 Z"/>
+    <!-- EyeMarkGeometry on its 24-unit grid, monochrome. Closed: the lid shades the whole lens, lashes below.
+         Open: lid gone, pupil with its highlight bite showing, lashes above. Paths match docs/mockups/menubar-ux.html. -->
+    <g id="rf-mark-closed">
+      <path class="mark-fill" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/>
+      <path class="mark-line" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/>
+      <path class="mark-line" d="M4.5499 17.8023 L3.1442 20.1659 M8.2636 19.3782 L7.5468 22.0332 M12 19.875 L12 22.625 M15.7364 19.3782 L16.4532 22.0332 M19.4501 17.8023 L20.8558 20.1659"/>
+    </g>
+    <g id="rf-mark-open">
+      <path class="mark-line" d="M1.5 12 C7 4.5 17 4.5 22.5 12 C17 19.5 7 19.5 1.5 12 Z"/>
+      <path class="mark-fill" d="M15.3953 9.8853 A4 4 0 1 1 14.1147 8.6047 A1.4 1.4 0 1 0 15.3953 9.8853 Z"/>
+      <path class="mark-line" d="M4.5499 6.1977 L3.1442 3.8341 M8.2636 4.6218 L7.5468 1.9668 M12 4.125 L12 1.375 M15.7364 4.6218 L16.4532 1.9668 M19.4501 6.1977 L20.8558 3.8341"/>
+    </g>
     <marker id="rf-arrow" viewBox="0 0 14 14" markerWidth="14" markerHeight="14" refX="11" refY="7" markerUnits="userSpaceOnUse" orient="auto">
       <path class="a" d="M2 2 L12 7 L2 12 Z"/>
     </marker>
@@ -42,8 +54,7 @@
 
   <!-- Header -->
   <g transform="translate(32 20) scale(1.6667)">
-    <use href="#rf-eye" class="ic" stroke-width="1.5"/>
-    <use href="#rf-moon" class="hdr-moon"/>
+    <use href="#rf-mark-closed"/>
   </g>
   <text class="t" x="88" y="50" font-size="26" font-weight="700">Two ways back to normal</text>
 
@@ -64,8 +75,7 @@
   <g>
     <rect class="panel" x="452" y="80" width="250" height="120" rx="16"/>
     <g transform="translate(472 96) scale(1.3333)">
-      <use href="#rf-eye" class="ic" stroke-width="1.5"/>
-      <use href="#rf-moon" class="hdr-moon"/>
+      <use href="#rf-mark-closed"/>
     </g>
     <text class="t" x="516" y="122" font-size="22" font-weight="700">App cleanup</text>
     <text class="m" x="472" y="170" font-size="19">At end or reopen</text>

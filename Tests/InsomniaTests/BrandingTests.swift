@@ -226,6 +226,122 @@ final class BrandingTests: XCTestCase {
         XCTAssertEqual(overlap, 0, "the pupil must not touch the eye outline")
     }
 
+    // MARK: - The blink
+
+    /// The blink has to be seen: the lid lifts on a long spring and drops on
+    /// a slightly shorter, better-damped one; the pupil arrives a beat after
+    /// the lid starts and bounces a little, and shrinks straight away on
+    /// close. Under Reduce Motion everything is one 0.3 s crossfade.
+    @MainActor
+    func testTheBlinkRunsOnSeparateLidAndPupilCurvesInEachDirection() {
+        XCTAssertEqual(Motion.blink(opening: true, reduceMotion: false), .spring(response: 0.95, dampingFraction: 0.9))
+        XCTAssertEqual(Motion.blink(opening: false, reduceMotion: false), .spring(response: 0.8, dampingFraction: 0.95))
+        XCTAssertEqual(Motion.blink(opening: true, reduceMotion: false), Motion.blink)
+        XCTAssertEqual(Motion.blink(opening: false, reduceMotion: false), Motion.blinkClose)
+        XCTAssertGreaterThan(Motion.blinkResponse, Motion.baseResponse)
+        XCTAssertGreaterThan(Motion.blinkCloseResponse, Motion.baseResponse)
+
+        XCTAssertEqual(Motion.pupil(opening: true, reduceMotion: false), .spring(response: 0.5, dampingFraction: 0.6).delay(0.2))
+        XCTAssertEqual(Motion.pupil(opening: false, reduceMotion: false), .easeOut(duration: 0.4))
+        XCTAssertEqual(Motion.pupilOpenDelay, 0.2)
+        XCTAssertLessThan(Motion.pupilOpenDelay, Motion.blinkResponse, "the pupil starts while the lid is still lifting")
+
+        for opening in [true, false] {
+            XCTAssertEqual(Motion.blink(opening: opening, reduceMotion: true), .easeInOut(duration: 0.3))
+            XCTAssertEqual(Motion.pupil(opening: opening, reduceMotion: true), .easeInOut(duration: 0.3))
+        }
+        XCTAssertEqual(Motion.reducedBlinkDuration, 0.3)
+    }
+
+    /// One state value drives the pupil: full and present in the open eye,
+    /// shrunk and gone in the closed one. Under Reduce Motion it never
+    /// scales; only its opacity crosses over.
+    @MainActor
+    func testThePupilShrinksAwayWhenTheEyeClosesAndNeverScalesUnderReduceMotion() {
+        XCTAssertEqual(Motion.pupilClosedScale, 0.6)
+        let open = EyeMarkView(isRunning: true, reduceMotion: false)
+        let closed = EyeMarkView(isRunning: false, reduceMotion: false)
+        XCTAssertEqual(open.pupilScale, 1)
+        XCTAssertEqual(open.pupilOpacity, 1)
+        XCTAssertEqual(closed.pupilScale, 0.6)
+        XCTAssertEqual(closed.pupilOpacity, 0)
+
+        let reducedOpen = EyeMarkView(isRunning: true, reduceMotion: true)
+        let reducedClosed = EyeMarkView(isRunning: false, reduceMotion: true)
+        XCTAssertEqual(reducedOpen.pupilScale, 1)
+        XCTAssertEqual(reducedClosed.pupilScale, 1, "no pupil scaling at all under Reduce Motion")
+        XCTAssertEqual(reducedOpen.pupilOpacity, 1)
+        XCTAssertEqual(reducedClosed.pupilOpacity, 0)
+    }
+
+    /// The opening spring peaks at about 1.04 and an interrupted blink can
+    /// stop anywhere, so the drawn pupil is clipped to the lens: nothing of
+    /// it, at any scale, lands outside the outline.
+    @MainActor
+    func testThePupilIsClippedToTheLensHoweverFarItOvershoots() throws {
+        let size = 96
+        let rect = CGRect(x: 0, y: 0, width: size, height: size)
+        let lens = EyeMarkGeometry.lens(in: rect)
+        func outsideLens(_ px: Raster) -> Int {
+            var n = 0
+            for y in 0..<size {
+                for x in 0..<size where px.alpha(x, y) > 0.5 && !lens.contains(CGPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5)) { n += 1 }
+            }
+            return n
+        }
+        func render<V: View>(_ view: V) throws -> Raster {
+            try Raster.render(view.frame(width: CGFloat(size), height: CGFloat(size)), scheme: .light, scale: 1)
+        }
+
+        let rest = try render(EyePupilLayer(scale: 1, opacity: 1))
+        let peak = try render(EyePupilLayer(scale: 1.04, opacity: 1))
+        XCTAssertEqual(outsideLens(rest), 0)
+        XCTAssertEqual(outsideLens(peak), 0, "the overshoot peak stays inside the lens")
+        XCTAssertGreaterThan(peak.count { $0.alpha > 0.5 }, rest.count { $0.alpha > 0.5 }, "the clip does not eat a pupil that fits")
+
+        // Far beyond any real overshoot, the clip is what keeps it in: the
+        // same pupil unclipped would show outside the outline.
+        let wild = try render(EyePupilLayer(scale: 1.6, opacity: 1))
+        let unclipped = try render(EyePupil().fill(.black).scaleEffect(1.6, anchor: EyePupilLayer.anchor))
+        XCTAssertGreaterThan(outsideLens(unclipped), 0, "the control should overshoot the lens")
+        XCTAssertEqual(outsideLens(wild), 0, "clipped, the pupil never leaves the lens")
+        XCTAssertGreaterThan(wild.count { $0.alpha > 0.5 }, 0)
+    }
+
+    /// The lid's progress is left unclamped in the view so the spring can
+    /// overshoot; the geometry bounds what is drawn instead.
+    func testTheLidGeometryClampHoldsBelowZeroAndAboveOne() {
+        let size = 96
+        let rect = CGRect(x: 0, y: 0, width: size, height: size)
+        func raster(_ progress: CGFloat) -> Raster {
+            Raster(size: size) { ctx in
+                ctx.addPath(EyeMarkGeometry.lid(in: rect, progress: progress))
+                ctx.fillPath()
+            }
+        }
+        func mismatches(_ a: Raster, _ b: Raster) -> Int {
+            var n = 0
+            for y in 0..<size {
+                for x in 0..<size where (a.alpha(x, y) > 0.5) != (b.alpha(x, y) > 0.5) { n += 1 }
+            }
+            return n
+        }
+        let closed = raster(0), open = raster(1)
+        for below in [-0.01, -0.5, -3] as [CGFloat] {
+            XCTAssertEqual(mismatches(raster(below), closed), 0, "progress \(below) draws the closed lid")
+        }
+        for above in [1.01, 1.04, 1.5, 4] as [CGFloat] {
+            XCTAssertEqual(mismatches(raster(above), open), 0, "progress \(above) draws the open lid")
+            XCTAssertEqual(raster(above).count { $0.alpha > 0.5 }, 0, "progress \(above) shades nothing")
+        }
+        // And every out-of-range lid is still one well-formed subpath inside the frame.
+        for progress in [-3, 4] as [CGFloat] {
+            let lid = EyeMarkGeometry.lid(in: rect, progress: progress)
+            XCTAssertEqual(subpathCount(lid), 1)
+            XCTAssertTrue(rect.contains(lid.boundingBoxOfPath), "\(lid.boundingBoxOfPath)")
+        }
+    }
+
     // MARK: - Helpers
 
     private func product<A, B>(_ a: [A], _ b: [B]) -> [(A, B)] {

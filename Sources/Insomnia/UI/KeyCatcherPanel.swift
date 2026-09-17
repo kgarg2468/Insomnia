@@ -5,13 +5,13 @@ import AppKit
 /// The pills read the keyboard through a *local* event monitor, which only
 /// sees what AppKit routes to this app, and AppKit routes key events to the
 /// key window. Insomnia is an `.accessory` app whose whole interface lives in
-/// the status bar, so without this it has no window at all: `NSApp.activate`
-/// makes it active but leaves `keyWindow` nil, and the digits go to whichever
-/// app the user was in.
+/// the status bar, so without this it has no window at all and the digits go
+/// to whichever app the user was in.
 ///
-/// It has to be an `NSPanel`: `restorePreviousApp()` stands down when a
-/// visible non-panel key window is up (the Settings window), and this one must
-/// not look like that.
+/// It is a non-activating `NSPanel`: it becomes key without activating this
+/// app, so the app in front stays frontmost and only key status moves to the
+/// pills while they are up (as with Spotlight). Ordering it out gives key
+/// status back.
 final class KeyCatcherPanel: NSPanel {
     /// A borderless window refuses key status by default.
     override var canBecomeKey: Bool { true }
@@ -19,7 +19,7 @@ final class KeyCatcherPanel: NSPanel {
     convenience init() {
         self.init(
             contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
-            styleMask: [.borderless],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
