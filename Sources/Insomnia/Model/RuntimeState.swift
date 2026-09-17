@@ -80,6 +80,13 @@ struct RuntimeState: Codable, Equatable, Sendable {
     /// Built-in keyboard backlight (0...1) before the lid close set it to 0;
     /// nil when darkening is off, there is no backlight, or the lid is open.
     var savedKeyboardBrightness: Float? = nil
+    /// A display brightness restored on lid open while `lowPowerSetByUs`:
+    /// written once more right after Insomnia switches the mode off, since
+    /// the mode's end rescales the panel (spec section 4). Not something
+    /// to undo, so it counts neither as dirty nor as a lid action; the
+    /// backstop ignores it and keeps it, and the app drops it if it finds
+    /// the mode cleared by someone else.
+    var displayRestoredUnderLowPower: Float? = nil
 
     /// Bare pids of every journaled freeze, for display and de-duplication.
     var frozenPids: [Int32] { frozenProcesses.map(\.pid) }
@@ -102,7 +109,7 @@ struct RuntimeState: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case sleepDisabledByUs, lowPowerSetByUs, frozenProcesses, frozenPids, dockerFrozen, savedOutputVolume, savedMuted
-        case savedDisplayBrightness, savedKeyboardBrightness
+        case savedDisplayBrightness, savedKeyboardBrightness, displayRestoredUnderLowPower
     }
 
     // Tolerate missing keys so a state.json written by an older build, or by
@@ -125,6 +132,7 @@ struct RuntimeState: Codable, Equatable, Sendable {
         savedMuted = try c.decodeIfPresent(Bool.self, forKey: .savedMuted)
         savedDisplayBrightness = try c.decodeIfPresent(Float.self, forKey: .savedDisplayBrightness)
         savedKeyboardBrightness = try c.decodeIfPresent(Float.self, forKey: .savedKeyboardBrightness)
+        displayRestoredUnderLowPower = try c.decodeIfPresent(Float.self, forKey: .displayRestoredUnderLowPower)
     }
 
     /// `frozenPids` is read for migration only and never written again, so
@@ -139,5 +147,6 @@ struct RuntimeState: Codable, Equatable, Sendable {
         try c.encodeIfPresent(savedMuted, forKey: .savedMuted)
         try c.encodeIfPresent(savedDisplayBrightness, forKey: .savedDisplayBrightness)
         try c.encodeIfPresent(savedKeyboardBrightness, forKey: .savedKeyboardBrightness)
+        try c.encodeIfPresent(displayRestoredUnderLowPower, forKey: .displayRestoredUnderLowPower)
     }
 }

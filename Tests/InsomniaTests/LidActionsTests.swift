@@ -53,17 +53,44 @@ final class LidActionsTests: XCTestCase {
 
     // MARK: Trusted brightness samples
 
-    /// Recent input, panel awake, backlight unsuppressed: the values read
-    /// now are the user's and are what gets journaled.
-    func testTrustedReadAtCloseJournalsTheCurrentValues() async throws {
+    /// The live defect: the lid coming down covers the light sensor and
+    /// auto-brightness has pulled the panel down (0.75 to 0.335) by the
+    /// time the close is reported, with the user at the keyboard a moment
+    /// ago and the panel awake. That read is trusted by the idle rule and
+    /// still not the user's value: the last open-lid sample is journaled.
+    /// The keyboard keeps the trusted current read.
+    func testCloseJournalsTheLastOpenLidSampleOverTheCloseTimeRead() async throws {
         let idle = Locked<Double>(3)
         let sampler = makeSampler(idle: idle)
         let (m, actions) = await make(sampler: sampler)
         await m.start(duration: 3600)
-        // An older sample must not win over a trusted current read.
-        h.display.brightness = 0.3
+        h.display.brightness = 0.75
         h.keyboard.brightness = 0.2
         sampler.sample()
+        h.display.brightness = 0.335
+        h.keyboard.brightness = 0.5
+
+        await actions.onClose()
+
+        let s = try XCTUnwrap(try h.store.loadState())
+        XCTAssertEqual(s.savedDisplayBrightness, 0.75, "the sample, not the read under the closing lid")
+        XCTAssertEqual(s.savedKeyboardBrightness, 0.5, "the keyboard takes the trusted current read")
+        XCTAssertEqual(h.display.sets, [0])
+        XCTAssertEqual(h.keyboard.sets, [0])
+        XCTAssertNil(m.lastError)
+        XCTAssertTrue(logText().contains("display brightness reads 0.335 at the close; journaling the last open-lid sample 0.75"), logText())
+
+        await actions.onOpen()
+        XCTAssertEqual(h.display.sets, [0, 0.75])
+    }
+
+    /// No sample yet (a close right after start, before the first sample
+    /// could be taken): a trusted current read is journaled as before.
+    func testCloseWithoutASampleJournalsTheTrustedCurrentRead() async throws {
+        let idle = Locked<Double>(3)
+        let sampler = makeSampler(idle: idle)
+        let (m, actions) = await make(sampler: sampler)
+        await m.start(duration: 3600)
         h.display.brightness = 0.7
         h.keyboard.brightness = 0.5
 
@@ -72,8 +99,6 @@ final class LidActionsTests: XCTestCase {
         let s = try XCTUnwrap(try h.store.loadState())
         XCTAssertEqual(s.savedDisplayBrightness, 0.7)
         XCTAssertEqual(s.savedKeyboardBrightness, 0.5)
-        XCTAssertEqual(h.display.sets, [0])
-        XCTAssertEqual(h.keyboard.sets, [0])
         XCTAssertNil(m.lastError)
     }
 
@@ -173,6 +198,369 @@ final class LidActionsTests: XCTestCase {
     }
 
     // MARK: Re-asserted restore
+
+    // MARK: Low Power Mode and brightness
+
+    /// The measured run: the session's battery floor switches Low Power
+    /// Mode on, which rescales the panel (0.75 to 0.5); the sampler must
+    /// not take that value. The manager asks for a sample just before the
+    /// mode is taken, before the ownership is journaled, and the sample is
+    /// held while the mode is ours.
+    func testLowPowerEnableSamplesTheDisplayFirstAndHoldsTheSample() async throws {
+        let idle = Locked<Double>(3)
+        let sampler = makeSampler(idle: idle)
+        let (m, _) = await make(sampler: sampler)
+        sampler.displayHeld = { [weak m] in m?.state.lowPowerSetByUs ?? false }
+        var journaledAtSample: Bool?
+        var callsAtSample: [String]?
+        m.willEnableLowPower = { [weak m] in
+            journaledAtSample = m?.state.lowPowerSetByUs
+            callsAtSample = self.h.guardFake.calls
+            sampler.sample()
+        }
+        await m.start(duration: 3600)
+        h.display.brightness = 0.75
+
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal, lidClosed: false)
+        XCTAssertTrue(h.guardFake.lowPowerOn)
+        XCTAssertEqual(journaledAtSample, false, "sampled before the ownership was journaled")
+        XCTAssertEqual(callsAtSample, ["disablesleep 1", "pmset -g custom"], "and before lowpowermode 1")
+        XCTAssertEqual(sampler.last?.display, 0.75)
+
+        // The mode's rescale is not taken.
+        h.display.brightness = 0.5
+        sampler.sample()
+        XCTAssertEqual(sampler.last?.display, 0.75, "held under our Low Power Mode")
+        h.keyboard.brightness = 0.3
+        sampler.sample()
+        XCTAssertEqual(sampler.last?.keyboard, 0.3, "the keyboard still samples")
+
+        await driver.run(percent: 35, isCharging: true, thermal: .nominal, lidClosed: false)
+        XCTAssertFalse(h.guardFake.lowPowerOn)
+        h.display.brightness = 0.8
+        sampler.sample()
+        XCTAssertEqual(sampler.last?.display, 0.8, "released with the mode")
+    }
+
+    /// The measured run, end to end: the floor takes Low Power Mode, the
+    /// lid closes (the held 0.75 is journaled, not the rescaled panel),
+    /// opens (0.75 written under the mode), and the mode ends when the
+    /// charger is connected: 0.75 goes out once more after `lowpowermode
+    /// 0`, since the mode's end can leave the panel elsewhere, and is
+    /// re-asserted like any restore.
+    func testADisplayRestoredUnderOurLowPowerModeIsWrittenAgainWhenTheModeEnds() async throws {
+        let idle = Locked<Double>(3)
+        let sampler = makeSampler(idle: idle)
+        let (m, actions) = await make(sampler: sampler, reassertDelay: .zero)
+        sampler.displayHeld = { [weak m] in m?.state.lowPowerSetByUs ?? false }
+        m.willEnableLowPower = { sampler.sample() }
+        await m.start(duration: 3600)
+        h.display.brightness = 0.75
+        let modeAtWrite = Locked<[Bool]>([])
+        let guardFake = h.guardFake
+        h.display.onSet = { _ in modeAtWrite.value.append(guardFake.lowPowerOn) }
+
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal, lidClosed: false)
+        h.display.brightness = 0.5
+        sampler.sample()
+        h.display.brightness = 0.335
+        await actions.onClose()
+        XCTAssertEqual(try h.store.loadState()?.savedDisplayBrightness, 0.75)
+        await actions.onOpen()
+        XCTAssertEqual(h.display.sets.prefix(2), [0, 0.75])
+        XCTAssertNil(try h.store.loadState()?.savedDisplayBrightness)
+        for _ in 0..<300 where h.display.sets.count < 3 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(h.display.sets, [0, 0.75, 0.75], "the open's restore and its re-assert, under the mode")
+
+        await driver.run(percent: 35, isCharging: true, thermal: .nominal, lidClosed: false)
+        XCTAssertFalse(h.guardFake.lowPowerOn)
+        for _ in 0..<300 where h.display.sets.count < 5 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(h.display.sets, [0, 0.75, 0.75, 0.75, 0.75], "written again after the mode, and re-asserted")
+        XCTAssertEqual(modeAtWrite.value, [true, true, true, false, false])
+        XCTAssertNil(try h.store.loadState()?.savedDisplayBrightness, "not a journaled action")
+        XCTAssertNil(m.lastError)
+        XCTAssertTrue(logText().contains("display restored again after low power mode (brightness 0.75)"), logText())
+
+        // Once written after the mode, it is done: the session end has
+        // nothing to write.
+        await m.end(reason: .user)
+        XCTAssertEqual(h.display.sets.count, 5)
+    }
+
+    /// The other half of the measured run: the mode held until the session
+    /// ended. The end switches the mode off first, then writes the value
+    /// once more and re-asserts it; the open's own pending second write
+    /// (display and keyboard) is folded into that re-assert, not dropped
+    /// by the end's undo, which has nothing of its own to restore.
+    func testSessionEndAfterAnOpenUnderOurLowPowerModeWritesTheRestoreAgainAfterTheMode() async throws {
+        let idle = Locked<Double>(3)
+        let sampler = makeSampler(idle: idle)
+        let (m, actions) = await make(sampler: sampler, reassertDelay: .milliseconds(150))
+        sampler.displayHeld = { [weak m] in m?.state.lowPowerSetByUs ?? false }
+        m.willEnableLowPower = { sampler.sample() }
+        await m.start(duration: 3600)
+        h.display.brightness = 0.75
+        let modeAtWrite = Locked<[Bool]>([])
+        let guardFake = h.guardFake
+        h.display.onSet = { _ in modeAtWrite.value.append(guardFake.lowPowerOn) }
+
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal, lidClosed: false)
+        await actions.onClose()
+        await actions.onOpen()
+        XCTAssertEqual(h.display.sets, [0, 0.75])
+        XCTAssertEqual(try h.store.loadState()?.displayRestoredUnderLowPower, 0.75, "the write owed after the mode is journaled")
+
+        await m.end(reason: .user)
+        XCTAssertEqual(h.display.sets, [0, 0.75, 0.75])
+        XCTAssertEqual(modeAtWrite.value, [true, true, false], "the last write lands after lowpowermode 0")
+        XCTAssertEqual(try h.store.loadState(), RuntimeState.clean)
+        XCTAssertNil(m.lastError)
+
+        for _ in 0..<300 where h.display.sets.count < 4 || h.keyboard.sets.count < 3 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(h.display.sets, [0, 0.75, 0.75, 0.75], "re-asserted after the end")
+        XCTAssertEqual(h.keyboard.sets, [0, 0.5, 0.5], "the open's keyboard second write is kept")
+    }
+
+    /// Lid-only Low Power Mode ends within the same lid transaction as the
+    /// open: the display's write after the mode replaces the open's pending
+    /// second write for the display only; the keyboard's still lands.
+    func testTheModeEndingRightAfterTheOpenKeepsTheKeyboardSecondWrite() async throws {
+        let idle = Locked<Double>(3)
+        let sampler = makeSampler(idle: idle)
+        let (m, actions) = await make(sampler: sampler, reassertDelay: .milliseconds(150))
+        sampler.displayHeld = { [weak m] in m?.state.lowPowerSetByUs ?? false }
+        m.willEnableLowPower = { sampler.sample() }
+        await m.start(duration: 3600)
+        h.display.brightness = 0.75
+
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 80, isCharging: false, thermal: .nominal, lidClosed: true)
+        await actions.onClose()
+        await actions.onOpen()
+        await driver.run(percent: 80, isCharging: false, thermal: .nominal, lidClosed: false)
+        XCTAssertFalse(h.guardFake.lowPowerOn)
+        XCTAssertEqual(h.display.sets, [0, 0.75, 0.75])
+
+        for _ in 0..<300 where h.display.sets.count < 4 || h.keyboard.sets.count < 3 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(h.display.sets, [0, 0.75, 0.75, 0.75])
+        XCTAssertEqual(h.keyboard.sets, [0, 0.5, 0.5])
+        XCTAssertNil(try h.store.loadState()?.displayRestoredUnderLowPower)
+    }
+
+    /// The lid opened under a battery floor and the user then set the
+    /// panel with the brightness keys. When the charger ends the mode hours
+    /// later the panel is theirs: the write owed is dropped, not landed
+    /// over their value.
+    func testADisplayMovedSinceTheOpenIsLeftAloneWhenTheModeEnds() async throws {
+        let idle = Locked<Double>(3)
+        let sampler = makeSampler(idle: idle)
+        let (m, actions) = await make(sampler: sampler, reassertDelay: .milliseconds(150))
+        sampler.displayHeld = { [weak m] in m?.state.lowPowerSetByUs ?? false }
+        m.willEnableLowPower = { sampler.sample() }
+        await m.start(duration: 3600)
+        h.display.brightness = 0.75
+
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal, lidClosed: false)
+        await actions.onClose()
+        await actions.onOpen()
+        XCTAssertEqual(h.display.sets, [0, 0.75])
+        // Auto-brightness drift stays within the tolerance...
+        h.display.brightness = 0.72
+        // ...a key press does not.
+        h.display.brightness = 0.4
+
+        await driver.run(percent: 35, isCharging: true, thermal: .nominal, lidClosed: false)
+        XCTAssertFalse(h.guardFake.lowPowerOn)
+        XCTAssertEqual(h.display.sets, [0, 0.75], "nothing written over the user's value")
+        XCTAssertNil(try h.store.loadState()?.displayRestoredUnderLowPower)
+        XCTAssertTrue(logText().contains("display restore after low power mode dropped: the display moved since the restore (0.4, restored 0.75)"), logText())
+
+        // The open's pending second write is taken out with it; the
+        // keyboard's still lands.
+        for _ in 0..<300 where h.keyboard.sets.count < 3 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(h.display.sets, [0, 0.75], "the display's re-assert was dropped with it")
+        XCTAssertEqual(h.keyboard.sets, [0, 0.5, 0.5])
+    }
+
+    /// A write owed from an earlier interval whose clear failed must not be
+    /// found by a later one: taking the mode over discards it in the same
+    /// journal write.
+    func testTakingLowPowerOwnershipDiscardsAStaleWriteOwed() async throws {
+        var st = RuntimeState()
+        st.displayRestoredUnderLowPower = 0.3
+        try h.store.saveState(st)
+        let idle = Locked<Double>(3)
+        let sampler = makeSampler(idle: idle)
+        let (m, _) = await make(sampler: sampler)
+        await m.start(duration: 3600)
+
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal, lidClosed: false)
+        XCTAssertTrue(h.guardFake.lowPowerOn)
+        XCTAssertNil(try h.store.loadState()?.displayRestoredUnderLowPower)
+        XCTAssertTrue(logText().contains("dropped: a new low power mode interval starts"), logText())
+
+        await m.end(reason: .user)
+        XCTAssertEqual(h.display.sets, [], "the stale 0.3 never lands")
+        XCTAssertEqual(try h.store.loadState(), RuntimeState.clean)
+    }
+
+    /// Relaunched under our mode after an open: the new sampler has no
+    /// sample and is held, so a second close would journal the panel's
+    /// rescaled reading. The value restored under the mode, still
+    /// journaled as owed, is what the close journals instead.
+    func testASecondCloseAfterARelaunchUnderOurModeJournalsTheValueOwedNotTheDimRead() async throws {
+        let idle = Locked<Double>(3)
+        let sampler = makeSampler(idle: idle)
+        let (m, actions) = await make(sampler: sampler)
+        sampler.displayHeld = { [weak m] in m?.state.lowPowerSetByUs ?? false }
+        m.willEnableLowPower = { sampler.sample() }
+        await m.start(duration: 3600)
+        h.display.brightness = 0.75
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal, lidClosed: false)
+        await actions.onClose()
+        await actions.onOpen()
+
+        let relaunched = h.makeManager()
+        let freshSampler = makeSampler(idle: idle)
+        freshSampler.displayHeld = { [weak relaunched] in relaunched?.state.lowPowerSetByUs ?? false }
+        await relaunched.reconcile()
+        XCTAssertTrue(relaunched.isActive)
+        let freshActions = LidActions(manager: relaunched, freezer: freezer, docker: DockerRule(freezer: freezer, probe: { true }), audio: h.audio, display: h.display, keyboard: h.keyboard, sampler: freshSampler)
+        freshSampler.sample()
+        XCTAssertNil(freshSampler.last?.display, "held: nothing sampled under our mode")
+        h.display.brightness = 0.5
+
+        await freshActions.onClose()
+        XCTAssertEqual(try h.store.loadState()?.savedDisplayBrightness, 0.75, "the value owed, not the rescaled read")
+        await freshActions.onOpen()
+        await relaunched.end(reason: .user)
+        XCTAssertEqual(h.display.sets, [0, 0.75, 0, 0.75, 0.75])
+        XCTAssertEqual(try h.store.loadState(), RuntimeState.clean)
+    }
+
+    /// The write owed after the mode is journaled, so a relaunch mid-session
+    /// (the session still valid, the mode still ours) lands it at the end.
+    func testTheWriteOwedAfterLowPowerIsJournaledAndSurvivesARelaunch() async throws {
+        let idle = Locked<Double>(3)
+        let sampler = makeSampler(idle: idle)
+        let (m, actions) = await make(sampler: sampler)
+        sampler.displayHeld = { [weak m] in m?.state.lowPowerSetByUs ?? false }
+        m.willEnableLowPower = { sampler.sample() }
+        await m.start(duration: 3600)
+        h.display.brightness = 0.75
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal, lidClosed: false)
+        await actions.onClose()
+        await actions.onOpen()
+        XCTAssertEqual(try h.store.loadState()?.displayRestoredUnderLowPower, 0.75)
+
+        // Relaunch over the same journal.
+        let relaunched = h.makeManager()
+        await relaunched.reconcile()
+        XCTAssertTrue(relaunched.isActive, "the session on disk is still valid")
+        XCTAssertEqual(try h.store.loadState()?.displayRestoredUnderLowPower, 0.75, "kept: the mode is still ours")
+
+        await relaunched.end(reason: .user)
+        XCTAssertEqual(h.display.sets, [0, 0.75, 0.75])
+        XCTAssertEqual(try h.store.loadState(), RuntimeState.clean)
+    }
+
+    /// An entry left behind after the mode was released (its clear failed)
+    /// is not a value to journal at a close: with no sample the close takes
+    /// the current read, as before.
+    func testAnOrphanedWriteOwedIsNotJournaledAtACloseOnceTheModeIsReleased() async throws {
+        let idle = Locked<Double>(3)
+        let sampler = makeSampler(idle: idle)
+        let (m, actions) = await make(sampler: sampler)
+        await m.start(duration: 3600)
+        try m.journal { $0.displayRestoredUnderLowPower = 0.3 }
+        h.display.brightness = 0.7
+
+        await actions.onClose()
+        XCTAssertEqual(try h.store.loadState()?.savedDisplayBrightness, 0.7, "the read, not the orphan")
+    }
+
+    /// The mode was cleared by someone else (the backstop after a kill, or
+    /// the user) and no session is left: the write is dropped, never landed
+    /// on a panel that has been the user's for who knows how long.
+    func testAWriteOwedAfterLowPowerIsDroppedWhenTheModeIsNotOurs() async throws {
+        var st = RuntimeState()
+        st.displayRestoredUnderLowPower = 0.75
+        try h.store.saveState(st)
+        let m = h.makeManager()
+
+        await m.reconcile()
+
+        XCTAssertEqual(h.display.sets, [])
+        XCTAssertEqual(try h.store.loadState(), RuntimeState.clean)
+        XCTAssertTrue(logText().contains("display restore after low power mode dropped: no session and the mode is not ours"), logText())
+    }
+
+    /// A Low Power Mode interval with no lid restore under it (the battery
+    /// floor with the lid open throughout) writes nothing: the panel was
+    /// never Insomnia's to set.
+    func testLowPowerModeWithoutARestoreUnderItLeavesTheDisplayAlone() async throws {
+        let idle = Locked<Double>(3)
+        let sampler = makeSampler(idle: idle)
+        let (m, _) = await make(sampler: sampler)
+        m.willEnableLowPower = { sampler.sample() }
+        await m.start(duration: 3600)
+
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal, lidClosed: false)
+        await driver.run(percent: 35, isCharging: true, thermal: .nominal, lidClosed: false)
+        await m.end(reason: .user)
+        XCTAssertEqual(h.display.sets, [])
+    }
+
+    /// The lid closed again before the mode ended (the lid is not a cause
+    /// here, the battery floor is, and the charger comes back under the
+    /// closed lid): nothing is written under the closed lid, and the next
+    /// open restores with the mode already off, so no second write is owed.
+    func testLowPowerModeEndingUnderAClosedLidWritesNothingAndTheOpenRestoresOnce() async throws {
+        let idle = Locked<Double>(3)
+        let sampler = makeSampler(idle: idle)
+        let (m, actions) = await make(sampler: sampler)
+        m.config.lowPowerOnLidClose = false
+        sampler.displayHeld = { [weak m] in m?.state.lowPowerSetByUs ?? false }
+        m.willEnableLowPower = { sampler.sample() }
+        await m.start(duration: 3600)
+        h.display.brightness = 0.75
+
+        let driver = FloorRuleDriver(manager: m, notifier: h.notifier)
+        await driver.run(percent: 35, isCharging: false, thermal: .nominal, lidClosed: false)
+        await actions.onClose()
+        await actions.onOpen()
+        await actions.onClose()
+        XCTAssertEqual(h.display.sets, [0, 0.75, 0])
+
+        await driver.run(percent: 35, isCharging: true, thermal: .nominal, lidClosed: true)
+        XCTAssertFalse(h.guardFake.lowPowerOn)
+        XCTAssertEqual(h.display.sets, [0, 0.75, 0], "nothing lit under the closed lid")
+        XCTAssertTrue(logText().contains("display restore after low power mode dropped: darkened again"), logText())
+
+        await actions.onOpen()
+        XCTAssertEqual(h.display.sets, [0, 0.75, 0, 0.75])
+        await m.end(reason: .user)
+        XCTAssertEqual(h.display.sets, [0, 0.75, 0, 0.75], "no write owed: the restore landed with the mode off")
+    }
 
     /// powerd re-applies its own remembered brightness a moment after the
     /// wake and can override the restore, so the restore is written a

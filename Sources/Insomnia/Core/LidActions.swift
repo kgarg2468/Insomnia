@@ -97,21 +97,40 @@ final class LidActions {
     /// ignores while any process (an agent, say) holds a display assertion.
     ///
     /// What gets journaled is the user's value, not whatever the device
-    /// reads at this instant: a panel that idle-dimmed or slept before the
-    /// lid closed reads its dim value, and a keyboard suppressed by display
-    /// sleep reads 0. Per device: the current read if it is trusted now,
-    /// else the last trusted sample, else (display) the current read anyway
-    /// since a dim panel on open beats a black one, or (keyboard) nothing,
-    /// since restoring 0 would leave the backlight off for good.
+    /// reads at this instant. The display at the close event is never the
+    /// user's value when it can be avoided: the lid coming down covers the
+    /// ambient light sensor and auto-brightness has already pulled the
+    /// panel down by the time the close is reported, Low Power Mode (which
+    /// the session itself may have switched on) rescales it, and a panel
+    /// that idle-dimmed or slept reads its dim value. So the display
+    /// journals the last sample taken with the lid open (every 30 s, at
+    /// start, 3 s after each open, and just before Insomnia's own Low Power
+    /// Mode goes on, held from then until it goes off); without one, the
+    /// value a lid open restored under our Low Power Mode, still journaled
+    /// as owed and the mode still ours (the app relaunched under the mode:
+    /// the new sampler has no sample and is held; an entry left behind
+    /// after the mode was released is stale and not used); only without
+    /// either the current read, dim or
+    /// not, since a dim panel on open beats a black one. The sample can be
+    /// up to 30 s old: a brightness change made right before closing the
+    /// lid is not seen. The keyboard reads 0
+    /// when suppressed by display sleep, so it takes the current read if
+    /// trusted now, else the last trusted sample, else nothing, since
+    /// restoring 0 would leave the backlight off for good.
     private func darkenSavingCurrent(_ manager: SessionManager) {
         do {
             let current = try display.readBrightness()
             let value: Float
-            if sampler?.displayReadIsTrusted ?? !display.isAsleep() {
-                value = current
-            } else if let sampled = sampler?.last?.display {
+            if let sampled = sampler?.last?.display {
                 value = sampled
-                Log.info("display brightness read while dimmed or asleep (\(current)); journaling the last trusted sample \(sampled)")
+                if sampled != current {
+                    Log.info("display brightness reads \(current) at the close; journaling the last open-lid sample \(sampled)")
+                }
+            } else if manager.state.lowPowerSetByUs, let owed = manager.state.displayRestoredUnderLowPower {
+                value = owed
+                Log.info("display brightness reads \(current) at the close under our low power mode with no sample; journaling the value restored under it, \(owed)")
+            } else if sampler?.displayReadIsTrusted ?? !display.isAsleep() {
+                value = current
             } else {
                 value = current
                 Log.info("display brightness read while dimmed or asleep and no trusted sample; restoring that value on open")

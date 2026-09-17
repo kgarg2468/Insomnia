@@ -66,6 +66,23 @@ final class StoreTests: XCTestCase {
         XCTAssertTrue(st.isDirty)
     }
 
+    /// The write owed after Low Power Mode is journaled next to the saved
+    /// values, as a flat number, but is not something to undo: a journal
+    /// with only that entry is clean for the backstop and for reconcile.
+    func testDisplayRestoredUnderLowPowerRoundTripsAndIsNotDirty() throws {
+        var st = RuntimeState()
+        st.displayRestoredUnderLowPower = 0.75
+        try store.saveState(st)
+        XCTAssertEqual(try store.loadState(), st)
+        let text = try String(contentsOf: home.paths.stateFile, encoding: .utf8)
+        XCTAssertTrue(text.contains("\"displayRestoredUnderLowPower\" : 0.75"), text)
+        XCTAssertFalse(st.isDirty)
+        XCTAssertFalse(st.hasLidActions)
+
+        let legacy = Data(#"{"sleepDisabledByUs":false,"lowPowerSetByUs":true,"frozenProcesses":[],"dockerFrozen":false}"#.utf8)
+        XCTAssertNil(try Store.makeDecoder().decode(RuntimeState.self, from: legacy).displayRestoredUnderLowPower)
+    }
+
     func testSavedBrightnessCountsAsDirty() throws {
         var st = RuntimeState()
         XCTAssertFalse(st.isDirty)

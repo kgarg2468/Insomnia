@@ -115,8 +115,13 @@ counting down while the lid is closed**; only its on-screen redraw pauses.
 
 The display step exists because the sleep guard stops macOS from doing it:
 with sleep disabled, closing the lid no longer turns the panel or the keys off
-by itself. Insomnia sets both to zero and restores them when the lid opens. If
-Insomnia is not running when you open the lid, press the brightness-up key.
+by itself. Insomnia sets both to zero and restores them when the lid opens.
+The display comes back to the brightness sampled while the lid was open, not
+the reading at the moment of closing (auto-brightness has already dimmed the
+panel under the closing lid by then, and Low Power Mode rescales it), and if
+Insomnia's own Low Power Mode was on while the lid was closed the value is
+written once more when the mode ends. If Insomnia is not running when you open
+the lid, press the brightness-up key.
 
 The defaults are worth knowing:
 

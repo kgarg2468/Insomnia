@@ -54,6 +54,7 @@ RuntimeState {                // everything Insomnia changed and must undo
   savedMuted:         Bool?
   savedDisplayBrightness:  Float?  // nil when darkening is off or lid is open
   savedKeyboardBrightness: Float?  // nil when there is no backlight, too
+  displayRestoredUnderLowPower: Float?  // restored on open under our Low Power Mode; written again when it ends
 }
 ```
 
@@ -158,23 +159,55 @@ is best effort. Display brightness 0 does not switch the keyboard backlight
 off; it is set separately. Both values are journaled before they are changed
 and restored on open, session end, Quit, or reconcile with the lid open; the
 backstop keeps the entries and only the app restores them (private
-frameworks). What is journaled is a trusted value, not whatever the device
-reads at that instant: a reading is trusted only when the last keyboard,
+frameworks). What is journaled is the user's value, not whatever the device
+reads at that instant. A reading is trusted only when the last keyboard,
 mouse or trackpad input was under 30 s ago (`CGEventSource`; the idle dim
 never starts sooner) and the panel is awake (`CGDisplayIsAsleep`, else it
 reads the idle-dim value) or the keyboard backlight is neither suppressed by
 display sleep (it reads 0) nor idle-dimmed, and the app keeps the last trusted
-reading of each (every 30 s with the lid open, at start, and 3 s after each
-lid open) to journal when the close finds the device untrusted. When nothing
-trustworthy is known for the keyboard it is left to macOS entirely (no journal
-entry, no write), because restoring a suppressed 0 would leave the backlight
-off; a display with no trusted sample journals the dim value anyway, since a
-dim panel on open beats a black one. On open the restore is written, the
-entries cleared, and the same values written once more 2 s later, because
-powerd re-applies its own remembered brightness asynchronously after the wake
-and can override the first write; that second write is skipped if the lid
-closed again in the meantime (the close journals fresh values first) and
-superseded by any newer restore. If Insomnia is not running when the lid
+reading of each, sampled every 30 s with the lid open, at start, 3 s after
+each lid open, and just before Insomnia switches Low Power Mode on itself.
+The display at the close event is never the user's value when it can be
+avoided: the lid coming down covers the ambient light sensor and
+auto-brightness has already pulled the panel down by the time the close is
+reported (measured 0.75 to 0.335 with the user at the keyboard, so the idle
+rule alone does not catch it), and Low Power Mode rescales it (0.75 reads
+0.5). So the display journals the last open-lid sample; without one, the
+value a lid open restored under Insomnia's own Low Power Mode if that is
+still journaled as owed and the mode still ours (the app relaunched under
+the mode, so the new sampler has nothing and is held); only without either
+the current read,
+dim or not, since a dim panel on open beats a black one.
+While Low Power Mode is on because Insomnia switched it on (the journal's
+`lowPowerSetByUs`), the display sample is held: the panel reads the mode's
+value, and the sample taken just before the mode went on is the one to
+restore. The keyboard journals the current
+read if trusted now, else its last sample; when nothing trustworthy is
+known for it, it is left to macOS entirely (no journal entry, no write),
+because restoring a suppressed 0 would leave the backlight off. On open the
+restore is written, the entries cleared, and the same values written once
+more 2 s later, because powerd re-applies its own remembered brightness
+asynchronously after the wake and can override the first write; that second
+write is skipped if the lid closed again in the meantime (the close journals
+fresh values first) and superseded by any newer restore. A display restore
+written while Insomnia's own Low Power Mode was on is journaled as
+`displayRestoredUnderLowPower` and written once more, then re-asserted the
+same way, right after Insomnia switches the mode off (lid open, charger,
+thermal recovery or session end), because the mode's end rescales the panel
+and can leave it elsewhere than the value written under it. That second
+write is owed only while the panel still reads what was written (within
+0.05, auto-brightness drift): a panel the user has moved with the keys
+since the open is theirs and is left alone. It is dropped, too, if the lid
+closed again meanwhile (the next open restores with the mode already off),
+and if the mode turns out to have been cleared by someone else (the
+backstop after a kill: it keeps the entry but never writes brightness);
+taking the mode over discards any entry left from an earlier interval in
+the same journal write. A Low Power Mode interval with no lid restore under
+it writes nothing. The
+sample the display journals dates from the last 30 s window in which the
+user was active with the lid open and the panel awake, and is held from
+before Insomnia's own Low Power Mode: a brightness change made within 30 s
+of closing the lid, or under that mode, is not seen. If Insomnia is not running when the lid
 opens, the brightness-up key restores the panel. Bluetooth is still left alone (needed for Instant
 Hotspot, and negligible).
 

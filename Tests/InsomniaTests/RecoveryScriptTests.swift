@@ -237,6 +237,23 @@ final class RecoveryScriptTests: XCTestCase {
         XCTAssertFalse(fx.log().contains("journal cleared"), fx.log())
     }
 
+    /// The write the app owes after its Low Power Mode is not the
+    /// backstop's to make or to judge: the key is kept through the run and
+    /// does not keep the journal dirty on its own. The app drops it on
+    /// relaunch when it finds the mode cleared.
+    func testDisplayRestoredUnderLowPowerIsIgnoredAndPreserved() throws {
+        try fx.writeSession(endsAt: Date(timeIntervalSinceNow: -60))
+        try fx.writeState(#"{"sleepDisabledByUs":true,"lowPowerSetByUs":true,"frozenProcesses":[],"dockerFrozen":false,"displayRestoredUnderLowPower":0.75}"#)
+
+        let r = try fx.run(fx.backstop)
+
+        XCTAssertEqual(r.status, 0, r.stderr + fx.log())
+        let s = try fx.stateJSON()
+        XCTAssertEqual(s["sleepDisabledByUs"] as? Bool, false)
+        XCTAssertEqual(s["lowPowerSetByUs"] as? Bool, false)
+        XCTAssertEqual(s["displayRestoredUnderLowPower"] as? Double, 0.75)
+    }
+
     /// A journal whose only entry is a saved display brightness is dirty:
     /// the backstop must not report it clean and must keep retrying.
     func testSavedDisplayBrightnessAloneKeepsTheJournalDirty() throws {
