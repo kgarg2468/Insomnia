@@ -113,6 +113,11 @@ final class AppServices {
 
         lidActions = LidActions(manager: manager, freezer: freezer, docker: docker, audio: audio, display: display, keyboard: keyboard, sampler: sampler)
         floors = FloorRuleDriver(manager: manager, notifier: notifier)
+        // The panel under Insomnia's own Low Power Mode reads the mode's
+        // rescaled value: sample once more just before the mode goes on
+        // and keep that sample until it is off (spec section 4).
+        manager.willEnableLowPower = { [weak self] in self?.sampleBrightnessIfLidOpen() }
+        sampler.displayHeld = { [weak manager] in manager?.state.lowPowerSetByUs ?? false }
 
         lid.onChange = { [weak self] closed in self?.lidChanged(closed) }
         lid.start()

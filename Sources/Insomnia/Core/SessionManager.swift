@@ -100,6 +100,19 @@ final class SessionManager {
     /// time: the next restore cancels it, and a lid close that darkened
     /// again in the meantime makes it skip (see undoLidActionsInJournal).
     private var reassertTask: Task<Void, Never>?
+    /// What the pending re-assert will write, per device, so a new
+    /// schedule for one device does not drop the other's second write.
+    private var pendingReassert: (display: Float?, keyboard: Float?) = (nil, nil)
+    /// Called just before Insomnia takes Low Power Mode over, before the
+    /// ownership is journaled: `AppServices` samples the display brightness
+    /// then, so the value journaled at a later lid close is the user's,
+    /// not the mode's rescaled one. nil in tests that do not wire it.
+    var willEnableLowPower: (@MainActor () -> Void)?
+    /// How far the panel may have drifted from a value written under Low
+    /// Power Mode (auto-brightness moves it slowly) and still count as
+    /// untouched by the user when the mode ends. A larger difference is a
+    /// brightness key: the panel is the user's again and is left alone.
+    static let untouchedDisplayTolerance: Float = 0.05
 
     /// System integrations (lid, battery, network, ...). Set by `live()`;
     /// nil in tests. Started after a session starts, stopped when it ends.
@@ -546,8 +559,17 @@ final class SessionManager {
                 return false
             }
             guard endTicket == ticket else { return false }
+            willEnableLowPower?()
+            if state.displayRestoredUnderLowPower != nil {
+                Log.info("display restore after low power mode dropped: a new low power mode interval starts")
+            }
             do {
-                try journal { $0.lowPowerSetByUs = true }
+                // One write: a write owed from an earlier interval (its
+                // clear failed) must not be found by this interval's end.
+                try journal { s in
+                    s.lowPowerSetByUs = true
+                    s.displayRestoredUnderLowPower = nil
+                }
             } catch {
                 Log.error("could not journal low power mode: \(error.localizedDescription)")
                 return false
@@ -575,10 +597,12 @@ final class SessionManager {
             return true
         } else {
             guard state.lowPowerSetByUs else { return false }
+            dropDisplayWriteIfMoved()
             do {
                 try await sleepGuard.setLowPowerMode(false)
                 try? journal { $0.lowPowerSetByUs = false }
                 Log.info("low power mode off")
+                settleDisplayAfterLowPower()
                 return true
             } catch {
                 Log.error("could not disable low power mode: \(error.localizedDescription)")
@@ -612,17 +636,26 @@ final class SessionManager {
             }
         }
 
+        var lowPowerJustCleared = false
         if state.lowPowerSetByUs {
+            dropDisplayWriteIfMoved()
             do {
                 try await sleepGuard.setLowPowerMode(false)
                 try? journal { $0.lowPowerSetByUs = false }
                 Log.info("low power mode cleared")
+                lowPowerJustCleared = true
             } catch {
                 fail("could not clear low power mode: \(error.localizedDescription)")
             }
+        } else if state.displayRestoredUnderLowPower != nil {
+            dropDisplayWrite(reason: "the mode was cleared by someone else")
         }
 
         undoLidActionsInJournal()
+        // After the undo: a restore just written with the mode off owes
+        // nothing more (its journal write clears the entry), and a lid
+        // still open gets its second write now.
+        if lowPowerJustCleared { settleDisplayAfterLowPower() }
     }
 
     /// Shared body of lid open, reconcile (lid open) and `restoreAll()`;
@@ -684,8 +717,14 @@ final class SessionManager {
                 try display.setBrightness(saved)
                 Log.info("display restored (brightness \(saved))")
                 restoredDisplay = saved
+                // Written under our Low Power Mode: written again once the
+                // mode is off, since the mode's end rescales the panel.
+                let underLowPower = state.lowPowerSetByUs
                 do {
-                    try journal { $0.savedDisplayBrightness = nil }
+                    try journal { s in
+                        s.savedDisplayBrightness = nil
+                        s.displayRestoredUnderLowPower = underLowPower ? saved : nil
+                    }
                 } catch {
                     fail("display brightness restored but the journal entry could not be cleared: \(error.localizedDescription); it will be retried")
                 }
@@ -709,16 +748,85 @@ final class SessionManager {
         }
         // powerd applies its own remembered "pre-dim" brightness a moment
         // after the wake and can override the write above, so the same
-        // values go out once more. Best effort: errors are only logged.
-        // Tracked, not detached: a newer restore cancels it, and if a lid
-        // close journaled fresh values during the delay (it journals before
-        // it darkens) the old values must not light the panel again.
+        // values go out once more.
+        scheduleReassert(display: restoredDisplay, keyboard: restoredKeyboard)
+    }
+
+    /// Insomnia's own Low Power Mode has just been switched off. A display
+    /// restore written while it was on (journaled as
+    /// `displayRestoredUnderLowPower`) is written once more now, and
+    /// re-asserted like any restore: the mode's end rescales the panel and
+    /// can leave it elsewhere than the value written under it. Skipped,
+    /// and forgotten, if the lid closed again in the meantime: the close
+    /// journaled the value first, and the next open restores it with the
+    /// mode already off. A Low Power Mode interval with no restore under
+    /// it (a battery floor with the lid open throughout) writes nothing:
+    /// the panel was never Insomnia's to set. Best effort like the
+    /// re-assert: a failed write is logged and the entry dropped.
+    private func settleDisplayAfterLowPower() {
+        guard let value = state.displayRestoredUnderLowPower, !state.lowPowerSetByUs else { return }
+        guard state.savedDisplayBrightness == nil else {
+            dropDisplayWrite(reason: "darkened again")
+            return
+        }
+        do {
+            try display.setBrightness(value)
+            Log.info("display restored again after low power mode (brightness \(value))")
+            try? journal { $0.displayRestoredUnderLowPower = nil }
+            scheduleReassert(display: value, keyboard: nil)
+        } catch {
+            Log.error("display restore after low power mode failed: \(error.localizedDescription)")
+            try? journal { $0.displayRestoredUnderLowPower = nil }
+        }
+    }
+
+    /// Before the mode is switched off: if the panel no longer reads what
+    /// was written under it (beyond auto-brightness drift), the user has
+    /// moved it since the lid opened, and the second write would undo
+    /// that. The panel is theirs; nothing is owed.
+    private func dropDisplayWriteIfMoved() {
+        guard let value = state.displayRestoredUnderLowPower, state.savedDisplayBrightness == nil else { return }
+        guard let now = try? display.readBrightness() else { return }
+        if abs(now - value) > Self.untouchedDisplayTolerance {
+            dropDisplayWrite(reason: "the display moved since the restore (\(now), restored \(value))")
+        }
+    }
+
+    private func dropDisplayWrite(reason: String) {
+        guard state.displayRestoredUnderLowPower != nil else { return }
+        Log.info("display restore after low power mode dropped: \(reason)")
+        try? journal { $0.displayRestoredUnderLowPower = nil }
+        // The open's own second write of that value, if still pending,
+        // would land it all the same.
+        pendingReassert.display = nil
+    }
+
+    /// The second write of a restore, `reassertDelay` later. Best effort:
+    /// errors are only logged. Tracked, not detached: a newer restore
+    /// cancels it, and if a lid close journaled fresh values during the
+    /// delay (it journals before it darkens) the old values must not light
+    /// the panel again.
+    ///
+    /// A device with a new value takes it; a device without one keeps a
+    /// write still pending (the display written again after Low Power
+    /// Mode must not drop the keyboard's second write the open scheduled a
+    /// moment earlier), and nothing new leaves a pending write alone.
+    private func scheduleReassert(display: Float?, keyboard: Float?) {
+        guard display != nil || keyboard != nil else { return }
+        let restoredDisplay = display ?? pendingReassert.display
+        let restoredKeyboard = keyboard ?? pendingReassert.keyboard
         reassertTask?.cancel()
-        if restoredDisplay != nil || restoredKeyboard != nil {
+        pendingReassert = (restoredDisplay, restoredKeyboard)
+        do {
             let delay = reassertDelay
             reassertTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: delay)
                 guard let self, !Task.isCancelled else { return }
+                // Read when it fires, not when it was scheduled: a drop in
+                // the meantime (the user moved the panel) takes the
+                // display's write out and leaves the keyboard's.
+                let (restoredDisplay, restoredKeyboard) = self.pendingReassert
+                self.pendingReassert = (nil, nil)
                 if let value = restoredDisplay {
                     if self.state.savedDisplayBrightness != nil {
                         Log.info("display restore re-assert skipped: darkened again")
@@ -793,6 +901,9 @@ final class SessionManager {
                 return
             }
             Log.info("reconcile: session valid until \(iso(s.endsAt))")
+            if !state.lowPowerSetByUs, state.displayRestoredUnderLowPower != nil {
+                dropDisplayWrite(reason: "the mode is not ours")
+            }
             // Lid-close actions still on disk are undone only if the lid is
             // open now. Closed (or unknown): they are already journaled and
             // will be undone on the next lid open or at session end.
@@ -814,6 +925,8 @@ final class SessionManager {
         } else if state.isDirty {
             Log.info("reconcile: no session but dirty state, restoring")
             _ = await performEnd(reason: .backstop)
+        } else if state.displayRestoredUnderLowPower != nil {
+            dropDisplayWrite(reason: "no session and the mode is not ours")
         } else {
             Log.info("reconcile: no session, nothing to restore")
         }

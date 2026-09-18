@@ -113,6 +113,24 @@ final class BrightnessSamplerTests: XCTestCase {
         XCTAssertEqual(s.last, BrightnessSample(display: 0.7, keyboard: 0.5, takenAt: t0))
     }
 
+    /// While the display is held (Insomnia's own Low Power Mode is on and
+    /// the panel reads the mode's rescaled value) the display sample is
+    /// kept and the keyboard still merges.
+    func testAHeldDisplayKeepsItsSampleWhileTheKeyboardStillMerges() {
+        let s = make()
+        s.sample()
+        let held = Locked(true)
+        s.displayHeld = { held.value }
+        display.brightness = 0.5
+        keyboard.brightness = 0.3
+        XCTAssertEqual(s.sample(), BrightnessSample(display: nil, keyboard: 0.3, takenAt: t0))
+        XCTAssertEqual(s.last, BrightnessSample(display: 0.7, keyboard: 0.3, takenAt: t0))
+
+        held.value = false
+        XCTAssertEqual(s.sample(), BrightnessSample(display: 0.5, keyboard: 0.3, takenAt: t0))
+        XCTAssertEqual(s.last?.display, 0.5)
+    }
+
     func testNoopControlsReadAsAwakeAndUnsuppressed() {
         XCTAssertFalse(NoopDisplayDimmer().isAsleep())
         XCTAssertFalse(NoopKeyboardBacklight().isSuppressedOrDimmed())
